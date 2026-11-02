@@ -57,3 +57,6 @@ platform/speech-voices.patch
 
 # Display group: media queries
 display/media-queries.patch
+
+# Graphics group: hardware video decode
+graphics/hardware-decode.patch

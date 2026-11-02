@@ -1,0 +1,208 @@
+Phasmid: hardware video decode per gpu.hardware_decode
+
+What:     The GPU process offers the decoder configs of the claimed codecs,
+          whatever decoders the host has: HEVC canPlayType, isTypeSupported
+          and decodingInfo follow gpu.hardware_decode.hevc, and main-thread
+          decodingInfo powerEfficient follows each codec's claim, headless
+          and headful alike. With no codec claimed no hardware decoder is
+          created. A claimed codec decodes with the host's VA-API driver if
+          any, else in software; HEVC then fails to play.
+Why:      On Linux, VA-API decode is on by default and is the only HEVC
+          decoder, so the host's driver showed through any profile, and
+          headless and headful differed.
+Profile:  gpu.hardware_decode.h264, hevc, vp9, av1; media.hevc
+Hooks:    media/mojo/services/gpu_mojo_media_client.cc
+          (GetSupportedVideoDecoderConfigs, IsAcceleratedDecodingDisabled);
+          content/renderer/media/render_media_client.cc
+          (SetGpuFeatureInfoInternal); third_party/blink/renderer/modules/
+          media_capabilities/media_capabilities.cc
+          (MediaCapabilities::GetGpuFactoriesSupport); BUILD.gn deps
+Contexts: main, same- and cross-origin iframe (canPlayType, isTypeSupported,
+          decodingInfo); dedicated worker (isTypeSupported). Workers'
+          powerEfficient comes from the decode statistics database, as in
+          stock.
+Guard:    tests/guards/graphics/hardware-decode.py
+
+--- a/media/mojo/services/BUILD.gn
++++ b/media/mojo/services/BUILD.gn
+@@ -95,6 +95,7 @@
+   ]
+ 
+   deps = [
++    "//components/phasmid",
+     "//gpu/ipc/service",
+     "//media",
+     "//media/gpu",
+--- a/media/mojo/services/gpu_mojo_media_client.cc
++++ b/media/mojo/services/gpu_mojo_media_client.cc
+@@ -15,6 +15,7 @@
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "gpu/ipc/service/gpu_channel.h"
+ #include "media/base/audio_decoder.h"
+ #include "media/base/audio_encoder.h"
+@@ -57,6 +58,15 @@
+ bool IsAcceleratedDecodingDisabled(
+     const gpu::GpuPreferences& gpu_preferences,
+     const gpu::GpuFeatureInfo& gpu_feature_info) {
++  // Phasmid: a profile that claims no hardware decode gets none on any host,
++  // so HEVC support, main-thread decodingInfo() powerEfficient and WebCodecs
++  // never reveal the host's VA-API driver.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    const phasmid::Profile::HardwareDecode& decode = profile->hardware_decode();
++    if (!decode.h264 && !decode.hevc && !decode.vp9 && !decode.av1) {
++      return true;
++    }
++  }
+   return gpu_preferences.disable_accelerated_video_decode ||
+          gpu_feature_info.status_values
+                  [gpu::GPU_FEATURE_TYPE_ACCELERATED_VIDEO_DECODE] !=
+@@ -66,6 +76,37 @@
+          gl::GetGLImplementation() == gl::kGLImplementationDisabled;
+ }
+ 
++// Phasmid: the decoder configs of the claimed codecs, the profiles and sizes
++// D3D11VideoDecoder and VaapiVideoDecoder commonly offer for them
++// (media/gpu/windows/supported_profile_helpers.cc: 64x64 up to the largest
++// probed size; 1920x1088 is only its H.264 fallback), unencrypted only.
++SupportedVideoDecoderConfigs PhasmidDecoderConfigs(
++    const phasmid::Profile::HardwareDecode& decode) {
++  constexpr gfx::Size kMin(64, 64);
++  SupportedVideoDecoderConfigs configs;
++  if (decode.h264) {
++    configs.emplace_back(H264PROFILE_BASELINE, H264PROFILE_HIGH, kMin,
++                         gfx::Size(4096, 2304), /*allow_encrypted=*/false,
++                         /*require_encrypted=*/false);
++  }
++  if (decode.hevc) {
++    configs.emplace_back(HEVCPROFILE_MAIN, HEVCPROFILE_MAIN10, kMin,
++                         gfx::Size(8192, 8192), /*allow_encrypted=*/false,
++                         /*require_encrypted=*/false);
++  }
++  if (decode.vp9) {
++    configs.emplace_back(VP9PROFILE_PROFILE0, VP9PROFILE_PROFILE0, kMin,
++                         gfx::Size(8192, 8192), /*allow_encrypted=*/false,
++                         /*require_encrypted=*/false);
++  }
++  if (decode.av1) {
++    configs.emplace_back(AV1PROFILE_PROFILE_MAIN, AV1PROFILE_PROFILE_MAIN, kMin,
++                         gfx::Size(8192, 8192), /*allow_encrypted=*/false,
++                         /*require_encrypted=*/false);
++  }
++  return configs;
++}
++
+ }  // namespace
+ 
+ // Forward declaration of the platform specific GpuMojoMediaClient factory
+@@ -156,7 +197,12 @@
+   if (!supported_config_cache_) {
+     // Only bother to query if accelerated video decoding is enabled.
+     // (RenderMediaClient does not know about GPU features before it asks.)
+-    if (IsAcceleratedDecodingDisabled(gpu_preferences_, gpu_feature_info_)) {
++    // Phasmid: the claimed codecs' configs, whatever decoders the host has.
++    if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++      supported_config_cache_ =
++          PhasmidDecoderConfigs(profile->hardware_decode());
++    } else if (IsAcceleratedDecodingDisabled(gpu_preferences_,
++                                             gpu_feature_info_)) {
+       supported_config_cache_ = SupportedVideoDecoderConfigs();
+     } else {
+       supported_config_cache_ = GetPlatformSupportedVideoDecoderConfigs();
+--- a/third_party/blink/renderer/modules/media_capabilities/BUILD.gn
++++ b/third_party/blink/renderer/modules/media_capabilities/BUILD.gn
+@@ -12,6 +12,7 @@
+     "media_capabilities.h",
+   ]
+   deps = [
++    "//components/phasmid",
+     "//media",
+     "//third_party/blink/renderer/modules/encryptedmedia",
+     "//third_party/blink/renderer/modules/mediarecorder",
+--- a/third_party/blink/renderer/modules/media_capabilities/media_capabilities.cc
++++ b/third_party/blink/renderer/modules/media_capabilities/media_capabilities.cc
+@@ -15,6 +15,7 @@
+ #include "base/metrics/histogram_macros.h"
+ #include "base/numerics/safe_conversions.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "components/phasmid/profile.h"
+ #include "media/base/media_switches.h"
+ #include "media/base/media_util.h"
+ #include "media/base/mime_util.h"
+@@ -1448,6 +1449,35 @@
+   DCHECK(UseGpuFactoriesForPowerEfficient(execution_context,
+                                           pending_cb->key_system_access));
+ 
++  // Phasmid: answer from gpu.hardware_decode, for the profiles the GPU
++  // process lists. The GPU factories are missing in headless and on hosts
++  // without a GPU.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    const phasmid::Profile::HardwareDecode& decode = profile->hardware_decode();
++    bool claimed = false;
++    switch (video_codec) {
++      case media::VideoCodec::kH264:
++        claimed = decode.h264 &&
++                  video_profile >= media::H264PROFILE_BASELINE &&
++                  video_profile <= media::H264PROFILE_HIGH;
++        break;
++      case media::VideoCodec::kHEVC:
++        claimed = decode.hevc && video_profile >= media::HEVCPROFILE_MAIN &&
++                  video_profile <= media::HEVCPROFILE_MAIN10;
++        break;
++      case media::VideoCodec::kVP9:
++        claimed = decode.vp9 && video_profile == media::VP9PROFILE_PROFILE0;
++        break;
++      case media::VideoCodec::kAV1:
++        claimed = decode.av1 && video_profile == media::AV1PROFILE_PROFILE_MAIN;
++        break;
++      default:
++        break;
++    }
++    OnGpuFactoriesSupport(callback_id, claimed, video_codec);
++    return;
++  }
++
+   media::GpuVideoAcceleratorFactories* gpu_factories =
+       Platform::Current()->GetGpuFactories();
+   if (!gpu_factories) {
+--- a/content/renderer/media/render_media_client.cc
++++ b/content/renderer/media/render_media_client.cc
+@@ -9,6 +9,7 @@
+ #include "base/command_line.h"
+ #include "base/no_destructor.h"
+ #include "base/time/default_tick_clock.h"
++#include "components/phasmid/profile.h"
+ #include "content/public/common/content_client.h"
+ #include "content/public/renderer/content_renderer_client.h"
+ #include "content/renderer/render_thread_impl.h"
+@@ -345,10 +346,14 @@
+ void RenderMediaClient::SetGpuFeatureInfoInternal(
+     const gpu::GpuFeatureInfo& gpu_feature_info) {
+   DCHECK(main_task_runner_->BelongsToCurrentThread());
++  // Phasmid: the GPU process reports the claimed decoder configs whatever
++  // the GPU features, so keep them when accelerated decode is off.
++  const bool keep_decoder_profiles = phasmid::Profile::Get() != nullptr;
+   if (gpu_feature_info.IsInitialized()) {
+-    if (gpu_feature_info
+-            .status_values[gpu::GPU_FEATURE_TYPE_ACCELERATED_VIDEO_DECODE] !=
+-        gpu::kGpuFeatureStatusEnabled) {
++    if (!keep_decoder_profiles &&
++        gpu_feature_info
++                .status_values[gpu::GPU_FEATURE_TYPE_ACCELERATED_VIDEO_DECODE] !=
++            gpu::kGpuFeatureStatusEnabled) {
+       media::UpdateDefaultDecoderSupportedVideoProfiles({});
+     }
+     if (gpu_feature_info
+@@ -358,7 +363,9 @@
+     }
+   } else {
+     // Purge everything since we no longer have a GPU.
+-    media::UpdateDefaultDecoderSupportedVideoProfiles({});
++    if (!keep_decoder_profiles) {
++      media::UpdateDefaultDecoderSupportedVideoProfiles({});
++    }
+     media::UpdateDefaultDecoderSupportedAudioTypes({});
+     media::UpdateDefaultEncoderSupportedVideoProfiles({});
+   }
