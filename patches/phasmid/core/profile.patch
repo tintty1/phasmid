@@ -1,0 +1,4916 @@
+Phasmid: profile loading and plumbing
+
+What:     Adds components/phasmid, the single profile source every surface
+          patch reads. The browser loads --phasmid-profile=<path>, validates
+          it and exports it as PHASMID_PROFILE, with TZ=<locale.timezone>,
+          before any child process starts. An invalid profile, or a Bromite
+          noise switch beside it, stops the browser; a valid claim the host
+          cannot back is logged once and runs.
+Why:      Every process must report the same profile with no fallback to host
+          values, and the time zone must be in place at process start.
+Profile:  schema_version, id, seed, os.*, hardware.*, display.*, gpu.*,
+          canvas.noise, audio.*, fonts.*, speech.voices, media.*,
+          media_devices.*, webauthn.*, system_colors.*, capabilities.*,
+          locale.*, network.webrtc.*, network.connection.*, automation.*
+Hooks:    chrome/app/chrome_main_delegate.cc
+          (ChromeMainDelegate::BasicStartupComplete); new components/phasmid/;
+          //components/phasmid deps in chrome/, chrome/app/,
+          chrome/browser/ (core), chrome/browser/net/,
+          chrome/browser/preloading/prefetch/prefetch_service/,
+          chrome/browser/ui/startup/, chrome/browser/ui/window_sizer/,
+          components/, components/embedder_support/, content/browser/,
+          content/child/, content/renderer/, services/network/,
+          gpu/command_buffer/service/ BUILD.gn
+Contexts: main, iframe, worker, shared worker, service worker
+Guard:    tests/guards/core/profile-loading.py
+
+--- a/components/phasmid/BUILD.gn
++++ b/components/phasmid/BUILD.gn
+@@ -0,0 +1,45 @@
++# Copyright 2026 The Phasmid Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++# Depends only on //base so that blink, content, gpu and chrome can all use it.
++component("phasmid") {
++  sources = [
++    "noise.cc",
++    "noise.h",
++    "profile.cc",
++    "profile.h",
++    "switches.cc",
++    "switches.h",
++  ]
++
++  defines = [ "IS_PHASMID_IMPL" ]
++
++  deps = [ "//base" ]
++}
++
++# Browser process only. Kept out of :phasmid, which depends only on //base.
++if (is_linux || is_chromeos) {
++  source_set("font_allowlist") {
++    sources = [
++      "font_allowlist_linux.cc",
++      "font_allowlist_linux.h",
++    ]
++    deps = [
++      ":phasmid",
++      "//base",
++      "//crypto",
++      "//skia",
++      "//third_party/fontconfig",
++    ]
++  }
++}
++
++source_set("unit_tests") {
++  testonly = true
++  sources = [ "noise_unittest.cc" ]
++  deps = [
++    ":phasmid",
++    "//testing/gtest",
++  ]
++}
+--- a/components/phasmid/noise.h
++++ b/components/phasmid/noise.h
+@@ -0,0 +1,44 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_PHASMID_NOISE_H_
++#define COMPONENTS_PHASMID_NOISE_H_
++
++#include <stdint.h>
++
++#include <string_view>
++
++#include "base/component_export.h"
++#include "base/containers/span.h"
++
++namespace phasmid {
++
++// A 128-bit SipHash key, derived from the profile seed.
++struct NoiseKey {
++  uint64_t k0 = 0;
++  uint64_t k1 = 0;
++};
++
++// SipHash-2-4 of `data` under `key`, with the reference algorithm's
++// little-endian key and message loading.
++//
++// Frozen: changing it, or any key derivation below, changes every profile's
++// canvas and audio readback.
++COMPONENT_EXPORT(PHASMID)
++uint64_t SipHash24(const NoiseKey& key, base::span<const uint8_t> data);
++
++// The profile seed as a key: the 32 hex digits are 16 bytes in string order,
++// k0 is bytes 0..7 and k1 bytes 8..15, each read little-endian. Returns false
++// unless `hex` is exactly 32 lowercase hex digits.
++COMPONENT_EXPORT(PHASMID)
++bool NoiseKeyFromSeed(std::string_view hex, NoiseKey* key);
++
++// A key for one purpose, separated from every other purpose by `tag`:
++// k0 = SipHash24(seed, tag || 0x00), k1 = SipHash24(seed, tag || 0x01).
++COMPONENT_EXPORT(PHASMID)
++NoiseKey DeriveNoiseKey(const NoiseKey& seed, std::string_view tag);
++
++}  // namespace phasmid
++
++#endif  // COMPONENTS_PHASMID_NOISE_H_
+--- a/components/phasmid/noise.cc
++++ b/components/phasmid/noise.cc
+@@ -0,0 +1,120 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "components/phasmid/noise.h"
++
++#include <array>
++#include <string>
++
++namespace phasmid {
++
++namespace {
++
++uint64_t RotateLeft(uint64_t x, int bits) {
++  return (x << bits) | (x >> (64 - bits));
++}
++
++// Up to eight bytes, little-endian.
++uint64_t LoadLittleEndian(base::span<const uint8_t> bytes) {
++  uint64_t value = 0;
++  for (size_t i = 0; i < bytes.size(); ++i) {
++    value |= uint64_t{bytes[i]} << (8 * i);
++  }
++  return value;
++}
++
++struct SipState {
++  uint64_t v0;
++  uint64_t v1;
++  uint64_t v2;
++  uint64_t v3;
++
++  void Round() {
++    v0 += v1;
++    v1 = RotateLeft(v1, 13);
++    v1 ^= v0;
++    v0 = RotateLeft(v0, 32);
++    v2 += v3;
++    v3 = RotateLeft(v3, 16);
++    v3 ^= v2;
++    v0 += v3;
++    v3 = RotateLeft(v3, 21);
++    v3 ^= v0;
++    v2 += v1;
++    v1 = RotateLeft(v1, 17);
++    v1 ^= v2;
++    v2 = RotateLeft(v2, 32);
++  }
++
++  // Two compression rounds per message word.
++  void Absorb(uint64_t m) {
++    v3 ^= m;
++    Round();
++    Round();
++    v0 ^= m;
++  }
++};
++
++int HexDigit(char c) {
++  if (c >= '0' && c <= '9') {
++    return c - '0';
++  }
++  if (c >= 'a' && c <= 'f') {
++    return c - 'a' + 10;
++  }
++  return -1;
++}
++
++}  // namespace
++
++uint64_t SipHash24(const NoiseKey& key, base::span<const uint8_t> data) {
++  SipState s = {0x736f6d6570736575ULL ^ key.k0, 0x646f72616e646f6dULL ^ key.k1,
++                0x6c7967656e657261ULL ^ key.k0, 0x7465646279746573ULL ^ key.k1};
++  const size_t tail = data.size() % 8;
++  base::span<const uint8_t> blocks = data.first(data.size() - tail);
++  while (!blocks.empty()) {
++    s.Absorb(LoadLittleEndian(blocks.first(8u)));
++    blocks = blocks.subspan(8u);
++  }
++  s.Absorb((static_cast<uint64_t>(data.size()) << 56) |
++           LoadLittleEndian(data.last(tail)));
++  // Four finalization rounds.
++  s.v2 ^= 0xff;
++  s.Round();
++  s.Round();
++  s.Round();
++  s.Round();
++  return s.v0 ^ s.v1 ^ s.v2 ^ s.v3;
++}
++
++bool NoiseKeyFromSeed(std::string_view hex, NoiseKey* key) {
++  if (hex.size() != 32) {
++    return false;
++  }
++  std::array<uint8_t, 16> bytes = {};
++  for (size_t i = 0; i < bytes.size(); ++i) {
++    const int high = HexDigit(hex[2 * i]);
++    const int low = HexDigit(hex[2 * i + 1]);
++    if (high < 0 || low < 0) {
++      return false;
++    }
++    bytes[i] = static_cast<uint8_t>(high * 16 + low);
++  }
++  const base::span<const uint8_t> view(bytes);
++  key->k0 = LoadLittleEndian(view.first(8u));
++  key->k1 = LoadLittleEndian(view.last(8u));
++  return true;
++}
++
++NoiseKey DeriveNoiseKey(const NoiseKey& seed, std::string_view tag) {
++  std::string message(tag);
++  message.push_back('\0');
++  NoiseKey derived;
++  derived.k0 = SipHash24(seed, base::as_byte_span(message));
++  message.back() = '\1';
++  derived.k1 = SipHash24(seed, base::as_byte_span(message));
++  return derived;
++}
++
++}  // namespace phasmid
+--- a/components/phasmid/noise_unittest.cc
++++ b/components/phasmid/noise_unittest.cc
+@@ -0,0 +1,85 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "components/phasmid/noise.h"
++
++#include <array>
++#include <vector>
++
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace phasmid {
++namespace {
++
++// SipHash-2-4 reference vectors (Aumasson and Bernstein, vectors.h): key
++// 00 01 .. 0f, message 00 01 .. (n - 1) for n = 0..63, read little-endian.
++constexpr std::array<uint64_t, 64> kReferenceVectors = {
++    0x726fdb47dd0e0e31ULL, 0x74f839c593dc67fdULL,
++    0x0d6c8009d9a94f5aULL, 0x85676696d7fb7e2dULL,
++    0xcf2794e0277187b7ULL, 0x18765564cd99a68dULL,
++    0xcbc9466e58fee3ceULL, 0xab0200f58b01d137ULL,
++    0x93f5f5799a932462ULL, 0x9e0082df0ba9e4b0ULL,
++    0x7a5dbbc594ddb9f3ULL, 0xf4b32f46226bada7ULL,
++    0x751e8fbc860ee5fbULL, 0x14ea5627c0843d90ULL,
++    0xf723ca908e7af2eeULL, 0xa129ca6149be45e5ULL,
++    0x3f2acc7f57c29bdbULL, 0x699ae9f52cbe4794ULL,
++    0x4bc1b3f0968dd39cULL, 0xbb6dc91da77961bdULL,
++    0xbed65cf21aa2ee98ULL, 0xd0f2cbb02e3b67c7ULL,
++    0x93536795e3a33e88ULL, 0xa80c038ccd5ccec8ULL,
++    0xb8ad50c6f649af94ULL, 0xbce192de8a85b8eaULL,
++    0x17d835b85bbb15f3ULL, 0x2f2e6163076bcfadULL,
++    0xde4daaaca71dc9a5ULL, 0xa6a2506687956571ULL,
++    0xad87a3535c49ef28ULL, 0x32d892fad841c342ULL,
++    0x7127512f72f27cceULL, 0xa7f32346f95978e3ULL,
++    0x12e0b01abb051238ULL, 0x15e034d40fa197aeULL,
++    0x314dffbe0815a3b4ULL, 0x027990f029623981ULL,
++    0xcadcd4e59ef40c4dULL, 0x9abfd8766a33735cULL,
++    0x0e3ea96b5304a7d0ULL, 0xad0c42d6fc585992ULL,
++    0x187306c89bc215a9ULL, 0xd4a60abcf3792b95ULL,
++    0xf935451de4f21df2ULL, 0xa9538f0419755787ULL,
++    0xdb9acddff56ca510ULL, 0xd06c98cd5c0975ebULL,
++    0xe612a3cb9ecba951ULL, 0xc766e62cfcadaf96ULL,
++    0xee64435a9752fe72ULL, 0xa192d576b245165aULL,
++    0x0a8787bf8ecb74b2ULL, 0x81b3e73d20b49b6fULL,
++    0x7fa8220ba3b2eceaULL, 0x245731c13ca42499ULL,
++    0xb78dbfaf3a8d83bdULL, 0xea1ad565322a1a0bULL,
++    0x60e61c23a3795013ULL, 0x6606d7e446282b93ULL,
++    0x6ca4ecb15c5f91e1ULL, 0x9f626da15c9625f3ULL,
++    0xe51b38608ef25f57ULL, 0x958a324ceb064572ULL,
++};
++
++TEST(PhasmidNoiseTest, SipHash24MatchesReferenceVectors) {
++  const NoiseKey key = {0x0706050403020100ULL, 0x0f0e0d0c0b0a0908ULL};
++  std::vector<uint8_t> message;
++  for (size_t n = 0; n < kReferenceVectors.size(); ++n) {
++    EXPECT_EQ(SipHash24(key, message), kReferenceVectors[n]) << "length " << n;
++    message.push_back(static_cast<uint8_t>(n));
++  }
++}
++
++TEST(PhasmidNoiseTest, SeedParsing) {
++  NoiseKey key;
++  ASSERT_TRUE(NoiseKeyFromSeed("000102030405060708090a0b0c0d0e0f", &key));
++  EXPECT_EQ(key.k0, 0x0706050403020100ULL);
++  EXPECT_EQ(key.k1, 0x0f0e0d0c0b0a0908ULL);
++  EXPECT_FALSE(NoiseKeyFromSeed("000102030405060708090A0B0C0D0E0F", &key));
++  EXPECT_FALSE(NoiseKeyFromSeed("0001020304050607", &key));
++  EXPECT_FALSE(NoiseKeyFromSeed("000102030405060708090a0b0c0d0e0g", &key));
++}
++
++// Frozen derivations: a failure here means every profile's canvas or audio
++// output changed.
++TEST(PhasmidNoiseTest, DerivedKeysAreFrozen) {
++  NoiseKey seed;
++  ASSERT_TRUE(NoiseKeyFromSeed("5b1d7c0e9a3f4d2c8e6b1a0f7c3d9e21", &seed));
++  const NoiseKey canvas = DeriveNoiseKey(seed, "phasmid/canvas/1");
++  EXPECT_EQ(canvas.k0, 0x76f2fb5423fa0ba9ULL);
++  EXPECT_EQ(canvas.k1, 0x312d93be81a91a51ULL);
++  const NoiseKey audio = DeriveNoiseKey(seed, "phasmid/audio/1");
++  EXPECT_EQ(audio.k0, 0x1a22400fd543118dULL);
++  EXPECT_EQ(audio.k1, 0x1ba979a29eccfb62ULL);
++}
++
++}  // namespace
++}  // namespace phasmid
+--- a/components/phasmid/profile.cc
++++ b/components/phasmid/profile.cc
+@@ -0,0 +1,2543 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "components/phasmid/profile.h"
++
++#include <algorithm>
++#include <cmath>
++#include <memory>
++#include <set>
++#include <string>
++#include <utility>
++
++#include "base/command_line.h"
++#include "base/environment.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/logging.h"
++#include "base/no_destructor.h"
++#include "base/strings/strcat.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_split.h"
++#include "base/strings/string_util.h"
++#include "base/strings/string_util.h"
++#include "base/strings/stringprintf.h"
++#include "base/synchronization/lock.h"
++#include "components/phasmid/noise.h"
++#include "components/phasmid/switches.h"
++
++namespace phasmid {
++
++namespace {
++
++constexpr int kSchemaVersion = 1;
++
++// Top-level objects the schema marks required. Their presence is checked
++// here so a truncated profile fails at startup rather than in a renderer.
++constexpr const char* kRequiredSections[] = {
++    "os",       "hardware",      "display", "gpu",          "canvas",
++    "audio",    "fonts",         "locale",  "speech",       "media_devices",
++    "media",    "webauthn",      "capabilities", "network", "automation",
++};
++
++constexpr int kDeviceMemoryBuckets[] = {2, 4, 8, 16, 32};
++
++constexpr const char* kOsFamilies[] = {"windows", "linux"};
++constexpr const char* kNavigatorPlatforms[] = {"Win32", "Linux x86_64",
++                                               "Linux aarch64"};
++constexpr const char* kChPlatforms[] = {"Windows", "Linux"};
++constexpr const char* kArchitectures[] = {"x86", "arm"};
++constexpr const char* kBitnesses[] = {"64", "32"};
++constexpr const char* kFormFactors[] = {"Desktop", "Mobile", "Tablet", "XR",
++                                        "EInk",    "Watch",  "Automotive"};
++constexpr int kColorDepths[] = {24, 30};
++constexpr const char* kOrientations[] = {"landscape-primary",
++                                         "landscape-secondary",
++                                         "portrait-primary",
++                                         "portrait-secondary"};
++constexpr const char* kWebRtcPolicies[] = {
++    "default", "default_public_interface_only",
++    "default_public_and_private_interfaces", "disable_non_proxied_udp"};
++constexpr const char* kAngleBackends[] = {"d3d11", "opengl", "vulkan",
++                                          "swiftshader"};
++// The robustness levels com.widevine.alpha grants on both desktop OSes:
++// WidevineKeySystemInfo::GetRobustnessConfigRule refuses every HW_SECURE_*
++// level on Windows too.
++constexpr const char* kWidevineRobustness[] = {"SW_SECURE_CRYPTO",
++                                               "SW_SECURE_DECODE"};
++// An installed Google Chrome's CDM, which carries Google's licence; Phasmid
++// never ships or downloads one.
++constexpr char kDefaultWidevineCdmDirectory[] = "/opt/google/chrome/WidevineCdm";
++
++// WebGL getParameter() values the GPU process reports from the profile. All
++// are required, so no context falls back to the host's value.
++constexpr const char* kWebGLParams[] = {
++    "MAX_COMBINED_TEXTURE_IMAGE_UNITS", "MAX_CUBE_MAP_TEXTURE_SIZE",
++    "MAX_FRAGMENT_UNIFORM_VECTORS",     "MAX_RENDERBUFFER_SIZE",
++    "MAX_TEXTURE_IMAGE_UNITS",          "MAX_TEXTURE_SIZE",
++    "MAX_VARYING_VECTORS",              "MAX_VERTEX_ATTRIBS",
++    "MAX_VERTEX_TEXTURE_IMAGE_UNITS",   "MAX_VERTEX_UNIFORM_VECTORS",
++    "SUBPIXEL_BITS",
++};
++constexpr const char* kWebGLRangeParams[] = {
++    "MAX_VIEWPORT_DIMS", "ALIASED_LINE_WIDTH_RANGE", "ALIASED_POINT_SIZE_RANGE"};
++// WebGL2 contexts only. MAX_TEXTURE_LOD_BIAS is the one non-integer.
++constexpr const char* kWebGL2Params[] = {
++    "MAX_3D_TEXTURE_SIZE",
++    "MAX_ARRAY_TEXTURE_LAYERS",
++    "MAX_COLOR_ATTACHMENTS",
++    "MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS",
++    "MAX_COMBINED_UNIFORM_BLOCKS",
++    "MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS",
++    "MAX_DRAW_BUFFERS",
++    "MAX_ELEMENT_INDEX",
++    "MAX_ELEMENTS_INDICES",
++    "MAX_ELEMENTS_VERTICES",
++    "MAX_FRAGMENT_INPUT_COMPONENTS",
++    "MAX_FRAGMENT_UNIFORM_BLOCKS",
++    "MAX_FRAGMENT_UNIFORM_COMPONENTS",
++    "MAX_PROGRAM_TEXEL_OFFSET",
++    "MAX_SAMPLES",
++    "MAX_SERVER_WAIT_TIMEOUT",
++    "MAX_TEXTURE_LOD_BIAS",
++    "MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS",
++    "MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS",
++    "MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS",
++    "MAX_UNIFORM_BLOCK_SIZE",
++    "MAX_UNIFORM_BUFFER_BINDINGS",
++    "MAX_VARYING_COMPONENTS",
++    "MAX_VERTEX_OUTPUT_COMPONENTS",
++    "MAX_VERTEX_UNIFORM_BLOCKS",
++    "MAX_VERTEX_UNIFORM_COMPONENTS",
++    "MIN_PROGRAM_TEXEL_OFFSET",
++    "UNIFORM_BUFFER_OFFSET_ALIGNMENT",
++};
++constexpr const char* kPrecisionShaders[] = {"VERTEX_SHADER",
++                                             "FRAGMENT_SHADER"};
++constexpr const char* kPrecisionTypes[] = {"LOW_FLOAT", "MEDIUM_FLOAT",
++                                           "HIGH_FLOAT", "LOW_INT",
++                                           "MEDIUM_INT", "HIGH_INT"};
++// The GPUSupportedLimits names of gpu_supported_limits.cc at this version.
++constexpr const char* kWebGPULimits[] = {
++    "maxTextureDimension1D",
++    "maxTextureDimension2D",
++    "maxTextureDimension3D",
++    "maxTextureArrayLayers",
++    "maxBindGroups",
++    "maxBindGroupsPlusVertexBuffers",
++    "maxBindingsPerBindGroup",
++    "maxDynamicUniformBuffersPerPipelineLayout",
++    "maxDynamicStorageBuffersPerPipelineLayout",
++    "maxSampledTexturesPerShaderStage",
++    "maxSamplersPerShaderStage",
++    "maxStorageBuffersPerShaderStage",
++    "maxStorageTexturesPerShaderStage",
++    "maxUniformBuffersPerShaderStage",
++    "maxUniformBufferBindingSize",
++    "maxStorageBufferBindingSize",
++    "minUniformBufferOffsetAlignment",
++    "minStorageBufferOffsetAlignment",
++    "maxVertexBuffers",
++    "maxBufferSize",
++    "maxVertexAttributes",
++    "maxVertexBufferArrayStride",
++    "maxInterStageShaderVariables",
++    "maxColorAttachments",
++    "maxColorAttachmentBytesPerSample",
++    "maxComputeWorkgroupStorageSize",
++    "maxComputeInvocationsPerWorkgroup",
++    "maxComputeWorkgroupSizeX",
++    "maxComputeWorkgroupSizeY",
++    "maxComputeWorkgroupSizeZ",
++    "maxComputeWorkgroupsPerDimension",
++    "maxStorageBuffersInFragmentStage",
++    "maxStorageTexturesInFragmentStage",
++    "maxStorageBuffersInVertexStage",
++    "maxStorageTexturesInVertexStage",
++    "maxImmediateSize",
++};
++// Doubles hold every integer up to 2^53 exactly.
++constexpr double kMaxExactInteger = 9007199254740992.0;
++
++// Switches of ungoogled-chromium's Bromite fingerprinting patches and the
++// Blink features they turn on. Each adds random per-call noise to canvas
++// readback, measureText or client rects.
++constexpr const char* kRefusedSwitches[] = {
++    "fingerprinting-canvas-image-data-noise",
++    "fingerprinting-client-rects-noise",
++    "fingerprinting-canvas-measuretext-noise",
++};
++constexpr const char* kRefusedFeatures[] = {
++    "FingerprintingCanvasImageDataNoise",
++    "FingerprintingClientRectsNoise",
++    "FingerprintingCanvasMeasureTextNoise",
++};
++
++std::string Err(const char* field, const std::string& what) {
++  return base::StringPrintf("profile field '%s' %s", field, what.c_str());
++}
++
++std::string Err(const std::string& field, const std::string& what) {
++  return Err(field.c_str(), what);
++}
++
++template <size_t N>
++bool OneOf(const std::string& value, const char* const (&allowed)[N]) {
++  for (const char* candidate : allowed) {
++    if (value == candidate) {
++      return true;
++    }
++  }
++  return false;
++}
++
++template <size_t N>
++std::string Listed(const char* const (&allowed)[N]) {
++  std::string out;
++  for (const char* candidate : allowed) {
++    if (!out.empty()) {
++      out += ", ";
++    }
++    out += candidate;
++  }
++  return out;
++}
++
++const std::string* RequireString(const base::DictValue& dict,
++                                 const char* key,
++                                 const char* field,
++                                 std::string* error) {
++  const std::string* value = dict.FindString(key);
++  if (!value) {
++    *error = Err(field, "is required and must be a string");
++  }
++  return value;
++}
++
++std::optional<bool> RequireBool(const base::DictValue& dict,
++                                const char* key,
++                                const char* field,
++                                std::string* error) {
++  std::optional<bool> value = dict.FindBool(key);
++  if (!value) {
++    *error = Err(field, "is required and must be a boolean");
++  }
++  return value;
++}
++
++std::optional<int> RequireInt(const base::DictValue& dict,
++                              const char* key,
++                              const char* field,
++                              int minimum,
++                              std::string* error) {
++  std::optional<int> value = dict.FindInt(key);
++  if (!value || *value < minimum) {
++    *error = Err(field, base::StringPrintf("must be an integer >= %d", minimum));
++    return std::nullopt;
++  }
++  return value;
++}
++
++// A dotted IPv4 quad or a bracket-free IPv6 literal. Only a typo check; the
++// network service parses it with net::IPAddress.
++bool LooksLikeIpLiteral(const std::string& ip) {
++  if (ip.find(':') != std::string::npos) {
++    return ip.find_first_not_of("0123456789abcdefABCDEF:.") ==
++           std::string::npos;
++  }
++  std::vector<std::string> parts = base::SplitString(
++      ip, ".", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
++  if (parts.size() != 4) {
++    return false;
++  }
++  for (const std::string& part : parts) {
++    int octet = 0;
++    if (part.empty() || !base::StringToInt(part, &octet) || octet < 0 ||
++        octet > 255) {
++      return false;
++    }
++  }
++  return true;
++}
++
++std::optional<std::vector<double>> Numbers(const base::Value& value) {
++  if (std::optional<double> number = value.GetIfDouble()) {
++    return std::vector<double>{*number};
++  }
++  if (!value.is_list()) {
++    return std::nullopt;
++  }
++  std::vector<double> out;
++  for (const base::Value& entry : value.GetList()) {
++    std::optional<double> number = entry.GetIfDouble();
++    if (!number) {
++      return std::nullopt;
++    }
++    out.push_back(*number);
++  }
++  return out;
++}
++
++bool IsExactInteger(double value) {
++  return std::isfinite(value) && std::abs(value) <= kMaxExactInteger &&
++         value == std::floor(value);
++}
++
++// Every identity field is optional; DeriveGpuIdentity fills the absent ones.
++std::string ParseGpu(const base::DictValue& gpu, Profile::Gpu* out) {
++  struct IdField {
++    const char* key;
++    uint32_t* out;
++  };
++  for (const IdField& f : {IdField{"vendor_id", &out->vendor_id},
++                           IdField{"device_id", &out->device_id}}) {
++    if (!gpu.contains(f.key)) {
++      continue;
++    }
++    const std::string* id = gpu.FindString(f.key);
++    if (!id || id->size() != 6 || !id->starts_with("0x") ||
++        id->find_first_not_of("0123456789abcdef", 2) != std::string::npos ||
++        !base::HexStringToUInt(std::string_view(*id).substr(2), f.out)) {
++      return Err(std::string("gpu.") + f.key,
++                 "must be a lowercase hex id such as 0x10de");
++    }
++  }
++  struct StringField {
++    const char* key;
++    std::string* out;
++    bool non_empty;
++  };
++  for (const StringField& f :
++       {StringField{"vendor_name", &out->vendor_name, false},
++        StringField{"device_name", &out->device_name, false},
++        StringField{"driver_vendor", &out->driver_vendor, false},
++        StringField{"driver_version", &out->driver_version, false},
++        StringField{"gl_vendor", &out->gl_vendor, true},
++        StringField{"gl_renderer", &out->gl_renderer, true},
++        StringField{"angle_backend", &out->angle_backend, true}}) {
++    const bool required = f.out == &out->angle_backend;
++    if (!required && !gpu.contains(f.key)) {
++      continue;
++    }
++    const std::string* value = gpu.FindString(f.key);
++    if (!value || (f.non_empty && value->empty())) {
++      return Err(std::string("gpu.") + f.key,
++                 std::string(required ? "is required and must be" : "must be") +
++                     (f.non_empty ? " a non-empty string" : " a string"));
++    }
++    *f.out = *value;
++  }
++  if (!OneOf(out->angle_backend, kAngleBackends)) {
++    return Err("gpu.angle_backend", "must be one of " + Listed(kAngleBackends));
++  }
++  return std::string();
++}
++
++std::string ParseWebGL(const base::DictValue& gpu,
++                       const char* key,
++                       bool webgl2,
++                       Profile::WebGL* out) {
++  const std::string prefix = std::string("gpu.") + key;
++  const base::DictValue* webgl = gpu.FindDict(key);
++  if (!webgl) {
++    return Err(prefix, "is required and must be an object");
++  }
++  struct StringField {
++    const char* key;
++    std::string* out;
++  };
++  for (const StringField& f :
++       {StringField{"unmasked_vendor", &out->unmasked_vendor},
++        StringField{"unmasked_renderer", &out->unmasked_renderer}}) {
++    const std::string* value = webgl->FindString(f.key);
++    if (!value || value->empty()) {
++      return Err(prefix + "." + f.key,
++                 "is required and must be a non-empty string");
++    }
++    *f.out = *value;
++  }
++
++  const base::ListValue* extensions = webgl->FindList("extensions");
++  if (!extensions) {
++    return Err(prefix + ".extensions",
++               "is required and must be a list of extension names");
++  }
++  std::vector<std::string> extension_names;
++  for (const base::Value& entry : *extensions) {
++    if (!entry.is_string() || entry.GetString().empty()) {
++      return Err(prefix + ".extensions", "entries must be extension names");
++    }
++    extension_names.push_back(entry.GetString());
++  }
++  out->extensions = base::flat_set<std::string>(std::move(extension_names));
++
++  const base::DictValue* params = webgl->FindDict("params");
++  if (!params) {
++    return Err(prefix + ".params", "is required and must be an object");
++  }
++  std::vector<std::pair<std::string, std::vector<double>>> numeric;
++  for (const auto [name, value] : *params) {
++    if (std::optional<std::vector<double>> numbers = Numbers(value)) {
++      numeric.emplace_back(name, std::move(*numbers));
++    }
++  }
++  out->params =
++      base::flat_map<std::string, std::vector<double>>(std::move(numeric));
++  auto check_param = [&](const char* name, size_t count, bool integer) {
++    auto it = out->params.find(name);
++    bool ok = it != out->params.end() && it->second.size() == count;
++    for (size_t i = 0; ok && i < count; ++i) {
++      double value = it->second[i];
++      ok = integer ? IsExactInteger(value) : std::isfinite(value);
++    }
++    if (ok) {
++      return std::string();
++    }
++    return Err(prefix + ".params." + name,
++               count == 1 ? (integer ? "is required and must be an integer"
++                                     : "is required and must be a number")
++                          : "is required and must be a list of two numbers");
++  };
++  std::string error;
++  for (const char* name : kWebGLParams) {
++    if (error.empty()) {
++      error = check_param(name, 1, true);
++    }
++  }
++  for (const char* name : kWebGLRangeParams) {
++    if (error.empty()) {
++      error = check_param(name, 2, false);
++    }
++  }
++  for (const char* name : kWebGL2Params) {
++    if (webgl2 && error.empty()) {
++      error = check_param(name, 1,
++                          std::string_view(name) != "MAX_TEXTURE_LOD_BIAS");
++    }
++  }
++  if (!error.empty()) {
++    return error;
++  }
++
++  const base::DictValue* precision = webgl->FindDict("precision");
++  if (!precision) {
++    return Err(prefix + ".precision", "is required and must be an object");
++  }
++  for (size_t shader = 0; shader < std::size(kPrecisionShaders); ++shader) {
++    for (size_t type = 0; type < std::size(kPrecisionTypes); ++type) {
++      const std::string name = std::string(kPrecisionShaders[shader]) + "." +
++                               kPrecisionTypes[type];
++      const base::DictValue* entry = precision->FindDict(name);
++      std::optional<int> range_min =
++          entry ? entry->FindInt("rangeMin") : std::nullopt;
++      std::optional<int> range_max =
++          entry ? entry->FindInt("rangeMax") : std::nullopt;
++      std::optional<int> bits =
++          entry ? entry->FindInt("precision") : std::nullopt;
++      if (!range_min || !range_max || !bits || *range_min < 0 ||
++          *range_min > 127 || *range_max < 0 || *range_max > 127 ||
++          *bits < 0 || *bits > 127) {
++        return Err(prefix + ".precision." + name,
++                   "must hold rangeMin, rangeMax and precision, integers in "
++                   "[0, 127]");
++      }
++      out->precision[shader][type] = {*range_min, *range_max, *bits};
++    }
++  }
++
++  const base::DictValue* attributes = webgl->FindDict("context_attributes");
++  std::optional<bool> antialias =
++      attributes ? attributes->FindBool("antialias") : std::nullopt;
++  if (!antialias) {
++    return Err(prefix + ".context_attributes.antialias",
++               "is required and must be a boolean");
++  }
++  out->antialias = *antialias;
++
++  const base::Value* anisotropy = webgl->Find("max_anisotropy");
++  if (!anisotropy ||
++      !(anisotropy->is_none() || (anisotropy->GetIfDouble() &&
++                                  anisotropy->GetDouble() >= 1.0 &&
++                                  std::isfinite(anisotropy->GetDouble())))) {
++    return Err(prefix + ".max_anisotropy",
++               "is required and must be a number >= 1, or null");
++  }
++  if (!anisotropy->is_none()) {
++    out->max_anisotropy = anisotropy->GetDouble();
++  }
++  const base::Value* draw_buffers = webgl->Find("max_draw_buffers");
++  if (draw_buffers && !draw_buffers->is_none()) {
++    if (!draw_buffers->is_int() || draw_buffers->GetInt() < 1) {
++      return Err(prefix + ".max_draw_buffers",
++                 "must be an integer >= 1, or null");
++    }
++    out->max_draw_buffers = draw_buffers->GetInt();
++  }
++  return std::string();
++}
++
++// wgsl_language_features is not read: the build decides it.
++std::string ParseWebGPU(const base::DictValue& gpu,
++                        const std::string& os_family,
++                        Profile::WebGPU* out) {
++  const base::DictValue* webgpu = gpu.FindDict("webgpu");
++  if (!webgpu) {
++    return Err("gpu.webgpu", "is required and must be an object");
++  }
++  std::optional<bool> available = webgpu->FindBool("available");
++  if (!available) {
++    return Err("gpu.webgpu.available", "is required and must be a boolean");
++  }
++  // GPU::GetPreferredCanvasFormat picks the format by OS at compile time,
++  // with or without an adapter.
++  const std::string os_format =
++      os_family == "linux" ? "rgba8unorm" : "bgra8unorm";
++  const std::string* format = webgpu->FindString("preferred_canvas_format");
++  if ((*available && !format) || (format && *format != os_format)) {
++    return Err("gpu.webgpu.preferred_canvas_format",
++               "must be " + os_format + " for os.family " + os_family);
++  }
++  out->available = *available;
++  out->preferred_canvas_format = os_format;
++  if (!out->available) {
++    return std::string();
++  }
++
++  struct StringField {
++    const char* key;
++    std::string* out;
++    bool must_be_empty;
++  };
++  // Stock Chrome fills device and description only with WebGPU developer
++  // features, so a capture always has them empty.
++  for (const StringField& f :
++       {StringField{"vendor", &out->vendor, false},
++        StringField{"architecture", &out->architecture, false},
++        StringField{"device", &out->device, true},
++        StringField{"description", &out->description, true}}) {
++    const std::string* value = webgpu->FindString(f.key);
++    if (!value || (f.must_be_empty && !value->empty())) {
++      return Err(std::string("gpu.webgpu.") + f.key,
++                 f.must_be_empty ? "is required and must be empty"
++                                 : "is required and must be a string");
++    }
++    *f.out = *value;
++  }
++  struct SubgroupField {
++    const char* key;
++    uint32_t* out;
++  };
++  for (const SubgroupField& f :
++       {SubgroupField{"subgroup_min_size", &out->subgroup_min_size},
++        SubgroupField{"subgroup_max_size", &out->subgroup_max_size}}) {
++    std::optional<int> size = webgpu->FindInt(f.key);
++    if (!size || *size < 0 || *size > 1024 || (*size & (*size - 1)) != 0) {
++      return Err(std::string("gpu.webgpu.") + f.key,
++                 "must be 0 or a power of two up to 1024");
++    }
++    *f.out = static_cast<uint32_t>(*size);
++  }
++  if (out->subgroup_min_size > out->subgroup_max_size) {
++    return Err("gpu.webgpu.subgroup_min_size",
++               "must not exceed gpu.webgpu.subgroup_max_size");
++  }
++  // isFallbackAdapter is true only for a CPU adapter, which no GPU profile
++  // claims.
++  if (webgpu->FindBool("is_fallback_adapter") != std::optional<bool>(false)) {
++    return Err("gpu.webgpu.is_fallback_adapter", "is required and must be false");
++  }
++
++  const base::ListValue* features = webgpu->FindList("features");
++  if (!features) {
++    return Err("gpu.webgpu.features",
++               "is required and must be a list of feature names");
++  }
++  std::vector<std::string> feature_names;
++  for (const base::Value& entry : *features) {
++    if (!entry.is_string() || entry.GetString().empty()) {
++      return Err("gpu.webgpu.features", "entries must be feature names");
++    }
++    feature_names.push_back(entry.GetString());
++  }
++  out->features = base::flat_set<std::string>(std::move(feature_names));
++
++  const base::DictValue* limits = webgpu->FindDict("limits");
++  if (!limits) {
++    return Err("gpu.webgpu.limits", "is required and must be an object");
++  }
++  for (const auto entry : *limits) {
++    if (!OneOf(entry.first, kWebGPULimits)) {
++      return Err("gpu.webgpu.limits." + entry.first,
++                 "is not a limit this build reports");
++    }
++  }
++  std::vector<std::pair<std::string, uint64_t>> limit_values;
++  for (const char* name : kWebGPULimits) {
++    std::optional<double> value = limits->FindDouble(name);
++    if (!value || *value < 0 || !IsExactInteger(*value)) {
++      return Err(std::string("gpu.webgpu.limits.") + name,
++                 "is required and must be a non-negative integer");
++    }
++    limit_values.emplace_back(name, static_cast<uint64_t>(*value));
++  }
++  out->limits =
++      base::flat_map<std::string, uint64_t>(std::move(limit_values));
++  return std::string();
++}
++
++// performance.memory.jsHeapSizeLimit for `physical_memory_mb` of RAM on
++// 64-bit desktop: V8's Heap::MaxReserved() after
++// ResourceConstraints::ConfigureDefaults() and Heap::ConfigureHeap(). The old
++// generation is half the RAM within [256 MB, 4 GB]; a semi-space is 1/128 of
++// the RAM within [2 MB, 32 MB], rounded up to a power of two; the limit adds
++// two semi-spaces and a new large-object space of one semi-space. V8 is
++// handed the profile's RAM, so it arrives at the same value.
++int64_t V8HeapSizeLimit(int physical_memory_mb) {
++  constexpr int64_t kMB = 1024 * 1024;
++  const int64_t physical = int64_t{physical_memory_mb} * kMB;
++  int64_t old_generation = physical / 2;
++  if (old_generation < 256 * kMB) {
++    old_generation = 256 * kMB;
++  }
++  if (old_generation > 4096 * kMB) {
++    old_generation = 4096 * kMB;
++  }
++  const int64_t semi_space_target = physical / 4 / 32;
++  int64_t semi_space = 2 * kMB;
++  while (semi_space < semi_space_target && semi_space < 32 * kMB) {
++    semi_space *= 2;
++  }
++  return old_generation + 3 * semi_space;
++}
++
++// SpeechSynthesisImpl::SendVoiceListToObserver reports voiceURI as the voice
++// name and marks only the first voice default, so a profile saying otherwise
++// cannot be reported.
++std::string ParseSpeechVoices(const base::DictValue& dict,
++                              std::vector<Profile::SpeechVoice>* out) {
++  const base::DictValue* speech = dict.FindDict("speech");
++  if (!speech) {
++    return Err("speech", "is required and must be an object");
++  }
++  const base::ListValue* voices = speech->FindList("voices");
++  if (!voices) {
++    return Err("speech.voices", "is required and must be a list");
++  }
++  std::set<std::string> names;
++  for (size_t i = 0; i < voices->size(); ++i) {
++    const std::string field = base::StringPrintf("speech.voices[%zu]", i);
++    const base::DictValue* voice = (*voices)[i].GetIfDict();
++    if (!voice) {
++      return Err(field, "must be an object");
++    }
++    const std::string* name = voice->FindString("name");
++    if (!name || name->empty()) {
++      return Err(field + ".name", "is required and must be a non-empty string");
++    }
++    if (!names.insert(*name).second) {
++      return Err(field + ".name", "repeats an earlier voice's name");
++    }
++    const std::string* lang = voice->FindString("lang");
++    if (!lang || lang->empty()) {
++      return Err(field + ".lang", "is required and must be a non-empty string");
++    }
++    const std::string* voice_uri = voice->FindString("voice_uri");
++    if (!voice_uri || *voice_uri != *name) {
++      return Err(field + ".voice_uri",
++                 "must equal the voice's name: Chromium reports the name as "
++                 "voiceURI");
++    }
++    std::optional<bool> local_service = voice->FindBool("local_service");
++    if (!local_service) {
++      return Err(field + ".local_service", "is required and must be a boolean");
++    }
++    if (voice->FindBool("default") != std::optional<bool>(i == 0)) {
++      return Err(field + ".default",
++                 i == 0 ? "must be true: Chromium marks the first voice default"
++                        : "must be false: Chromium marks only the first voice "
++                          "default");
++    }
++    out->push_back(Profile::SpeechVoice{*name, *lang, *local_service});
++  }
++  return std::string();
++}
++
++// Beyond the schema's enums, only what Chrome can report on the claimed OS is
++// accepted:
++// - pointer and hover follow the input devices on both OSes
++//   (pointer_device_linux.cc, pointer_device_win.cc): a mouse or touchpad
++//   gives any-pointer fine and any-hover hover, a touchscreen any-pointer
++//   coarse and maxTouchPoints > 0; the primary pointer is fine over coarse
++//   over none, and the primary hover is hover only with a mouse;
++// - an HDR screen always reports color-gamut p3 (GetColorSpaceGamut);
++// - prefers-contrast is never less, and is more whenever forced colors are
++//   active. On Windows it is set only with forced colors
++//   (NativeTheme::CalculatePreferredContrast).
++std::string ParseMediaFeatures(const base::DictValue& display,
++                               const base::DictValue& hardware,
++                               const std::string& os_family,
++                               Profile::MediaFeatures* out) {
++  static constexpr const char* kPrimaryPointers[] = {"fine", "coarse", "none"};
++  static constexpr const char* kHovers[] = {"hover", "none"};
++  static constexpr const char* kColorGamuts[] = {"srgb", "p3", "rec2020"};
++  static constexpr const char* kDynamicRanges[] = {"standard", "high"};
++  static constexpr const char* kColorSchemes[] = {"light", "dark"};
++  static constexpr const char* kReducedMotions[] = {"no-preference", "reduce"};
++  static constexpr const char* kContrasts[] = {"no-preference", "more",
++                                               "less"};
++  static constexpr const char* kForcedColors[] = {"none", "active"};
++
++  const base::DictValue* pointer = display.FindDict("pointer");
++  if (!pointer) {
++    return Err("display.pointer", "is required and must be an object");
++  }
++  // The first field that is not one of `allowed` names the error.
++  std::string error;
++  auto one_of = [&error](const base::DictValue& dict, const char* key,
++                         const char* field, const auto& allowed) {
++    const std::string* value = dict.FindString(key);
++    if (value && OneOf(*value, allowed)) {
++      return *value;
++    }
++    if (error.empty()) {
++      error = Err(field, "must be one of " + Listed(allowed));
++    }
++    return std::string();
++  };
++  const std::string primary = one_of(
++      *pointer, "primary", "display.pointer.primary", kPrimaryPointers);
++  const std::string hover =
++      one_of(*pointer, "hover", "display.pointer.hover", kHovers);
++  const std::string color_gamut =
++      one_of(display, "color_gamut", "display.color_gamut", kColorGamuts);
++  const std::string dynamic_range =
++      one_of(display, "dynamic_range", "display.dynamic_range", kDynamicRanges);
++  const std::string color_scheme =
++      one_of(display, "prefers_color_scheme", "display.prefers_color_scheme",
++             kColorSchemes);
++  const std::string reduced_motion =
++      one_of(display, "prefers_reduced_motion",
++             "display.prefers_reduced_motion", kReducedMotions);
++  const std::string contrast = one_of(display, "prefers_contrast",
++                                      "display.prefers_contrast", kContrasts);
++  const std::string forced_colors =
++      one_of(display, "forced_colors", "display.forced_colors", kForcedColors);
++  if (!error.empty()) {
++    return error;
++  }
++
++  const base::ListValue* any_pointer = pointer->FindList("any_pointer");
++  if (!any_pointer) {
++    return Err("display.pointer.any_pointer", "is required and must be a list");
++  }
++  bool fine = false;
++  bool coarse = false;
++  for (const base::Value& entry : *any_pointer) {
++    bool* seen = nullptr;
++    if (entry.is_string() && entry.GetString() == "fine") {
++      seen = &fine;
++    } else if (entry.is_string() && entry.GetString() == "coarse") {
++      seen = &coarse;
++    }
++    if (!seen || *seen) {
++      return Err("display.pointer.any_pointer",
++                 "may only list fine and coarse, each once");
++    }
++    *seen = true;
++  }
++  const base::ListValue* any_hover = pointer->FindList("any_hover");
++  if (!any_hover || any_hover->size() > 1 ||
++      (any_hover->size() == 1 && (!any_hover->front().is_string() ||
++                                  any_hover->front().GetString() != "hover"))) {
++    return Err("display.pointer.any_hover",
++               "must be a list that is empty or holds hover once");
++  }
++  const bool hovers = any_hover->size() == 1;
++  std::optional<int> max_touch_points = hardware.FindInt("max_touch_points");
++  if (!max_touch_points || *max_touch_points < 0 || *max_touch_points > 20) {
++    return Err("hardware.max_touch_points", "must be an integer in [0, 20]");
++  }
++
++  if (dynamic_range == "high" && color_gamut != "p3") {
++    return Err("display.color_gamut",
++               "must be p3 when display.dynamic_range is high: Chrome reports "
++               "every HDR screen as p3");
++  }
++  const bool windows = os_family == "windows";
++  const std::string os_name = windows ? "Windows" : "Linux";
++  if (fine != hovers) {
++    return Err("display.pointer.any_hover",
++               "must hold hover exactly when any_pointer lists fine: on " +
++                   os_name + " a mouse or touchpad gives both");
++  }
++  if (coarse != (*max_touch_points > 0)) {
++    return Err("hardware.max_touch_points",
++               "must be above 0 exactly when display.pointer.any_pointer "
++               "lists coarse: on " +
++                   os_name + " both come from a touchscreen");
++  }
++  const char* derived_primary = fine ? "fine" : coarse ? "coarse" : "none";
++  if (primary != derived_primary) {
++    return Err("display.pointer.primary",
++               std::string("must be ") + derived_primary +
++                   " for this any_pointer: on " + os_name +
++                   " a mouse is primary over a touchscreen");
++  }
++  if ((hover == "hover") != hovers) {
++    return Err("display.pointer.hover",
++               "must be hover exactly when any_hover holds hover");
++  }
++  if (contrast == "less") {
++    return Err("display.prefers_contrast",
++               "cannot be less on " + os_name +
++                   ": only more or no-preference are claimed");
++  }
++  if (forced_colors == "active" && contrast != "more") {
++    return Err("display.prefers_contrast",
++               "must be more when display.forced_colors is active: page "
++               "colors set both");
++  }
++  if (windows && contrast == "more" && forced_colors != "active") {
++    return Err("display.prefers_contrast",
++               "can only be more on Windows when display.forced_colors is "
++               "active: Windows sets prefers-contrast only with forced "
++               "colors");
++  }
++
++  out->primary_pointer = primary;
++  out->primary_hover = hover == "hover";
++  out->any_pointer_fine = fine;
++  out->any_pointer_coarse = coarse;
++  out->any_hover = hovers;
++  out->max_touch_points = *max_touch_points;
++  out->color_gamut = color_gamut;
++  out->high_dynamic_range = dynamic_range == "high";
++  out->prefers_dark = color_scheme == "dark";
++  out->prefers_reduced_motion = reduced_motion == "reduce";
++  out->prefers_contrast = contrast;
++  out->forced_colors = forced_colors == "active";
++  return std::string();
++}
++
++// A value no stock Chrome on the claimed OS reports stops the browser; a
++// value this host cannot back runs, and LoadAndExportFromCommandLine logs it.
++// HEVC is decoded only in hardware (IsDecoderHevcProfileSupported reads the
++// GPU's decoder configs), so media.hevc must equal gpu.hardware_decode.hevc.
++std::string ParseCapabilities(const base::DictValue& dict,
++                              const std::string& os_family,
++                              Profile::HardwareDecode* hardware_decode,
++                              bool* bluetooth_available,
++                              Profile::Capabilities* out) {
++  std::string error;
++  const base::DictValue* decode =
++      dict.FindDict("gpu")->FindDict("hardware_decode");
++  if (!decode) {
++    return Err("gpu.hardware_decode", "is required and must be an object");
++  }
++  struct DecodeField {
++    const char* key;
++    const char* field;
++    bool* out;
++  };
++  for (const DecodeField& f :
++       {DecodeField{"h264", "gpu.hardware_decode.h264", &hardware_decode->h264},
++        DecodeField{"hevc", "gpu.hardware_decode.hevc", &hardware_decode->hevc},
++        DecodeField{"vp9", "gpu.hardware_decode.vp9", &hardware_decode->vp9},
++        DecodeField{"av1", "gpu.hardware_decode.av1", &hardware_decode->av1}}) {
++    std::optional<bool> value = RequireBool(*decode, f.key, f.field, &error);
++    if (!value) {
++      return error;
++    }
++    *f.out = *value;
++  }
++
++  const base::DictValue* media = dict.FindDict("media");
++  std::optional<bool> hevc = RequireBool(*media, "hevc", "media.hevc", &error);
++  if (!hevc) {
++    return error;
++  }
++  std::optional<bool> dolby_audio =
++      RequireBool(*media, "dolby_audio", "media.dolby_audio", &error);
++  if (!dolby_audio) {
++    return error;
++  }
++  const base::Value* playready = media->Find("playready");
++  if (playready && !playready->is_bool()) {
++    return Err("media.playready", "must be a boolean when present");
++  }
++  const base::DictValue* webauthn = dict.FindDict("webauthn");
++  std::optional<bool> uvpaa = RequireBool(
++      *webauthn, "user_verifying_platform_authenticator",
++      "webauthn.user_verifying_platform_authenticator", &error);
++  if (!uvpaa) {
++    return error;
++  }
++  std::optional<bool> conditional_mediation =
++      RequireBool(*webauthn, "conditional_mediation",
++                  "webauthn.conditional_mediation", &error);
++  if (!conditional_mediation) {
++    return error;
++  }
++  const base::DictValue* capabilities = dict.FindDict("capabilities");
++  std::optional<bool> bluetooth = RequireBool(
++      *capabilities, "bluetooth", "capabilities.bluetooth", &error);
++  if (!bluetooth) {
++    return error;
++  }
++  const base::Value* available = capabilities->Find("bluetooth_available");
++  if (available && !available->is_bool()) {
++    return Err("capabilities.bluetooth_available",
++               "must be a boolean when present");
++  }
++  std::optional<bool> web_share = RequireBool(
++      *capabilities, "web_share", "capabilities.web_share", &error);
++  if (!web_share) {
++    return error;
++  }
++  // Absent means the device has no Bluetooth adapter.
++  *bluetooth_available = available && available->GetBool();
++
++  const bool windows = os_family == "windows";
++  struct Claim {
++    const char* field;
++    bool claimed;
++    bool stock;
++    const char* why;
++  };
++  const Claim claims[] = {
++      {"webauthn.conditional_mediation", *conditional_mediation, true,
++       "desktop Chrome always offers conditional mediation"},
++      {"media.dolby_audio", *dolby_audio, false,
++       "desktop Chrome 155 has no AC-3 or E-AC-3 support "
++       "(enable_platform_ac3_eac3_audio is on only for Cast and tvOS)"},
++      {"capabilities.bluetooth", *bluetooth, windows,
++       windows ? "Web Bluetooth is always enabled on Windows"
++               : "Web Bluetooth is not enabled on Linux"},
++      {"capabilities.web_share", *web_share, windows,
++       windows ? "Web Share is always enabled on Windows"
++               : "Web Share is not enabled on Linux"},
++  };
++  for (const Claim& claim : claims) {
++    if (claim.claimed != claim.stock) {
++      return Err(claim.field,
++                 base::StringPrintf(
++                     "is %s but stock Chrome reports %s on %s: %s",
++                     claim.claimed ? "true" : "false",
++                     claim.stock ? "true" : "false",
++                     windows ? "Windows" : "Linux", claim.why));
++    }
++  }
++  if (!windows && playready && playready->GetBool()) {
++    return Err("media.playready",
++               "is true but stock Chrome reports false on Linux: Linux has no "
++               "PlayReady key system");
++  }
++  if (*hevc != hardware_decode->hevc) {
++    return Err("media.hevc",
++               base::StringPrintf(
++                   "is %s but gpu.hardware_decode.hevc is %s: Chrome decodes "
++                   "HEVC only in hardware, so it plays HEVC exactly when it "
++                   "decodes HEVC in hardware",
++                   *hevc ? "true" : "false",
++                   hardware_decode->hevc ? "true" : "false"));
++  }
++  out->user_verifying_platform_authenticator = *uvpaa;
++  out->web_bluetooth = *bluetooth;
++  out->web_share = *web_share;
++  return std::string();
++}
++
++// A count per kind and exactly that many labels: after permission a page
++// sees every label. The virtual default and communications devices are not
++// listed; the browser adds them as the claimed OS's audio manager does.
++std::string ParseMediaDevices(const base::DictValue& devices,
++                              const std::string& os_family,
++                              Profile::MediaDevices* out) {
++  struct Kind {
++    const char* key;
++    int maximum;
++    bool audio;
++    std::vector<std::string>* labels;
++  };
++  const Kind kinds[] = {
++      {"audioinput", 8, true, &out->audio_inputs},
++      {"audiooutput", 8, true, &out->audio_outputs},
++      {"videoinput", 4, false, &out->video_inputs},
++  };
++  const base::DictValue* labels = devices.FindDict("labels");
++  for (const Kind& kind : kinds) {
++    const std::string field = std::string("media_devices.") + kind.key;
++    const std::string labels_field =
++        std::string("media_devices.labels.") + kind.key;
++    std::optional<int> count = devices.FindInt(kind.key);
++    if (!count || *count < 0 || *count > kind.maximum) {
++      return Err(field, base::StringPrintf("must be an integer in [0, %d]",
++                                           kind.maximum));
++    }
++    const base::ListValue* list = labels ? labels->FindList(kind.key) : nullptr;
++    if ((list ? list->size() : 0u) != static_cast<size_t>(*count)) {
++      return Err(labels_field,
++                 base::StringPrintf("must hold one label per device, %d, as "
++                                    "enumerateDevices() reports them after "
++                                    "permission",
++                                    *count));
++    }
++    if (!list) {
++      continue;
++    }
++    for (const base::Value& entry : *list) {
++      if (!entry.is_string() || entry.GetString().empty()) {
++        return Err(labels_field, "entries must be non-empty strings");
++      }
++      const std::string& label = entry.GetString();
++      if (kind.audio &&
++          (label == "Default" ||
++           (os_family == "windows" &&
++            (label == "Communications" ||
++             base::StartsWith(label, "Default - ") ||
++             base::StartsWith(label, "Communications - "))))) {
++        return Err(labels_field,
++                   "lists a virtual default or communications device, which "
++                   "the browser adds itself; list only the real devices");
++      }
++      kind.labels->push_back(entry.GetString());
++    }
++  }
++  return std::string();
++}
++
++// Required: without it the host's network quality estimate would reach
++// navigator.connection and the ECT, RTT and Downlink Client Hints.
++std::string ParseConnection(const base::DictValue& network,
++                            Profile::Connection* out) {
++  using EffectiveType = Profile::Connection::EffectiveType;
++  // kHttpRttEffectiveConnectionTypeThresholds of net::NetworkQualityEstimator.
++  struct Threshold {
++    const char* name;
++    EffectiveType type;
++    int min_rtt_ms;
++  };
++  static constexpr Threshold kThresholds[] = {
++      {"slow-2g", EffectiveType::kSlow2G, 2010},
++      {"2g", EffectiveType::k2G, 1420},
++      {"3g", EffectiveType::k3G, 272},
++      {"4g", EffectiveType::k4G, 0},
++  };
++  const base::DictValue* connection = network.FindDict("connection");
++  if (!connection) {
++    return Err("network.connection",
++               "is required: it replaces the host's network quality estimate");
++  }
++  std::string error;
++  std::optional<int> rtt =
++      RequireInt(*connection, "rtt", "network.connection.rtt", 0, &error);
++  if (!rtt) {
++    return error;
++  }
++  // Stock Chrome reports on a 50 kbps grid. Whole steps also keep the
++  // Downlink header (integer kbps) and the renderer's value (Mbps) on the same
++  // side of every rounding boundary.
++  std::optional<double> downlink = connection->FindDouble("downlink");
++  const double steps = downlink ? std::round(*downlink * 1000.0 / 50.0) : 0.0;
++  if (!downlink || !(*downlink > 0.0) || *downlink > 2000000.0 ||
++      std::abs(*downlink * 1000.0 - steps * 50.0) > 1e-6) {
++    return Err("network.connection.downlink",
++               "must be a number of Mbps in (0, 2000000], in steps of 0.05");
++  }
++  const std::string* effective_type = RequireString(
++      *connection, "effective_type", "network.connection.effective_type",
++      &error);
++  if (!effective_type) {
++    return error;
++  }
++  // The last threshold is 0 ms, so one always matches.
++  const Threshold* derived = nullptr;
++  for (const Threshold& threshold : kThresholds) {
++    if (*rtt >= threshold.min_rtt_ms) {
++      derived = &threshold;
++      break;
++    }
++  }
++  if (*effective_type != derived->name) {
++    return Err("network.connection.effective_type",
++               base::StringPrintf("is \"%s\", but the estimator reports \"%s\" "
++                                  "for an HTTP RTT of %d ms",
++                                  effective_type->c_str(), derived->name,
++                                  *rtt));
++  }
++  out->effective_type = derived->type;
++  out->rtt_ms = *rtt;
++  out->downlink_kbps = static_cast<int>(steps) * 50;
++  return std::string();
++}
++
++// The schema has no charging or discharging times: both OSes report Infinity
++// when the OS gives no estimate.
++std::string ParseBattery(const base::DictValue& capabilities,
++                         Profile::Capabilities* out) {
++  const base::DictValue* battery = capabilities.FindDict("battery");
++  if (!battery) {
++    return Err("capabilities.battery",
++               "is required: navigator.getBattery() reports it");
++  }
++  std::string error;
++  std::optional<bool> charging = RequireBool(
++      *battery, "charging", "capabilities.battery.charging", &error);
++  if (!charging) {
++    return error;
++  }
++  std::optional<double> level = battery->FindDouble("level");
++  const double percent = level ? std::round(*level * 100.0) : -1.0;
++  if (!level || percent < 0.0 || percent > 100.0 ||
++      std::abs(*level * 100.0 - percent) > 1e-6) {
++    return Err("capabilities.battery.level",
++               "must be a number in [0, 1] in steps of 0.01");
++  }
++  out->battery_charging = *charging;
++  out->battery_level = percent / 100.0;
++  return std::string();
++}
++
++// Every CSS system color keyword Chrome resolves. Blink reads some of them
++// from one color provider entry (LayoutTheme::SystemColorFromColorProvider);
++// `same_as` names the keyword each such alias must equal.
++struct SystemColorName {
++  const char* name;
++  const char* same_as;
++};
++constexpr SystemColorName kSystemColorNames[] = {
++    {"AccentColor", nullptr},          {"AccentColorText", nullptr},
++    {"ActiveBorder", "ButtonText"},    {"ActiveCaption", "Canvas"},
++    {"ActiveText", nullptr},           {"AppWorkspace", "Canvas"},
++    {"Background", "Canvas"},          {"ButtonBorder", "ButtonText"},
++    {"ButtonFace", nullptr},           {"ButtonHighlight", "ButtonFace"},
++    {"ButtonShadow", "ButtonFace"},    {"ButtonText", nullptr},
++    {"Canvas", nullptr},               {"CanvasText", nullptr},
++    {"CaptionText", "CanvasText"},     {"Field", nullptr},
++    {"FieldText", nullptr},            {"GrayText", nullptr},
++    {"Highlight", nullptr},            {"HighlightText", nullptr},
++    {"InactiveBorder", "ButtonText"},  {"InactiveCaption", "Canvas"},
++    {"InactiveCaptionText", nullptr},  {"InfoBackground", "Canvas"},
++    {"InfoText", "CanvasText"},        {"LinkText", nullptr},
++    {"Mark", nullptr},                 {"MarkText", nullptr},
++    {"Menu", "Canvas"},                {"MenuText", "CanvasText"},
++    {"Scrollbar", "Canvas"},           {"SelectedItem", nullptr},
++    {"SelectedItemText", nullptr},     {"ThreeDDarkShadow", "ButtonText"},
++    {"ThreeDFace", "ButtonFace"},      {"ThreeDHighlight", "ButtonText"},
++    {"ThreeDLightShadow", "ButtonText"}, {"ThreeDShadow", "ButtonText"},
++    {"VisitedText", nullptr},          {"Window", "Canvas"},
++    {"WindowFrame", "ButtonText"},     {"WindowText", "CanvasText"},
++};
++
++// How getComputedStyle writes an 8-bit alpha below 255: two decimals when
++// they map back to the same byte, else three, without trailing zeros
++// (blink::Color::SerializeLegacyColorAsCSSColor, in float as there).
++std::string CanonicalAlpha(int alpha8) {
++  float value =
++      static_cast<float>(std::round(alpha8 * 100.0 / 255.0) / 100.0);
++  if (std::round(value * 255) != alpha8) {
++    value = static_cast<float>(std::round(alpha8 * 1000.0 / 255.0) / 1000.0);
++  }
++  std::string text = base::StringPrintf("%.3f", value);
++  text.erase(text.find_last_not_of('0') + 1);
++  if (text.back() == '.') {
++    text.pop_back();
++  }
++  return text;
++}
++
++// A color exactly as getComputedStyle serializes an sRGB system color:
++// "rgb(R, G, B)" when opaque, else "rgba(R, G, B, A)".
++std::optional<Profile::SystemColor> ParseSystemColor(const std::string& text) {
++  const bool translucent = text.starts_with("rgba(");
++  if ((!translucent && !text.starts_with("rgb(")) || !text.ends_with(")")) {
++    return std::nullopt;
++  }
++  const size_t open = text.find('(') + 1;
++  std::vector<std::string> parts =
++      base::SplitStringUsingSubstr(text.substr(open, text.size() - open - 1),
++                                   ", ", base::KEEP_WHITESPACE,
++                                   base::SPLIT_WANT_ALL);
++  if (parts.size() != (translucent ? 4u : 3u)) {
++    return std::nullopt;
++  }
++  int channels[3] = {0, 0, 0};
++  for (size_t i = 0; i < 3; ++i) {
++    const std::string& part = parts[i];
++    if (part.empty() || part.size() > 3 ||
++        part.find_first_not_of("0123456789") != std::string::npos ||
++        (part.size() > 1 && part[0] == '0') ||
++        !base::StringToInt(part, &channels[i]) || channels[i] > 255) {
++      return std::nullopt;
++    }
++  }
++  Profile::SystemColor color;
++  color.red = static_cast<uint8_t>(channels[0]);
++  color.green = static_cast<uint8_t>(channels[1]);
++  color.blue = static_cast<uint8_t>(channels[2]);
++  if (translucent) {
++    double alpha = 0;
++    if (!base::StringToDouble(parts[3], &alpha) || !(alpha >= 0 && alpha < 1)) {
++      return std::nullopt;
++    }
++    const int alpha8 = static_cast<int>(std::lround(alpha * 255));
++    if (alpha8 > 254 || parts[3] != CanonicalAlpha(alpha8)) {
++      return std::nullopt;
++    }
++    color.alpha = static_cast<uint8_t>(alpha8);
++  }
++  return color;
++}
++
++// The set is for display.prefers_color_scheme. There is no OS default table
++// to fall back on, so it is required and complete.
++std::string ParseSystemColors(
++    const base::DictValue& dict,
++    base::flat_map<std::string, Profile::SystemColor>* out,
++    bool* dark) {
++  const std::string* scheme =
++      dict.FindDict("display")->FindString("prefers_color_scheme");
++  if (!scheme || (*scheme != "light" && *scheme != "dark")) {
++    return Err("display.prefers_color_scheme", "must be \"light\" or \"dark\"");
++  }
++  *dark = *scheme == "dark";
++  const base::DictValue* colors = dict.FindDict("system_colors");
++  if (!colors) {
++    return Err("system_colors", "is required and must be an object");
++  }
++  for (const auto [key, value] : *colors) {
++    bool known = false;
++    for (const SystemColorName& entry : kSystemColorNames) {
++      known = known || key == entry.name;
++    }
++    if (!known) {
++      return Err("system_colors." + key,
++                 "is not a CSS system color keyword Chrome resolves");
++    }
++  }
++  std::vector<std::pair<std::string, Profile::SystemColor>> values;
++  for (const SystemColorName& entry : kSystemColorNames) {
++    const std::string field = std::string("system_colors.") + entry.name;
++    const std::string* text = colors->FindString(entry.name);
++    if (!text) {
++      return Err(field, "is required and must be a string");
++    }
++    std::optional<Profile::SystemColor> color = ParseSystemColor(*text);
++    if (!color) {
++      return Err(field,
++                 "must be \"rgb(R, G, B)\", or \"rgba(R, G, B, A)\" when "
++                 "translucent, exactly as getComputedStyle writes it");
++    }
++    const std::string* same = entry.same_as
++                                  ? colors->FindString(entry.same_as)
++                                  : nullptr;
++    if (same && *same != *text) {
++      return Err(field, std::string("must equal system_colors.") +
++                            entry.same_as +
++                            ": Chrome resolves both from one color");
++    }
++    values.emplace_back(base::ToLowerASCII(entry.name), *color);
++  }
++  *out = base::flat_map<std::string, Profile::SystemColor>(std::move(values));
++  return std::string();
++}
++
++// Which families this host has is checked in font_allowlist_linux.cc.
++std::string ParseFonts(const base::DictValue& fonts,
++                       const std::string& os_family,
++                       Profile::Fonts* out) {
++  const base::ListValue* families = fonts.FindList("families");
++  if (!families || families->size() < 10) {
++    return Err("fonts.families", "must be a list of at least 10 families");
++  }
++  std::set<std::string> listed;
++  for (const base::Value& family : *families) {
++    if (!family.is_string() || family.GetString().empty()) {
++      return Err("fonts.families", "entries must be non-empty family names");
++    }
++    if (!listed.insert(base::ToLowerASCII(family.GetString())).second) {
++      return Err("fonts.families", "lists " + family.GetString() + " twice");
++    }
++    out->families.push_back(family.GetString());
++  }
++
++  // Linux Chrome reports the CSS system font keywords (caption, menu, ...)
++  // as Arial at the default font size (LayoutThemeFontProvider).
++  const base::DictValue* ui_font = fonts.FindDict("ui_font");
++  const std::string* ui_family =
++      ui_font ? ui_font->FindString("family") : nullptr;
++  std::optional<double> ui_size =
++      ui_font ? ui_font->FindDouble("size_px") : std::nullopt;
++  if (!ui_family || ui_family->empty() || !ui_size || !(*ui_size > 0)) {
++    return Err("fonts.ui_font",
++               "must have a non-empty family and a positive size_px");
++  }
++  if (os_family == "linux" && (*ui_family != "Arial" || *ui_size != 16.0)) {
++    return Err("fonts.ui_font",
++               "must be Arial at 16 px for os.family linux: Linux Chrome "
++               "reports the system font keywords as Arial at the default "
++               "font size");
++  }
++
++  struct NamedFamily {
++    const char* key;
++    const char* field;
++    std::string* out;
++  };
++  for (const NamedFamily& f :
++       {NamedFamily{"default_sans", "fonts.default_sans", &out->default_sans},
++        NamedFamily{"default_serif", "fonts.default_serif",
++                    &out->default_serif},
++        NamedFamily{"default_monospace", "fonts.default_monospace",
++                    &out->default_monospace},
++        NamedFamily{"emoji", "fonts.emoji", &out->emoji}}) {
++    const base::Value* value = fonts.Find(f.key);
++    if (!value) {
++      continue;
++    }
++    if (!value->is_string() || value->GetString().empty()) {
++      return Err(f.field, "must be a non-empty family name");
++    }
++    if (!listed.contains(base::ToLowerASCII(value->GetString()))) {
++      return Err(f.field, "is " + value->GetString() +
++                              ", which is not in fonts.families");
++    }
++    *f.out = value->GetString();
++  }
++  return std::string();
++}
++
++// One warning per claim the host cannot back. The claim is still reported;
++// what fails is the use behind it.
++void AppendUnbackedCapabilityWarnings(const Profile& profile,
++                                      std::vector<std::string>* warnings) {
++  const Profile::HardwareDecode& decode = profile.hardware_decode();
++  std::vector<std::string> codecs;
++  for (const auto& [name, claimed] :
++       {std::pair<const char*, bool>{"h264", decode.h264},
++        std::pair<const char*, bool>{"hevc", decode.hevc},
++        std::pair<const char*, bool>{"vp9", decode.vp9},
++        std::pair<const char*, bool>{"av1", decode.av1}}) {
++    if (claimed) {
++      codecs.push_back(name);
++    }
++  }
++  if (!codecs.empty()) {
++    warnings->push_back(
++        "gpu.hardware_decode: claims " + base::JoinString(codecs, ", ") +
++        "; decodingInfo() reports them decoded in hardware, but video "
++        "decodes with this host's VA-API driver where it has one, else in "
++        "software");
++  }
++  if (decode.hevc) {
++    warnings->push_back(
++        "media.hevc: is true; canPlayType(), isTypeSupported() and "
++        "decodingInfo() report HEVC, but this build decodes HEVC only "
++        "through the host's VA-API driver, so HEVC playback fails without "
++        "one");
++  }
++  const base::DictValue& media = *profile.dict().FindDict("media");
++  if (media.FindBool("playready").value_or(false)) {
++    warnings->push_back(
++        "media.playready: is true but this build has no PlayReady key "
++        "system; requestMediaKeySystemAccess() reports it unsupported");
++  }
++  const Profile::Capabilities& capabilities = profile.capabilities();
++  if (capabilities.user_verifying_platform_authenticator) {
++    warnings->push_back(
++        "webauthn.user_verifying_platform_authenticator: is true but this "
++        "host has no platform authenticator and this build no passkey "
++        "store; it is reported available and a passkey ceremony finds no "
++        "passkey");
++  }
++  if (profile.bluetooth_available()) {
++    warnings->push_back(
++        "capabilities.bluetooth_available: is true; hybridTransport and "
++        "navigator.bluetooth.getAvailability() report an adapter, but a "
++        "phone passkey or requestDevice() needs this host's BlueZ adapter");
++  }
++  if (capabilities.web_share) {
++    warnings->push_back(
++        "capabilities.web_share: is true but this host has no share target; "
++        "navigator.share() ends with AbortError as if the share sheet were "
++        "dismissed");
++  }
++  size_t local = 0;
++  std::string first_local;
++  for (const Profile::SpeechVoice& voice : profile.speech_voices()) {
++    if (voice.local_service) {
++      if (local++ == 0) {
++        first_local = voice.name;
++      }
++    }
++  }
++  if (local) {
++    warnings->push_back(base::StringPrintf(
++        "speech.voices: %zu voices have local_service true (%s first); they "
++        "are listed as local, but this build has no engine for them, so "
++        "speak() with one gets no event until cancel()",
++        local, first_local.c_str()));
++  }
++}
++
++// Optional. A claimed position is not (0, 0), the point an unset position
++// reads as, and its zone is not an Etc/ zone. The first-fix delay is drawn
++// from the seed in 200 to 300 ms, the latency of stock Chrome's network
++// provider.
++std::string ParseGeolocation(const base::DictValue& locale,
++                             const std::string& timezone,
++                             const NoiseKey& seed_key,
++                             std::optional<Profile::Geolocation>* out) {
++  const base::Value* value = locale.Find("geolocation");
++  if (!value) {
++    return std::string();
++  }
++  const base::DictValue* geolocation = value->GetIfDict();
++  if (!geolocation) {
++    return Err("locale.geolocation", "must be an object");
++  }
++  for (const auto [key, unused] : *geolocation) {
++    if (key != "latitude" && key != "longitude" && key != "accuracy") {
++      return Err("locale.geolocation." + key,
++                 "is not a field; only latitude, longitude and accuracy are");
++    }
++  }
++  std::optional<double> latitude = geolocation->FindDouble("latitude");
++  if (!latitude || !std::isfinite(*latitude) || *latitude < -90.0 ||
++      *latitude > 90.0) {
++    return Err("locale.geolocation.latitude",
++               "is required and must be a number in [-90, 90]");
++  }
++  std::optional<double> longitude = geolocation->FindDouble("longitude");
++  if (!longitude || !std::isfinite(*longitude) || *longitude < -180.0 ||
++      *longitude > 180.0) {
++    return Err("locale.geolocation.longitude",
++               "is required and must be a number in [-180, 180]");
++  }
++  if (*latitude == 0.0 && *longitude == 0.0) {
++    return Err("locale.geolocation",
++               "is (0, 0), which is no place a device reports");
++  }
++  std::optional<double> accuracy = geolocation->FindDouble("accuracy");
++  if (!accuracy || !std::isfinite(*accuracy) || *accuracy < 10.0 ||
++      *accuracy > 100000.0) {
++    return Err("locale.geolocation.accuracy",
++               "is required and must be a number of metres in [10, 100000]");
++  }
++  if (base::StartsWith(timezone, "Etc/")) {
++    return Err("locale.timezone",
++               "must be the zone of the claimed position, not " + timezone +
++                   ", when locale.geolocation is present");
++  }
++  Profile::Geolocation parsed;
++  parsed.latitude = *latitude;
++  parsed.longitude = *longitude;
++  parsed.accuracy_m = *accuracy;
++  parsed.fix_delay_ms =
++      200 + static_cast<int>(
++                DeriveNoiseKey(seed_key, "phasmid/geolocation/1").k0 % 101);
++  *out = parsed;
++  return std::string();
++}
++
++// angle::GetVendorString inverted, for the vendors whose PCI id fits the
++// schema's 16 bits. DXGI reports Qualcomm as 0x4D4F4351.
++std::optional<uint32_t> AngleVendorId(std::string_view vendor, bool dxgi) {
++  static constexpr std::pair<std::string_view, uint32_t> kVendors[] = {
++      {"AMD", 0x1002},
++      {"Apple", 0x106b},
++      {"ARM", 0x13b5},
++      {"Broadcom", 0x14e4},
++      {"Google", 0x1ae0},
++      {"Intel", 0x8086},
++      {"Microsoft", 0x1414},
++      {"NVIDIA", 0x10de},
++      {"Imagination Technologies", 0x1010},
++      {"Samsung Electronics Co. Ltd.", 0x144d},
++      {"Vivante", 0x9999},
++      {"VMware", 0x15ad},
++      {"VirtIO", 0x1af4}};
++  if (vendor == "Qualcomm" && !dxgi) {
++    return 0x5143u;
++  }
++  for (const auto& [name, id] : kVendors) {
++    if (vendor == name) {
++      return id;
++    }
++  }
++  return std::nullopt;
++}
++
++// The device id ANGLE's D3D11 and Vulkan renderer descriptions print after
++// the adapter name as "(0x%08X)", and in `name_end` where the name ends.
++std::optional<uint32_t> AngleDeviceId(std::string_view description,
++                                      size_t* name_end) {
++  const size_t pos = description.rfind(" (0x");
++  if (pos == std::string_view::npos || description.size() < pos + 13 ||
++      description[pos + 12] != ')') {
++    return std::nullopt;
++  }
++  const std::string_view hex = description.substr(pos + 4, 8);
++  uint32_t id = 0;
++  if (hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos ||
++      !base::HexStringToUInt(hex, &id)) {
++    return std::nullopt;
++  }
++  *name_end = pos;
++  return id;
++}
++
++// A copy of gl::GLVersionInfo::ParseDriverInfo: the driver vendor and version
++// Chrome reads from a native GL_VERSION string.
++void ParseGLDriverInfo(std::string_view version,
++                       std::string* vendor,
++                       std::string* driver_version) {
++  constexpr std::string_view kESPrefix = "OpenGL ES ";
++  if (version.starts_with(kESPrefix)) {
++    version.remove_prefix(kESPrefix.size());
++  }
++  std::vector<std::string_view> pieces = base::SplitStringPiece(
++      version, " -()@", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++  if (pieces.size() < 2) {
++    return;
++  }
++  static constexpr std::pair<std::string_view, std::string_view> kVendors[] = {
++      {"ANGLE", "ANGLE"},       {"Mesa", "Mesa"},   {"INTEL", "INTEL"},
++      {"NVIDIA", "NVIDIA"},     {"ATI", "ATI"},     {"FireGL", "FireGL"},
++      {"Chromium", "Chromium"}, {"APPLE", "APPLE"}, {"AMD", "AMD"},
++      {"Metal", "Apple"}};
++  for (size_t i = 1; i < pieces.size(); ++i) {
++    for (const auto& [key, name] : kVendors) {
++      if (pieces[i] == key) {
++        *vendor = std::string(name);
++        if (i + 1 < pieces.size()) {
++          *driver_version = std::string(pieces[i + 1]);
++        }
++        return;
++      }
++    }
++  }
++  if (pieces.size() == 2) {
++    std::string_view piece = pieces[1];
++    if (piece.starts_with('V')) {
++      piece.remove_prefix(1);
++    }
++    *driver_version = std::string(piece);
++    return;
++  }
++  constexpr std::string_view kMaliPrefix = "v1.r";
++  if (pieces[1].starts_with(kMaliPrefix)) {
++    std::vector<std::string_view> numbers = base::SplitStringPiece(
++        pieces[1].substr(kMaliPrefix.size()), "p", base::TRIM_WHITESPACE,
++        base::SPLIT_WANT_NONEMPTY);
++    std::vector<std::string_view> parts = base::SplitStringPiece(
++        pieces[2], ".", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++    if (numbers.size() == 2 && parts.size() == 2) {
++      *vendor = "ARM";
++      *driver_version =
++          base::StrCat({numbers[0], ".", numbers[1], ".", parts[0]});
++    }
++    return;
++  }
++  for (size_t i = 1; i < pieces.size(); ++i) {
++    if (pieces[i].find('.') != std::string_view::npos) {
++      *driver_version = std::string(pieces[i]);
++      return;
++    }
++  }
++}
++
++// A copy of gl::GLVersionInfo::ExtractDriverVendorANGLE, which parses
++// "ANGLE (<vendor>, <renderer>, <native version>)".
++void ParseAngleDriverInfo(std::string_view gl_renderer,
++                          std::string* vendor,
++                          std::string* driver_version) {
++  constexpr std::string_view kAnglePrefix = "ANGLE (";
++  if (!gl_renderer.starts_with(kAnglePrefix) ||
++      gl_renderer.size() <= kAnglePrefix.size()) {
++    return;
++  }
++  std::vector<std::string_view> gl_strings = base::SplitStringPiece(
++      gl_renderer.substr(kAnglePrefix.size(),
++                         gl_renderer.size() - kAnglePrefix.size() - 1),
++      ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++  if (gl_strings.size() < 3) {
++    return;
++  }
++  *vendor = std::string(gl_strings[0]);
++  ParseGLDriverInfo(base::TrimString(gl_strings[2], ")", base::TRIM_ALL),
++                    vendor, driver_version);
++}
++
++// Fills the GPU identity fields the profile leaves out from the WebGL claim,
++// where Chrome's and ANGLE's formats determine them, and refuses a given
++// value the format contradicts. ANGLE's WebGL renderer string lacks the
++// driver's full version that GPUInfo::gl_renderer has. A field neither given
++// nor determined is reported empty, or as id 0, never as the host's, and
++// named in `out->missing`.
++std::string DeriveGpuIdentity(const base::DictValue& gpu,
++                              const Profile::WebGL& webgl,
++                              Profile::Gpu* out) {
++  auto given = [&gpu](const char* key) { return gpu.contains(key); };
++  auto missing = [out](const char* field, const std::string& detail) {
++    out->missing.push_back(std::string("gpu.") + field + ": " + detail);
++  };
++  // GL_VENDOR is ANGLE's display vendor string in every context.
++  if (!given("gl_vendor")) {
++    out->gl_vendor = webgl.unmasked_vendor;
++  } else if (out->gl_vendor != webgl.unmasked_vendor) {
++    return Err("gpu.gl_vendor", "must equal gpu.webgl.unmasked_vendor \"" +
++                                    webgl.unmasked_vendor +
++                                    "\": both are ANGLE's GL_VENDOR");
++  }
++
++  const std::string& renderer = webgl.unmasked_renderer;
++  std::vector<std::string> parts;
++  if (renderer.starts_with("ANGLE (") && renderer.ends_with(")")) {
++    parts = base::SplitStringUsingSubstr(
++        std::string_view(renderer).substr(7, renderer.size() - 8), ", ",
++        base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
++  }
++  const bool angle = parts.size() == 3;
++  const std::string& backend = out->angle_backend;
++  const bool d3d11 = backend == "d3d11" && angle && parts[2] == "D3D11";
++
++  // Software GL reports 0xffff:0xffff. D3D11 and Vulkan print the adapter's
++  // ids; on D3D11 they are the DXGI adapter GPUInfo reads, so a given id must
++  // match.
++  std::optional<uint32_t> vendor_id;
++  std::optional<uint32_t> device_id;
++  size_t name_end = std::string::npos;
++  if (backend == "swiftshader") {
++    vendor_id = 0xffffu;
++    device_id = 0xffffu;
++  } else if (angle && (d3d11 || backend == "vulkan")) {
++    vendor_id = AngleVendorId(parts[0], d3d11);
++    device_id = AngleDeviceId(parts[1], &name_end);
++    if (device_id && *device_id > 0xffff) {
++      device_id.reset();
++    }
++  }
++  struct IdField {
++    const char* key;
++    std::optional<uint32_t> determined;
++    uint32_t* out;
++  };
++  for (const IdField& f : {IdField{"vendor_id", vendor_id, &out->vendor_id},
++                           IdField{"device_id", device_id, &out->device_id}}) {
++    if (given(f.key)) {
++      if (d3d11 && f.determined && *f.determined != *f.out) {
++        return Err(std::string("gpu.") + f.key,
++                   base::StringPrintf("is 0x%04x but gpu.webgl.unmasked_renderer "
++                                      "names the D3D11 adapter's 0x%04x",
++                                      *f.out, *f.determined));
++      }
++    } else if (f.determined) {
++      *f.out = *f.determined;
++    } else {
++      missing(f.key, "not in the profile, and gpu.webgl.unmasked_renderer (" +
++                         backend +
++                         ") names no PCI id; reported as 0x0000 (0xffff in "
++                         "a WebGL creation error's status message)");
++    }
++  }
++
++  // GL_RENDERER, then the driver Chrome parses from it.
++  bool renderer_known = true;
++  if (d3d11) {
++    // Renderer11::getVersionString: "D3D11", then "-<driver version>" when
++    // the driver version is known.
++    if (!given("driver_version") && given("gl_renderer")) {
++      std::string ignored;
++      ParseAngleDriverInfo(out->gl_renderer, &ignored, &out->driver_version);
++    }
++    const std::string expected =
++        "ANGLE (" + parts[0] + ", " + parts[1] + ", D3D11" +
++        (out->driver_version.empty() ? "" : "-" + out->driver_version) + ")";
++    if (!given("gl_renderer")) {
++      out->gl_renderer = expected;
++    } else if (out->gl_renderer != expected) {
++      return Err("gpu.gl_renderer",
++                 "must be \"" + expected +
++                     "\": gpu.webgl.unmasked_renderer with gpu.driver_version");
++    }
++  } else if (given("gl_renderer")) {
++    // The WebGL string is the full one cut before the driver part:
++    // SanitizeVersionString keeps "OpenGL ES <x.y>", vk::Renderer::
++    // getVersionString drops "-<driver version>".
++    const std::string_view head =
++        std::string_view(renderer).substr(0, renderer.size() - 1);
++    const std::string& full = out->gl_renderer;
++    if (angle && full != renderer &&
++        !(full.ends_with(")") && full.size() > renderer.size() &&
++          full.starts_with(head) &&
++          (full[head.size()] == ' ' || full[head.size()] == '-'))) {
++      return Err("gpu.gl_renderer",
++                 "must be gpu.webgl.unmasked_renderer with the driver's full "
++                 "version: \"" +
++                     std::string(head) + " <driver>)\"");
++    }
++  } else if (backend == "opengl" && angle &&
++             parts[2].starts_with("OpenGL ES ") &&
++             (out->driver_vendor == "NVIDIA" ||
++              out->driver_vendor == "Nvidia") &&
++             !out->driver_version.empty()) {
++    // NVIDIA's GL_VERSION is "OpenGL ES <x.y> NVIDIA <driver version>"
++    // ("Nvidia" is the same driver named by NV-CONTROL, below).
++    out->gl_renderer = renderer.substr(0, renderer.size() - 1) + " NVIDIA " +
++                       out->driver_version + ")";
++  } else {
++    out->gl_renderer = renderer;
++    renderer_known = false;
++    missing("gl_renderer",
++            "not in the profile, and gpu.webgl.unmasked_renderer (" + backend +
++                ") lacks the driver's full version; reported as the WebGL "
++                "renderer string");
++  }
++
++  std::string parsed_vendor;
++  std::string parsed_version;
++  // The WebGL fallback lacks the driver part, so its parse would name
++  // ANGLE's vendor, not the driver: nothing is determined then.
++  if (renderer_known) {
++    ParseAngleDriverInfo(out->gl_renderer, &parsed_vendor, &parsed_version);
++  }
++  if (backend == "swiftshader") {
++    // Set before GL info is collected, which fills only empty fields.
++    parsed_vendor = "SwANGLE";
++  }
++  // A given driver must be the one Chrome parses from a known GL_RENDERER, or
++  // on Linux the one ANGLE's system info names first: "Nvidia" from
++  // NV-CONTROL, "AMD (Brahma)" or "AMD (Catalyst)" on an AMD GPU.
++  const bool amd_system_info =
++      !d3d11 &&
++      (out->driver_vendor == "AMD (Brahma)" ||
++       out->driver_vendor == "AMD (Catalyst)") &&
++      (out->vendor_id == 0x1002 ||
++       (angle && (parts[0].starts_with("AMD") || parts[0].starts_with("ATI"))));
++  const bool nvctrl = !d3d11 && out->driver_vendor == "Nvidia" &&
++                      parsed_vendor == "NVIDIA";
++  if (given("driver_vendor") && !parsed_vendor.empty() &&
++      out->driver_vendor != parsed_vendor &&
++      !amd_system_info && !nvctrl) {
++    return Err("gpu.driver_vendor",
++               "is \"" + out->driver_vendor +
++                   "\" but gpu.gl_renderer names \"" + parsed_vendor +
++                   "\" (GLVersionInfo::ExtractDriverVendorANGLE)");
++  }
++  if (given("driver_version") && !parsed_version.empty() &&
++      out->driver_version != parsed_version && !amd_system_info) {
++    return Err("gpu.driver_version",
++               "is \"" + out->driver_version +
++                   "\" but gpu.gl_renderer names \"" + parsed_version +
++                   "\" (GLVersionInfo::ExtractDriverVendorANGLE)");
++  }
++  if (!given("driver_vendor")) {
++    out->driver_vendor = parsed_vendor;
++    if (parsed_vendor.empty()) {
++      missing("driver_vendor",
++              "not in the profile or gpu.gl_renderer; reported empty");
++    }
++  }
++  if (!given("driver_version") && out->driver_version.empty()) {
++    out->driver_version = parsed_version;
++    if (parsed_version.empty()) {
++      missing("driver_version",
++              "not in the profile or gpu.gl_renderer; reported empty "
++              "(chrome://gpu shows no DRIVER_VERSION, a WebGL creation "
++              "error's status message no GL_VERSION)");
++    }
++  }
++
++  // Windows identifies the active adapter by LUID and keeps DXGI's
++  // description with no vendor string (IdentifyActiveGPUWithLuid); a single
++  // GPU elsewhere is named by GL_VENDOR and GL_RENDERER (IdentifyActiveGPU).
++  if (!given("vendor_name")) {
++    out->vendor_name = d3d11 ? std::string() : out->gl_vendor;
++  }
++  if (!given("device_name")) {
++    out->device_name = d3d11 && name_end != std::string::npos
++                           ? parts[1].substr(0, name_end)
++                           : out->gl_renderer;
++  }
++  return std::string();
++}
++
++// Returns the first refused fingerprinting switch or feature, or an empty
++// string. Every Blink runtime feature also has a base::Feature of the same
++// name, so both feature lists are checked. chrome://flags entries become
++// switches later and are not seen here.
++std::string RefusedFingerprintingSwitch(const base::CommandLine& command_line) {
++  for (const char* name : kRefusedSwitches) {
++    if (command_line.HasSwitch(name)) {
++      return std::string("--") + name;
++    }
++  }
++  for (const char* list : {"enable-blink-features", "enable-features"}) {
++    for (const std::string& entry :
++         base::SplitString(command_line.GetSwitchValueASCII(list), ",",
++                           base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
++      std::string name = entry.substr(entry.front() == '*' ? 1 : 0);
++      name = name.substr(0, name.find_first_of("<:"));
++      if (OneOf(name, kRefusedFeatures)) {
++        return std::string("--") + list + "=" + name;
++      }
++    }
++  }
++  return std::string();
++}
++
++// Set exactly once per process.
++std::unique_ptr<Profile>& ProcessProfileSlot() {
++  static base::NoDestructor<std::unique_ptr<Profile>> slot;
++  return *slot;
++}
++
++}  // namespace
++
++Profile::Profile() = default;
++Profile::~Profile() = default;
++
++std::string Profile::Init(base::DictValue dict) {
++  std::string error;
++  std::optional<int> schema_version = dict.FindInt("schema_version");
++  if (!schema_version || *schema_version != kSchemaVersion) {
++    return Err("schema_version", base::StringPrintf("must be %d", kSchemaVersion));
++  }
++  const std::string* id = dict.FindString("id");
++  if (!id || id->empty()) {
++    return Err("id", "is required");
++  }
++  const std::string* seed = dict.FindString("seed");
++  if (!seed || seed->size() != 32 ||
++      seed->find_first_not_of("0123456789abcdef") != std::string::npos) {
++    return Err("seed", "must be 32 lowercase hex characters");
++  }
++  for (const char* section : kRequiredSections) {
++    if (!dict.FindDict(section)) {
++      return Err(section, "is required and must be an object");
++    }
++  }
++
++  // Every os.* string is reported verbatim, so each enum is checked against
++  // the values stock Chrome can produce.
++  const base::DictValue* os = dict.FindDict("os");
++  const std::string* os_family = RequireString(*os, "family", "os.family", &error);
++  if (!os_family) {
++    return error;
++  }
++  if (!OneOf(*os_family, kOsFamilies)) {
++    return Err("os.family", "must be one of " + Listed(kOsFamilies));
++  }
++  const std::string* ua_platform_token =
++      RequireString(*os, "ua_platform_token", "os.ua_platform_token", &error);
++  if (!ua_platform_token) {
++    return error;
++  }
++  if (ua_platform_token->empty()) {
++    return Err("os.ua_platform_token", "must not be empty");
++  }
++  const std::string* navigator_platform =
++      RequireString(*os, "navigator_platform", "os.navigator_platform", &error);
++  if (!navigator_platform) {
++    return error;
++  }
++  if (!OneOf(*navigator_platform, kNavigatorPlatforms)) {
++    return Err("os.navigator_platform",
++               "must be one of " + Listed(kNavigatorPlatforms));
++  }
++  const std::string* ch_platform =
++      RequireString(*os, "ch_platform", "os.ch_platform", &error);
++  if (!ch_platform) {
++    return error;
++  }
++  if (!OneOf(*ch_platform, kChPlatforms)) {
++    return Err("os.ch_platform", "must be one of " + Listed(kChPlatforms));
++  }
++  const std::string* ch_platform_version = RequireString(
++      *os, "ch_platform_version", "os.ch_platform_version", &error);
++  if (!ch_platform_version) {
++    return error;
++  }
++  const std::string* architecture =
++      RequireString(*os, "architecture", "os.architecture", &error);
++  if (!architecture) {
++    return error;
++  }
++  if (!OneOf(*architecture, kArchitectures)) {
++    return Err("os.architecture", "must be one of " + Listed(kArchitectures));
++  }
++  const std::string* bitness = RequireString(*os, "bitness", "os.bitness", &error);
++  if (!bitness) {
++    return error;
++  }
++  if (!OneOf(*bitness, kBitnesses)) {
++    return Err("os.bitness", "must be one of " + Listed(kBitnesses));
++  }
++  std::optional<bool> wow64 = RequireBool(*os, "wow64", "os.wow64", &error);
++  if (!wow64) {
++    return error;
++  }
++  const std::string* model = RequireString(*os, "model", "os.model", &error);
++  if (!model) {
++    return error;
++  }
++  const base::ListValue* form_factors = os->FindList("form_factors");
++  if (!form_factors || form_factors->empty()) {
++    return Err("os.form_factors", "must be a non-empty list");
++  }
++  std::vector<std::string> form_factor_values;
++  for (const base::Value& entry : *form_factors) {
++    if (!entry.is_string() || !OneOf(entry.GetString(), kFormFactors)) {
++      return Err("os.form_factors",
++                 "entries must be one of " + Listed(kFormFactors));
++    }
++    form_factor_values.push_back(entry.GetString());
++  }
++
++  const base::DictValue* hardware = dict.FindDict("hardware");
++  std::optional<int> concurrency = hardware->FindInt("concurrency");
++  if (!concurrency || *concurrency < 1 || *concurrency > 256) {
++    return Err("hardware.concurrency", "must be an integer in [1, 256]");
++  }
++  std::optional<int> device_memory = hardware->FindInt("device_memory");
++  bool bucket_ok = false;
++  for (int bucket : kDeviceMemoryBuckets) {
++    bucket_ok |= device_memory && *device_memory == bucket;
++  }
++  if (!bucket_ok) {
++    return Err("hardware.device_memory", "must be one of 2, 4, 8, 16, 32");
++  }
++  std::optional<int> physical_memory_mb = hardware->FindInt("physical_memory_mb");
++  if (physical_memory_mb) {
++    if (*physical_memory_mb < 1024) {
++      return Err("hardware.physical_memory_mb", "must be at least 1024");
++    }
++    // Chrome rounds physical memory to the nearest power of two in GB and
++    // clamps it to [2, 32] on desktop (ApproximatedDeviceMemory).
++    int64_t lower = *physical_memory_mb;
++    int power = 0;
++    while (lower > 1) {
++      lower >>= 1;
++      power++;
++    }
++    int64_t upper = (lower + 1) << power;
++    lower <<= power;
++    int64_t nearest = (*physical_memory_mb - lower <= upper - *physical_memory_mb) ? lower : upper;
++    const int rounded_gb = static_cast<int>(std::clamp<int64_t>(nearest / 1024, 2, 32));
++    if (rounded_gb != *device_memory) {
++      return Err("hardware.physical_memory_mb",
++                 base::StringPrintf("rounds to %d GB but hardware.device_memory is %d",
++                                    rounded_gb, *device_memory));
++    }
++  }
++
++  // The available area must fit the screen and the window the available area.
++  const base::DictValue* display = dict.FindDict("display");
++  Display d;
++  struct IntField {
++    const char* key;
++    const char* field;
++    int minimum;
++    int* out;
++  };
++  const IntField display_ints[] = {
++      {"width", "display.width", 1, &d.width},
++      {"height", "display.height", 1, &d.height},
++      {"avail_left", "display.avail_left", 0, &d.avail_left},
++      {"avail_top", "display.avail_top", 0, &d.avail_top},
++      {"avail_width", "display.avail_width", 1, &d.avail_width},
++      {"avail_height", "display.avail_height", 1, &d.avail_height},
++  };
++  for (const IntField& f : display_ints) {
++    std::optional<int> v = RequireInt(*display, f.key, f.field, f.minimum, &error);
++    if (!v) {
++      return error;
++    }
++    *f.out = *v;
++  }
++  if (d.avail_left + d.avail_width > d.width ||
++      d.avail_top + d.avail_height > d.height) {
++    return Err("display.avail_*", "must lie inside display.width x height");
++  }
++  std::optional<int> color_depth = display->FindInt("color_depth");
++  bool depth_ok = false;
++  for (int depth : kColorDepths) {
++    depth_ok |= color_depth && *color_depth == depth;
++  }
++  if (!depth_ok) {
++    return Err("display.color_depth", "must be one of 24, 30");
++  }
++  d.color_depth = *color_depth;
++  std::optional<double> dpr = display->FindDouble("device_pixel_ratio");
++  if (!dpr || *dpr <= 0.0 || *dpr > 8.0) {
++    return Err("display.device_pixel_ratio", "must be a number in (0, 8]");
++  }
++  d.device_pixel_ratio = *dpr;
++  std::optional<bool> is_extended =
++      RequireBool(*display, "is_extended", "display.is_extended", &error);
++  if (!is_extended) {
++    return error;
++  }
++  d.is_extended = *is_extended;
++  const base::DictValue* orientation = display->FindDict("orientation");
++  if (!orientation) {
++    return Err("display.orientation", "is required and must be an object");
++  }
++  const std::string* orientation_type = RequireString(
++      *orientation, "type", "display.orientation.type", &error);
++  if (!orientation_type) {
++    return error;
++  }
++  if (!OneOf(*orientation_type, kOrientations)) {
++    return Err("display.orientation.type",
++               "must be one of " + Listed(kOrientations));
++  }
++  std::optional<int> orientation_angle = orientation->FindInt("angle");
++  if (!orientation_angle ||
++      (*orientation_angle != 0 && *orientation_angle != 90 &&
++       *orientation_angle != 180 && *orientation_angle != 270)) {
++    return Err("display.orientation.angle", "must be 0, 90, 180 or 270");
++  }
++  d.orientation_type = *orientation_type;
++  d.orientation_angle = *orientation_angle;
++  const base::DictValue* window = display->FindDict("window");
++  if (!window) {
++    return Err("display.window", "is required and must be an object");
++  }
++  const IntField window_ints[] = {
++      {"outer_width", "display.window.outer_width", 1, &d.outer_width},
++      {"outer_height", "display.window.outer_height", 1, &d.outer_height},
++      {"screen_x", "display.window.screen_x", 0, &d.screen_x},
++      {"screen_y", "display.window.screen_y", 0, &d.screen_y},
++  };
++  for (const IntField& f : window_ints) {
++    std::optional<int> v = RequireInt(*window, f.key, f.field, f.minimum, &error);
++    if (!v) {
++      return error;
++    }
++    *f.out = *v;
++  }
++  if (d.outer_width > d.width || d.outer_height > d.height) {
++    return Err("display.window.outer_*", "must fit inside display.width x height");
++  }
++  d.inner_width = window->FindInt("inner_width");
++  d.inner_height = window->FindInt("inner_height");
++  if ((d.inner_width && (*d.inner_width < 1 || *d.inner_width > d.outer_width)) ||
++      (d.inner_height &&
++       (*d.inner_height < 1 || *d.inner_height > d.outer_height))) {
++    return Err("display.window.inner_*", "must be positive and not exceed outer_*");
++  }
++
++  // gpu.gl_version is not read.
++  const base::DictValue* gpu = dict.FindDict("gpu");
++  Gpu gpu_identity;
++  WebGL webgl;
++  WebGL webgl2;
++  WebGPU webgpu;
++  error = ParseGpu(*gpu, &gpu_identity);
++  if (error.empty()) {
++    error = ParseWebGL(*gpu, "webgl", /*webgl2=*/false, &webgl);
++  }
++  if (error.empty()) {
++    error = DeriveGpuIdentity(*gpu, webgl, &gpu_identity);
++  }
++  if (error.empty()) {
++    error = ParseWebGL(*gpu, "webgl2", /*webgl2=*/true, &webgl2);
++  }
++  if (error.empty()) {
++    error = ParseWebGPU(*gpu, *os_family, &webgpu);
++  }
++  if (!error.empty()) {
++    return error;
++  }
++
++  // locale.*
++  const base::DictValue* locale = dict.FindDict("locale");
++  const base::ListValue* languages = locale->FindList("languages");
++  if (!languages || languages->empty()) {
++    return Err("locale.languages", "must be a non-empty list of language tags");
++  }
++  std::vector<std::string> language_values;
++  for (const base::Value& entry : *languages) {
++    if (!entry.is_string() || entry.GetString().empty() ||
++        entry.GetString().find_first_of(",; \"") != std::string::npos) {
++      return Err("locale.languages", "entries must be language tags such as en-US");
++    }
++    language_values.push_back(entry.GetString());
++  }
++  const std::string* intl_locale = locale->FindString("intl_locale");
++  if (intl_locale && intl_locale->empty()) {
++    return Err("locale.intl_locale", "must not be empty when present");
++  }
++  const std::string* timezone = locale->FindString("timezone");
++  if (!timezone || timezone->empty() || timezone->find('/') == std::string::npos) {
++    return Err("locale.timezone", "must be an IANA zone id such as Europe/Berlin");
++  }
++
++  // network.webrtc.*
++  const base::DictValue* network = dict.FindDict("network");
++  const base::DictValue* webrtc = network->FindDict("webrtc");
++  if (!webrtc) {
++    return Err("network.webrtc", "is required and must be an object");
++  }
++  const std::string* webrtc_policy = RequireString(
++      *webrtc, "ip_handling_policy", "network.webrtc.ip_handling_policy", &error);
++  if (!webrtc_policy) {
++    return error;
++  }
++  if (!OneOf(*webrtc_policy, kWebRtcPolicies)) {
++    return Err("network.webrtc.ip_handling_policy",
++               "must be one of " + Listed(kWebRtcPolicies));
++  }
++  const std::string* public_ip = webrtc->FindString("public_ip");
++  if (public_ip && !LooksLikeIpLiteral(*public_ip)) {
++    return Err("network.webrtc.public_ip", "must be an IPv4 or IPv6 literal");
++  }
++
++  // automation.*
++  const base::DictValue* automation = dict.FindDict("automation");
++  std::optional<bool> report_headful = RequireBool(
++      *automation, "report_headful", "automation.report_headful", &error);
++  if (!report_headful) {
++    return error;
++  }
++
++  // canvas.* and audio.*. Noise keys are derived from the seed once, here.
++  NoiseKey seed_key;
++  if (!NoiseKeyFromSeed(*seed, &seed_key)) {
++    return Err("seed", "must be 32 lowercase hex characters");
++  }
++  const base::DictValue* canvas = dict.FindDict("canvas");
++  std::optional<bool> canvas_noise =
++      RequireBool(*canvas, "noise", "canvas.noise", &error);
++  if (!canvas_noise) {
++    return error;
++  }
++  const base::DictValue* audio = dict.FindDict("audio");
++  std::optional<int> audio_sample_rate = audio->FindInt("sample_rate");
++  if (!audio_sample_rate ||
++      (*audio_sample_rate != 44100 && *audio_sample_rate != 48000 &&
++       *audio_sample_rate != 96000)) {
++    return Err("audio.sample_rate", "must be one of 44100, 48000, 96000");
++  }
++  // AudioContext.baseLatency is the output buffer in frames divided by the
++  // sample rate (audio_context.cc), so only whole buffers exist.
++  std::optional<double> base_latency = audio->FindDouble("base_latency");
++  if (!base_latency || !(*base_latency > 0.0)) {
++    return Err("audio.base_latency", "must be a positive number of seconds");
++  }
++  const double frames = *base_latency * *audio_sample_rate;
++  const double whole_frames = std::round(frames);
++  if (std::abs(frames - whole_frames) > 1e-9 || whole_frames < 128 ||
++      whole_frames > 8192) {
++    return Err("audio.base_latency",
++               base::StringPrintf("times audio.sample_rate is %.9g frames; it "
++                                  "must be a whole number in [128, 8192]",
++                                  frames));
++  }
++  const int frames_per_buffer = static_cast<int>(whole_frames);
++  // The default ("interactive") buffer is the platform's hardware buffer:
++  // 512 frames with PulseAudio, 2048 with ALSA only, and the 10 ms WASAPI
++  // engine period on Windows.
++  if (*os_family == "linux" && frames_per_buffer != 512 &&
++      frames_per_buffer != 2048) {
++    return Err("audio.base_latency",
++               base::StringPrintf("is %d frames; a linux profile has 512 "
++                                  "(PulseAudio) or 2048 (ALSA)",
++                                  frames_per_buffer));
++  }
++  if (*os_family == "windows" &&
++      frames_per_buffer != *audio_sample_rate / 100) {
++    return Err("audio.base_latency",
++               base::StringPrintf("is %d frames; a windows profile has the "
++                                  "10 ms WASAPI period, %d",
++                                  frames_per_buffer, *audio_sample_rate / 100));
++  }
++  std::optional<double> output_latency = audio->FindDouble("output_latency");
++  if (!output_latency || !(*output_latency >= 0.0) ||
++      !(*output_latency < 0.5)) {
++    return Err("audio.output_latency", "must be a number in [0, 0.5)");
++  }
++  std::optional<int> max_channel_count = audio->FindInt("max_channel_count");
++  if (!max_channel_count || *max_channel_count < 1 ||
++      *max_channel_count > 32) {
++    return Err("audio.max_channel_count", "must be an integer in [1, 32]");
++  }
++  std::optional<bool> audio_noise =
++      RequireBool(*audio, "noise", "audio.noise", &error);
++  if (!audio_noise) {
++    return error;
++  }
++
++  const base::DictValue* widevine =
++      dict.FindDict("media") ? dict.FindDict("media")->FindDict("widevine")
++                             : nullptr;
++  if (!widevine) {
++    return Err("media.widevine", "is required and must be an object");
++  }
++  std::optional<bool> widevine_supported = RequireBool(
++      *widevine, "supported", "media.widevine.supported", &error);
++  if (!widevine_supported) {
++    return error;
++  }
++  const base::ListValue* robustness = widevine->FindList("robustness");
++  if (!robustness) {
++    return Err("media.widevine.robustness", "is required and must be a list");
++  }
++  for (const base::Value& level : *robustness) {
++    if (!level.is_string() || !OneOf(level.GetString(), kWidevineRobustness)) {
++      return Err("media.widevine.robustness",
++                 "may only list " + Listed(kWidevineRobustness) +
++                     ": stock Chrome on Linux and Windows reports every "
++                     "HW_SECURE_* level unsupported for com.widevine.alpha "
++                     "(widevine_key_system_info.cc GetRobustnessConfigRule)");
++    }
++  }
++  if (!*widevine_supported && !robustness->empty()) {
++    return Err("media.widevine.robustness",
++               "must be empty when media.widevine.supported is false");
++  }
++  // Whether this host can back the claim is checked in
++  // LoadAndExportFromCommandLine.
++
++  // Required: the quota manager would otherwise size quota from the host's
++  // disk.
++  std::optional<double> disk_total_bytes =
++      hardware->FindDouble("disk_total_bytes");
++  if (!disk_total_bytes || !IsExactInteger(*disk_total_bytes) ||
++      *disk_total_bytes < 1073741824.0) {
++    return Err("hardware.disk_total_bytes",
++               "is required and must be an integer of at least 1073741824");
++  }
++
++  // V8 derives the heap limit from the physical memory it is given, so a
++  // stated limit must be the one V8 derives.
++  const int heap_physical_memory_mb =
++      physical_memory_mb ? *physical_memory_mb : *device_memory * 1024;
++  if (hardware->Find("js_heap_size_limit")) {
++    const int64_t v8_limit = V8HeapSizeLimit(heap_physical_memory_mb);
++    std::optional<double> js_heap_size_limit =
++        hardware->FindDouble("js_heap_size_limit");
++    if (!js_heap_size_limit ||
++        *js_heap_size_limit != static_cast<double>(v8_limit)) {
++      return Err("hardware.js_heap_size_limit",
++                 "must be " + base::NumberToString(v8_limit) +
++                     ", V8's heap limit for " +
++                     base::NumberToString(heap_physical_memory_mb) +
++                     " MB of physical memory (hardware.physical_memory_mb)");
++    }
++  }
++
++  std::vector<SpeechVoice> speech_voices;
++  error = ParseSpeechVoices(dict, &speech_voices);
++  if (!error.empty()) {
++    return error;
++  }
++
++  Profile::MediaFeatures media_features;
++  error = ParseMediaFeatures(*display, *hardware, *os_family, &media_features);
++  if (!error.empty()) {
++    return error;
++  }
++
++  HardwareDecode hardware_decode;
++  bool bluetooth_available = false;
++  Capabilities capabilities;
++  error = ParseCapabilities(dict, *os_family, &hardware_decode,
++                            &bluetooth_available, &capabilities);
++  if (!error.empty()) {
++    return error;
++  }
++
++  MediaDevices media_devices;
++  error = ParseMediaDevices(*dict.FindDict("media_devices"), *os_family,
++                            &media_devices);
++  if (!error.empty()) {
++    return error;
++  }
++
++  Connection connection;
++  error = ParseConnection(*network, &connection);
++  if (!error.empty()) {
++    return error;
++  }
++
++  error = ParseBattery(*dict.FindDict("capabilities"), &capabilities);
++  if (!error.empty()) {
++    return error;
++  }
++
++  base::flat_map<std::string, SystemColor> system_colors;
++  bool system_colors_dark = false;
++  error = ParseSystemColors(dict, &system_colors, &system_colors_dark);
++  if (!error.empty()) {
++    return error;
++  }
++
++  Profile::Fonts font_set;
++  error = ParseFonts(*dict.FindDict("fonts"), *os_family, &font_set);
++  if (!error.empty()) {
++    return error;
++  }
++
++  std::optional<Geolocation> geolocation;
++  error = ParseGeolocation(*locale, *timezone, seed_key, &geolocation);
++  if (!error.empty()) {
++    return error;
++  }
++
++  id_ = *id;
++  seed_ = *seed;
++  os_family_ = *os_family;
++  ua_platform_token_ = *ua_platform_token;
++  navigator_platform_ = *navigator_platform;
++  ch_platform_ = *ch_platform;
++  ch_platform_version_ = *ch_platform_version;
++  architecture_ = *architecture;
++  bitness_ = *bitness;
++  wow64_ = *wow64;
++  model_ = *model;
++  form_factors_ = std::move(form_factor_values);
++  hardware_concurrency_ = *concurrency;
++  device_memory_gb_ = *device_memory;
++  physical_memory_mb_ =
++      physical_memory_mb ? *physical_memory_mb : *device_memory * 1024;
++  display_ = d;
++  gpu_ = std::move(gpu_identity);
++  webgl_ = std::move(webgl);
++  webgl2_ = std::move(webgl2);
++  webgpu_ = std::move(webgpu);
++  languages_ = std::move(language_values);
++  intl_locale_ = intl_locale ? *intl_locale : languages_.front();
++  timezone_ = *timezone;
++  webrtc_ip_handling_policy_ = *webrtc_policy;
++  webrtc_public_ip_ = public_ip ? *public_ip : std::string();
++  report_headful_ = *report_headful;
++  if (*canvas_noise) {
++    canvas_noise_key_ = DeriveNoiseKey(seed_key, "phasmid/canvas/1");
++  }
++  if (*audio_noise) {
++    audio_noise_key_ = DeriveNoiseKey(seed_key, "phasmid/audio/1");
++  }
++  audio_sample_rate_ = *audio_sample_rate;
++  audio_frames_per_buffer_ = frames_per_buffer;
++  audio_output_latency_ = *output_latency;
++  audio_max_channel_count_ = *max_channel_count;
++  widevine_supported_ = *widevine_supported;
++  disk_total_bytes_ = static_cast<int64_t>(*disk_total_bytes);
++  speech_voices_ = std::move(speech_voices);
++  media_features_ = std::move(media_features);
++  hardware_decode_ = hardware_decode;
++  bluetooth_available_ = bluetooth_available;
++  media_devices_ = std::move(media_devices);
++  media_device_id_key_ = DeriveNoiseKey(seed_key, "phasmid/media-devices/1");
++  connection_ = connection;
++  connection_noise_key_ = DeriveNoiseKey(seed_key, "phasmid/connection/1");
++  system_colors_ = std::move(system_colors);
++  system_colors_dark_ = system_colors_dark;
++  fonts_ = std::move(font_set);
++  capabilities_ = capabilities;
++  geolocation_ = geolocation;
++  dict_ = std::move(dict);
++  return std::string();
++}
++
++// static
++std::string Profile::LoadAndExportFromCommandLine(
++    const base::CommandLine& command_line,
++    std::vector<std::string>* warnings) {
++  if (!command_line.HasSwitch(switches::kPhasmidProfile)) {
++    return std::string();
++  }
++  base::FilePath path = command_line.GetSwitchValuePath(switches::kPhasmidProfile);
++  // ReadFileToString rejects paths containing "..", so resolve them first.
++  base::FilePath absolute = base::MakeAbsoluteFilePath(path);
++  std::string contents;
++  if (absolute.empty() || !base::ReadFileToString(absolute, &contents)) {
++    return "cannot read profile file " + path.AsUTF8Unsafe();
++  }
++  auto parsed = base::JSONReader::ReadAndReturnValueWithError(contents, base::JSON_PARSE_RFC);
++  if (!parsed.has_value()) {
++    return "profile is not valid JSON: " + parsed.error().message;
++  }
++  if (!parsed->is_dict()) {
++    return "profile must be a JSON object";
++  }
++  std::unique_ptr<Profile> profile(new Profile());
++  std::string error = profile->Init(std::move(*parsed).TakeDict());
++  if (!error.empty()) {
++    return error;
++  }
++  std::string refused = RefusedFingerprintingSwitch(command_line);
++  if (!refused.empty()) {
++    return refused +
++           " adds random per-call noise and cannot be combined with "
++           "--phasmid-profile";
++  }
++
++  // Canonical, compact JSON so every process parses identical bytes.
++  std::optional<std::string> canonical = base::WriteJson(profile->dict());
++  if (!canonical) {
++    return "cannot serialize profile";
++  }
++  std::unique_ptr<base::Environment> env = base::Environment::Create();
++  // Claims this host cannot back run with a warning. These checks run in the
++  // browser process only, so child processes neither repeat nor log them.
++  //
++  // Widevine is the installed CDM or absent: decryption cannot be faked. The
++  // Linux CDM names Linux in every license request, so a windows profile
++  // reports Widevine unsupported too.
++  base::FilePath absolute_cdm;
++  if (profile->widevine_supported() && profile->os_family() != "linux") {
++    warnings->push_back(
++        "media.widevine.supported: is true for os.family " +
++        profile->os_family() +
++        " but the only CDM this host can load is the Linux one, which names "
++        "Linux in every license request; Widevine is reported unsupported");
++  } else if (profile->widevine_supported()) {
++    base::FilePath cdm =
++        command_line.HasSwitch(switches::kPhasmidWidevineCdm)
++            ? command_line.GetSwitchValuePath(switches::kPhasmidWidevineCdm)
++            : base::FilePath(kDefaultWidevineCdmDirectory);
++    absolute_cdm = base::MakeAbsoluteFilePath(cdm);
++    if (absolute_cdm.empty() ||
++        !base::PathExists(absolute_cdm.Append("manifest.json")) ||
++        !base::PathExists(absolute_cdm.Append("_platform_specific")
++                              .Append("linux_x64")
++                              .Append("libwidevinecdm.so"))) {
++      absolute_cdm.clear();
++      warnings->push_back(
++          "media.widevine.supported: is true but " + cdm.AsUTF8Unsafe() +
++          " holds no Widevine CDM (install Google Chrome or pass "
++          "--phasmid-widevine-cdm=<its WidevineCdm directory>); Widevine is "
++          "reported unsupported");
++    }
++  }
++  if (!absolute_cdm.empty()) {
++    if (!env->SetVar(kWidevineCdmEnvVar, absolute_cdm.value())) {
++      return "cannot export the Widevine CDM directory to the environment";
++    }
++  } else {
++    env->UnSetVar(kWidevineCdmEnvVar);
++  }
++  // The CSS system font keywords are Arial at the default font size, whatever
++  // a windows profile claims.
++  const base::DictValue* ui_font =
++      profile->dict().FindDict("fonts")->FindDict("ui_font");
++  const std::string* ui_family = ui_font->FindString("family");
++  const double ui_size = ui_font->FindDouble("size_px").value_or(0);
++  if (*ui_family != "Arial" || ui_size != 16.0) {
++    warnings->push_back(base::StringPrintf(
++        "fonts.ui_font: is %s at %g px but this build reports the CSS system "
++        "font keywords as Arial at 16 px",
++        ui_family->c_str(), ui_size));
++  }
++  warnings->insert(warnings->end(), profile->gpu().missing.begin(),
++                   profile->gpu().missing.end());
++  AppendUnbackedCapabilityWarnings(*profile, warnings);
++  // Without a claimed position the build's own network provider runs, and it
++  // cannot reach Google's location service.
++  if (!profile->geolocation()) {
++    warnings->push_back(
++        "locale.geolocation: no position claimed; a granted page gets "
++        "POSITION_UNAVAILABLE as an ungoogled build does");
++  }
++  if (!env->SetVar(kProfileEnvVar, *canonical)) {
++    return "cannot export profile to the environment";
++  }
++  // ICU and libc read TZ at process start in every child, so the host zone is
++  // never observed. TimeZoneMonitorLinux does not watch /etc/localtime when
++  // TZ is set.
++  if (!env->SetVar("TZ", profile->timezone())) {
++    return "cannot export TZ to the environment";
++  }
++  ProcessProfileSlot() = std::move(profile);
++  return std::string();
++}
++
++// static
++const Profile* Profile::Get() {
++  // The browser process fills the slot on the main thread before any other
++  // thread exists. A call before that sees null, and nothing is cached.
++  if (const Profile* loaded = ProcessProfileSlot().get()) {
++    return loaded;
++  }
++  // Every other process parses the exported JSON once.
++  static const base::NoDestructor<std::unique_ptr<Profile>> from_environment(
++      []() -> std::unique_ptr<Profile> {
++        std::unique_ptr<base::Environment> env = base::Environment::Create();
++        std::optional<std::string> json = env->GetVar(kProfileEnvVar);
++        if (!json || json->empty()) {
++          return nullptr;
++        }
++        std::optional<base::Value> value =
++            base::JSONReader::Read(*json, base::JSON_PARSE_RFC);
++        if (!value || !value->is_dict()) {
++          LOG(FATAL) << "Phasmid: " << kProfileEnvVar
++                     << " is not valid JSON in this process";
++        }
++        std::unique_ptr<Profile> parsed(new Profile());
++        std::string error = parsed->Init(std::move(*value).TakeDict());
++        if (!error.empty()) {
++          LOG(FATAL) << "Phasmid: exported profile failed validation: "
++                     << error;
++        }
++        return parsed;
++      }());
++  return from_environment->get();
++}
++
++double Profile::ConnectionNoiseMultiplier(std::string_view host) const {
++  // Stock: 0.9 + ((hash(host) + salt) % 21) * 0.01, in both
++  // NetworkStateNotifier::GetRandomMultiplier and client_hints.cc.
++  const uint64_t hash =
++      SipHash24(connection_noise_key_, base::as_byte_span(host));
++  return 0.9 + static_cast<double>(hash % 21) * 0.01;
++}
++
++base::FilePath WidevineCdmDirectory() {
++  const Profile* profile = Profile::Get();
++  if (!profile || !profile->widevine_supported()) {
++    return base::FilePath();
++  }
++  std::optional<std::string> directory =
++      base::Environment::Create()->GetVar(kWidevineCdmEnvVar);
++  return directory ? base::FilePath(*directory) : base::FilePath();
++}
++
++void ReportUnbackedGpuClaim(std::string_view field, std::string_view detail) {
++  // Each process keeps its own record: the GPU process reports limits and
++  // WebGPU claims, every renderer its extension claims.
++  static base::NoDestructor<base::Lock> lock;
++  static base::NoDestructor<std::set<std::string, std::less<>>> reported;
++  {
++    base::AutoLock auto_lock(*lock);
++    if (!reported->emplace(field).second) {
++      return;
++    }
++  }
++  LOG(ERROR) << "Phasmid: host cannot back gpu." << field << ": " << detail;
++}
++
++bool ClaimsWindows() {
++  const Profile* profile = Profile::Get();
++  return profile && profile->os_family() == "windows";
++}
++
++bool FontFamilyResolvable(std::string_view family) {
++  if (family.empty() || !ClaimsWindows()) {
++    return true;
++  }
++  for (const std::string& listed : Profile::Get()->fonts().families) {
++    if (base::EqualsCaseInsensitiveASCII(listed, family)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++}  // namespace phasmid
+--- a/components/phasmid/profile.h
++++ b/components/phasmid/profile.h
+@@ -0,0 +1,457 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_PHASMID_PROFILE_H_
++#define COMPONENTS_PHASMID_PROFILE_H_
++
++#include <stdint.h>
++
++#include <array>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/component_export.h"
++#include "base/containers/flat_map.h"
++#include "base/containers/flat_set.h"
++#include "base/files/file_path.h"
++#include "base/values.h"
++#include "components/phasmid/noise.h"
++
++namespace base {
++class CommandLine;
++}
++
++namespace phasmid {
++
++// One device profile (profiles/schema.json). The browser process loads and
++// validates --phasmid-profile and exports it as canonical JSON in
++// PHASMID_PROFILE, which every child process inherits and parses once.
++//
++// Get() returns null when Phasmid is not active; callers then leave
++// Chromium's own value untouched.
++class COMPONENT_EXPORT(PHASMID) Profile {
++ public:
++  // Sizes are CSS pixels.
++  struct Display {
++    int width = 0;
++    int height = 0;
++    int avail_left = 0;
++    int avail_top = 0;
++    int avail_width = 0;
++    int avail_height = 0;
++    int color_depth = 0;
++    double device_pixel_ratio = 1.0;
++    bool is_extended = false;
++    std::string orientation_type;
++    int orientation_angle = 0;
++    // The default top-level window.
++    int outer_width = 0;
++    int outer_height = 0;
++    int screen_x = 0;
++    int screen_y = 0;
++    std::optional<int> inner_width;
++    std::optional<int> inner_height;
++  };
++
++  // The GPU identity chrome://gpu, CDP SystemInfo and WebGL creation errors
++  // report. Reporting only: the host GPU still drives blocklists,
++  // workarounds, ANGLE and Dawn.
++  struct Gpu {
++    uint32_t vendor_id = 0;
++    uint32_t device_id = 0;
++    // GPUInfo::GPUDevice vendor_string and device_string.
++    std::string vendor_name;
++    std::string device_name;
++    std::string driver_vendor;
++    std::string driver_version;
++    std::string gl_vendor;
++    std::string gl_renderer;
++    std::string angle_backend;
++    // The fields above that the profile leaves out and the WebGL claim does
++    // not determine, as "gpu.<field>: <detail>". They are empty or 0.
++    std::vector<std::string> missing;
++  };
++
++  struct WebGL {
++    // getShaderPrecisionFormat() for one (shader, precision) pair.
++    struct Precision {
++      int range_min = 0;
++      int range_max = 0;
++      int precision = 0;
++    };
++
++    std::string unmasked_vendor;
++    std::string unmasked_renderer;
++    base::flat_set<std::string> extensions;
++    // Keyed by GL constant name. Doubles: MAX_ELEMENT_INDEX does not fit an
++    // int.
++    base::flat_map<std::string, std::vector<double>> params;
++    // [0] vertex, [1] fragment shader; then LOW_FLOAT, MEDIUM_FLOAT,
++    // HIGH_FLOAT, LOW_INT, MEDIUM_INT, HIGH_INT (the GL enum order).
++    std::array<std::array<Precision, 6>, 2> precision;
++    // Unset when EXT_texture_filter_anisotropic is not exposed.
++    std::optional<double> max_anisotropy;
++    // Unset when WEBGL_draw_buffers is not exposed.
++    std::optional<int> max_draw_buffers;
++    bool antialias = false;
++
++    bool HasExtension(std::string_view name) const {
++      return extensions.contains(name);
++    }
++    // params[name][index], or nullopt when the profile has no such value.
++    std::optional<double> Param(std::string_view name, size_t index = 0) const {
++      auto it = params.find(name);
++      if (it == params.end() || index >= it->second.size()) {
++        return std::nullopt;
++      }
++      return it->second[index];
++    }
++  };
++
++  struct WebGPU {
++    // Whether requestAdapter() resolves to an adapter. When false, the other
++    // fields are empty, except preferred_canvas_format.
++    bool available = false;
++    // GPUAdapterInfo.
++    std::string vendor;
++    std::string architecture;
++    std::string device;
++    std::string description;
++    uint32_t subgroup_min_size = 0;
++    uint32_t subgroup_max_size = 0;
++    base::flat_set<std::string> features;
++    base::flat_map<std::string, uint64_t> limits;
++    std::string preferred_canvas_format;
++
++    std::optional<uint64_t> Limit(std::string_view name) const {
++      auto it = limits.find(name);
++      if (it == limits.end()) {
++        return std::nullopt;
++      }
++      return it->second;
++    }
++  };
++
++  // One voice of speechSynthesis.getVoices(). Its voiceURI is its name; the
++  // first is the default.
++  struct SpeechVoice {
++    std::string name;
++    std::string lang;
++    // A local voice is listed as local but, like the network voices, never
++    // synthesized by the host.
++    bool local_service = false;
++  };
++
++  struct MediaFeatures {
++    std::string primary_pointer;
++    bool primary_hover = false;
++    bool any_pointer_fine = false;
++    bool any_pointer_coarse = false;
++    bool any_hover = false;
++    int max_touch_points = 0;
++    std::string color_gamut;
++    bool high_dynamic_range = false;
++    bool prefers_dark = false;
++    bool prefers_reduced_motion = false;
++    std::string prefers_contrast;
++    bool forced_colors = false;
++  };
++
++  // Which codecs the GPU decodes.
++  struct HardwareDecode {
++    bool h264 = false;
++    bool hevc = false;
++    bool vp9 = false;
++    bool av1 = false;
++  };
++
++  // Device labels in OS order. The virtual default devices are not listed.
++  struct MediaDevices {
++    std::vector<std::string> audio_inputs;
++    std::vector<std::string> audio_outputs;
++    std::vector<std::string> video_inputs;
++  };
++
++  // The network quality estimate, before stock Chrome's per-host noise and
++  // rounding.
++  struct Connection {
++    // In net::EffectiveConnectionType order.
++    enum class EffectiveType { kSlow2G, k2G, k3G, k4G };
++
++    EffectiveType effective_type = EffectiveType::k4G;
++    int rtt_ms = 0;
++    // A multiple of 50.
++    int downlink_kbps = 0;
++  };
++
++  // A CSS system color with 8-bit channels, as Blink stores it.
++  struct SystemColor {
++    uint8_t red = 0;
++    uint8_t green = 0;
++    uint8_t blue = 0;
++    uint8_t alpha = 255;
++
++    // 0xAARRGGBB, the layout of SkColor and blink::Color::FromRGBA32.
++    uint32_t argb() const {
++      return static_cast<uint32_t>(alpha) << 24 |
++             static_cast<uint32_t>(red) << 16 |
++             static_cast<uint32_t>(green) << 8 | static_cast<uint32_t>(blue);
++    }
++  };
++
++  // Family names are compared ignoring ASCII case, as fontconfig and Skia
++  // match them.
++  struct Fonts {
++    // The installed families. Only font files that publish one of them are
++    // reachable.
++    std::vector<std::string> families;
++    // Empty when the profile keeps Chrome's defaults.
++    std::string default_sans;
++    std::string default_serif;
++    std::string default_monospace;
++    std::string emoji;
++  };
++
++  struct Capabilities {
++    bool user_verifying_platform_authenticator = false;
++    // navigator.bluetooth and navigator.share exist.
++    bool web_bluetooth = false;
++    bool web_share = false;
++    bool battery_charging = true;
++    double battery_level = 1.0;
++  };
++
++  struct Geolocation {
++    double latitude = 0.0;
++    double longitude = 0.0;
++    double accuracy_m = 0.0;
++    // How long after the provider starts, or permission arrives, the first
++    // fix is delivered: 200 to 300 ms, drawn once from the seed.
++    int fix_delay_ms = 0;
++  };
++
++  Profile(const Profile&) = delete;
++  Profile& operator=(const Profile&) = delete;
++  ~Profile();
++
++  // Browser process. Reads the file named by --phasmid-profile, validates it
++  // and exports it. Returns an error message, or an empty string on success
++  // or when the switch is absent. A valid claim this host cannot back is not
++  // an error: it is appended to `warnings` as "<field>: <detail>".
++  static std::string LoadAndExportFromCommandLine(
++      const base::CommandLine& command_line,
++      std::vector<std::string>* warnings);
++
++  // Any process. The active profile, or nullptr when Phasmid is not active.
++  static const Profile* Get();
++
++  // Every accessor reads a validated field, so none can fail at call time.
++  const std::string& id() const { return id_; }
++  const std::string& seed() const { return seed_; }
++
++  // "windows" or "linux".
++  const std::string& os_family() const { return os_family_; }
++  // The parenthesised platform of the reduced UA, e.g. "X11; Linux x86_64".
++  const std::string& ua_platform_token() const { return ua_platform_token_; }
++  const std::string& navigator_platform() const { return navigator_platform_; }
++  const std::string& ch_platform() const { return ch_platform_; }
++  // May be empty.
++  const std::string& ch_platform_version() const {
++    return ch_platform_version_;
++  }
++  const std::string& architecture() const { return architecture_; }
++  const std::string& bitness() const { return bitness_; }
++  bool wow64() const { return wow64_; }
++  // Empty on desktop.
++  const std::string& model() const { return model_; }
++  const std::vector<std::string>& form_factors() const { return form_factors_; }
++
++  int hardware_concurrency() const { return hardware_concurrency_; }
++  // In GB.
++  int device_memory_gb() const { return device_memory_gb_; }
++  // hardware.physical_memory_mb when present, else device_memory_gb * 1024.
++  int physical_memory_mb() const { return physical_memory_mb_; }
++
++  const Display& display() const { return display_; }
++
++  // gpu.gl_version is not exposed: its ANGLE hash belongs to the build.
++  const Gpu& gpu() const { return gpu_; }
++  const WebGL& webgl(bool webgl2) const { return webgl2 ? webgl2_ : webgl_; }
++  // wgsl_language_features is not exposed: it belongs to the build's WGSL
++  // compiler, not to the device.
++  const WebGPU& webgpu() const { return webgpu_; }
++
++  // In navigator.languages order.
++  const std::vector<std::string>& languages() const { return languages_; }
++  // locale.intl_locale when present, else languages[0].
++  const std::string& intl_locale() const { return intl_locale_; }
++  // IANA id. Also exported as TZ for every process.
++  const std::string& timezone() const { return timezone_; }
++
++  // Chrome's own WebRTC IP handling policy name.
++  const std::string& webrtc_ip_handling_policy() const {
++    return webrtc_ip_handling_policy_;
++  }
++  // Empty when the profile does not claim one.
++  const std::string& webrtc_public_ip() const { return webrtc_public_ip_; }
++
++  bool report_headful() const { return report_headful_; }
++
++  // The keys of the deterministic perturbations, or nullopt when the profile
++  // turns them off.
++  const std::optional<NoiseKey>& canvas_noise_key() const {
++    return canvas_noise_key_;
++  }
++  const std::optional<NoiseKey>& audio_noise_key() const {
++    return audio_noise_key_;
++  }
++  // The default output device as Web Audio reports it.
++  int audio_sample_rate() const { return audio_sample_rate_; }
++  // audio.base_latency * audio.sample_rate.
++  int audio_frames_per_buffer() const { return audio_frames_per_buffer_; }
++  // In seconds.
++  double audio_output_latency() const { return audio_output_latency_; }
++  int audio_max_channel_count() const { return audio_max_channel_count_; }
++
++  // The claim; whether a CDM backs it is WidevineCdmDirectory().
++  bool widevine_supported() const { return widevine_supported_; }
++
++  // The size of the volume holding the browser profile, as the quota manager
++  // sees it. hardware.js_heap_size_limit has no accessor: V8 derives it from
++  // physical_memory_mb().
++  int64_t disk_total_bytes() const { return disk_total_bytes_; }
++
++  // In getVoices() order.
++  const std::vector<SpeechVoice>& speech_voices() const {
++    return speech_voices_;
++  }
++
++  const MediaFeatures& media_features() const { return media_features_; }
++
++  const HardwareDecode& hardware_decode() const { return hardware_decode_; }
++  // Whether the device has a Bluetooth adapter; false when absent.
++  bool bluetooth_available() const { return bluetooth_available_; }
++
++  const MediaDevices& media_devices() const { return media_devices_; }
++  // Media device ID salts are derived from this key per storage key, in
++  // place of Chrome's stored random salt, so device IDs are stable per
++  // profile and origin.
++  const NoiseKey& media_device_id_key() const { return media_device_id_key_; }
++
++  const Connection& connection() const { return connection_; }
++  // The factor, 0.90 to 1.10 in steps of 0.01, by which stock Chrome scales
++  // the RTT and downlink it reports for `host`. Stock adds a random salt per
++  // process; this keys it on the seed, so every process, header and restart
++  // agrees.
++  double ConnectionNoiseMultiplier(std::string_view host) const;
++
++
++  // The set for display.prefers_color_scheme, keyed by the lowercase keyword
++  // as GetCSSValueName() spells it ("canvastext"). Other names return
++  // nullptr.
++  const SystemColor* system_color(std::string_view keyword) const {
++    auto it = system_colors_.find(keyword);
++    return it == system_colors_.end() ? nullptr : &it->second;
++  }
++  // Whether that set is the dark one.
++  bool system_colors_dark() const { return system_colors_dark_; }
++
++  // fonts.ui_font has no accessor: the CSS system font keywords are Chrome's
++  // own (Arial at the default size).
++  const Fonts& fonts() const { return fonts_; }
++
++  // media.*, webauthn.* and capabilities.* beyond hardware_decode() and
++  // bluetooth_available().
++  const Capabilities& capabilities() const { return capabilities_; }
++
++  // nullopt when the profile claims no position.
++  const std::optional<Geolocation>& geolocation() const {
++    return geolocation_;
++  }
++
++  // The whole document. Prefer adding an accessor: it is validated once.
++  const base::DictValue& dict() const { return dict_; }
++
++ private:
++  Profile();
++
++  // Returns an error message, or empty on success.
++  std::string Init(base::DictValue dict);
++
++  base::DictValue dict_;
++  std::string id_;
++  std::string seed_;
++  std::string os_family_;
++  std::string ua_platform_token_;
++  std::string navigator_platform_;
++  std::string ch_platform_;
++  std::string ch_platform_version_;
++  std::string architecture_;
++  std::string bitness_;
++  bool wow64_ = false;
++  std::string model_;
++  std::vector<std::string> form_factors_;
++  int hardware_concurrency_ = 0;
++  int device_memory_gb_ = 0;
++  int physical_memory_mb_ = 0;
++  Display display_;
++  Gpu gpu_;
++  WebGL webgl_;
++  WebGL webgl2_;
++  WebGPU webgpu_;
++  std::vector<std::string> languages_;
++  std::string intl_locale_;
++  std::string timezone_;
++  std::string webrtc_ip_handling_policy_;
++  std::string webrtc_public_ip_;
++  bool report_headful_ = false;
++  std::optional<NoiseKey> canvas_noise_key_;
++  std::optional<NoiseKey> audio_noise_key_;
++  int audio_sample_rate_ = 0;
++  int audio_frames_per_buffer_ = 0;
++  double audio_output_latency_ = 0.0;
++  int audio_max_channel_count_ = 0;
++  bool widevine_supported_ = false;
++  int64_t disk_total_bytes_ = 0;
++  std::vector<SpeechVoice> speech_voices_;
++  MediaFeatures media_features_;
++  HardwareDecode hardware_decode_;
++  bool bluetooth_available_ = false;
++  MediaDevices media_devices_;
++  NoiseKey media_device_id_key_;
++  Connection connection_;
++  NoiseKey connection_noise_key_;
++  base::flat_map<std::string, SystemColor> system_colors_;
++  bool system_colors_dark_ = false;
++  Fonts fonts_;
++  Capabilities capabilities_;
++  std::optional<Geolocation> geolocation_;
++};
++
++// The Widevine CDM directory the browser process validated and exported, or
++// an empty path when Phasmid is not active, the profile says Widevine is
++// absent or the host could not back the claim.
++COMPONENT_EXPORT(PHASMID) base::FilePath WidevineCdmDirectory();
++
++// Reports a gpu.* claim this host cannot back, such as a WebGL limit above
++// the host's. `field` is the path below gpu., e.g.
++// "webgl2.params.MAX_TEXTURE_SIZE". Logs once per field and process; the
++// claimed value stays in place.
++COMPONENT_EXPORT(PHASMID)
++void ReportUnbackedGpuClaim(std::string_view field, std::string_view detail);
++
++// Whether the active profile claims os.family windows. False when Phasmid is
++// not active, and in the browser process before the profile is loaded.
++COMPONENT_EXPORT(PHASMID) bool ClaimsWindows();
++
++// Whether the browser's family matchers may resolve `family`. A windows
++// profile resolves only the families it lists and the empty name, as
++// DirectWrite resolves only installed families. Always true otherwise.
++COMPONENT_EXPORT(PHASMID) bool FontFamilyResolvable(std::string_view family);
++
++}  // namespace phasmid
++
++#endif  // COMPONENTS_PHASMID_PROFILE_H_
+--- a/components/phasmid/switches.cc
++++ b/components/phasmid/switches.cc
+@@ -0,0 +1,16 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "components/phasmid/switches.h"
++
++namespace phasmid {
++namespace switches {
++
++const char kPhasmidProfile[] = "phasmid-profile";
++const char kPhasmidWidevineCdm[] = "phasmid-widevine-cdm";
++const char kPhasmidWindowsFonts[] = "phasmid-windows-fonts";
++
++}  // namespace switches
++
++}  // namespace phasmid
+--- a/components/phasmid/switches.h
++++ b/components/phasmid/switches.h
+@@ -0,0 +1,36 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_PHASMID_SWITCHES_H_
++#define COMPONENTS_PHASMID_SWITCHES_H_
++
++#include "base/component_export.h"
++
++namespace phasmid {
++namespace switches {
++
++// Path to the profile JSON. Browser process only; children receive the
++// validated profile through the environment.
++COMPONENT_EXPORT(PHASMID) extern const char kPhasmidProfile[];
++
++// Directory of an installed Google Chrome's Widevine CDM (the one holding
++// manifest.json). Browser process only. Defaults to
++// /opt/google/chrome/WidevineCdm.
++COMPONENT_EXPORT(PHASMID) extern const char kPhasmidWidevineCdm[];
++
++// The Windows font store: font files copied from a Windows installation,
++// with a manifest.json. Browser process only. Defaults to
++// $XDG_DATA_HOME/phasmid/fonts/windows/<os.build>.
++COMPONENT_EXPORT(PHASMID) extern const char kPhasmidWindowsFonts[];
++
++}  // namespace switches
++
++// Environment variables the browser process sets for every child process.
++inline constexpr char kProfileEnvVar[] = "PHASMID_PROFILE";
++// Set only when the profile claims Widevine and the host backs it.
++inline constexpr char kWidevineCdmEnvVar[] = "PHASMID_WIDEVINE_CDM";
++
++}  // namespace phasmid
++
++#endif  // COMPONENTS_PHASMID_SWITCHES_H_
+--- a/chrome/app/chrome_main_delegate.cc
++++ b/chrome/app/chrome_main_delegate.cc
+@@ -58,6 +58,7 @@
+ #include "chrome/grit/generated_resources.h"
+ #include "chrome/renderer/chrome_content_renderer_client.h"
+ #include "components/component_updater/component_updater_paths.h"
++#include "components/phasmid/profile.h"
+ #include "components/content_settings/core/common/content_settings_pattern.h"
+ #include "components/crash/core/app/crash_reporter_client.h"
+ #include "components/crash/core/common/crash_key.h"
+@@ -1171,6 +1172,22 @@
+     LOG(ERROR) << "Remote debugging pipe file descriptors are not open.";
+     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+   }
++
++  // Phasmid: load the profile before the zygote, GPU and utility processes
++  // are launched, so they inherit the exported environment. An invalid
++  // profile stops the browser.
++  if (is_browser) {
++    std::vector<std::string> phasmid_warnings;
++    std::string phasmid_error = phasmid::Profile::LoadAndExportFromCommandLine(
++        command_line, &phasmid_warnings);
++    for (const std::string& warning : phasmid_warnings) {
++      LOG(ERROR) << "Phasmid: host cannot back " << warning;
++    }
++    if (!phasmid_error.empty()) {
++      LOG(ERROR) << "Phasmid: " << phasmid_error;
++      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
++    }
++  }
+ #elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+   const bool is_browser = false;
+ #endif  // !defined(BUILDING_CHROME_RENDERER)
+--- a/chrome/BUILD.gn
++++ b/chrome/BUILD.gn
+@@ -306,6 +306,7 @@
+         "//chrome/browser:startup_data",
+         "//chrome/browser/lifetime",
+         "//chrome/common:version_header",
++        "//components/phasmid",
+ 
+         # For the sampling profiler.
+         "//chrome/common/profiler",
+@@ -450,6 +451,7 @@
+       "//chrome/install_static:install_static_util",
+       "//chrome/install_static:secondary_module",
+       "//components/crash/core/app",
++      "//components/phasmid",
+       "//components/memory_system",
+       "//components/policy:generated",
+       "//components/webapps/isolated_web_apps:scheme",
+--- a/chrome/app/BUILD.gn
++++ b/chrome/app/BUILD.gn
+@@ -171,6 +171,7 @@
+     "//components/crash/core/app",
+     "//components/crash/core/app:test_support",
+     "//components/devtools/devtools_pipe",
++    "//components/phasmid",
+     "//components/memory_system",
+     "//components/startup_metric_utils",
+     "//components/variations/service",
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1191,6 +1191,7 @@
+     "//components/pdf/common:constants",
+     "//components/pdf/common:util",
+     "//components/performance_manager",
++    "//components/phasmid",
+     "//components/policy/content",
+     "//components/policy/content:safe_sites_navigation_throttle",
+     "//components/privacy_sandbox:features",
+--- a/chrome/browser/net/BUILD.gn
++++ b/chrome/browser/net/BUILD.gn
+@@ -205,6 +205,7 @@
+     "//components/offline_pages/core",
+     "//components/page_load_metrics/browser",
+     "//components/permissions",
++    "//components/phasmid",
+     "//components/pref_registry",
+     "//components/privacy_sandbox",
+     "//components/proxy_config",
+--- a/chrome/browser/preloading/prefetch/prefetch_service/BUILD.gn
++++ b/chrome/browser/preloading/prefetch/prefetch_service/BUILD.gn
+@@ -32,6 +32,7 @@
+     "//chrome/browser/search_engines",
+     "//components/language/core/browser",
+     "//components/page_load_metrics/browser",
++    "//components/phasmid",
+     "//components/unified_consent",
+   ]
+ 
+--- a/chrome/browser/ui/startup/BUILD.gn
++++ b/chrome/browser/ui/startup/BUILD.gn
+@@ -164,6 +164,7 @@
+     "//components/infobars/core",
+     "//components/media_router/common/providers/cast/certificate",
+     "//components/network_session_configurator/common",
++    "//components/phasmid",
+     "//components/prefs",
+     "//components/signin/public/base",
+     "//components/signin/public/identity_manager",
+--- a/chrome/browser/ui/window_sizer/BUILD.gn
++++ b/chrome/browser/ui/window_sizer/BUILD.gn
+@@ -38,6 +38,7 @@
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/web_applications",
+     "//chrome/common:non_code_constants",
++    "//components/phasmid",
+     "//components/prefs",
+     "//ui/base",
+     "//ui/display",
+--- a/components/embedder_support/BUILD.gn
++++ b/components/embedder_support/BUILD.gn
+@@ -57,6 +57,7 @@
+ 
+   deps = [
+     ":embedder_support",
++    "//components/phasmid",
+     "//build:branding_buildflags",
+     "//components/policy/core/common",
+     "//components/prefs",
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -132,6 +132,7 @@
+ 
+   deps = [
+     ":child_process_security_policy_impl",
++    "//components/phasmid",
+     "//base",
+     "//base:base_static",
+     "//base:clang_profiling_buildflags",
+--- a/content/child/BUILD.gn
++++ b/content/child/BUILD.gn
+@@ -71,6 +71,7 @@
+ 
+   deps = [
+     "//base",
++    "//components/phasmid",
+     "//build/config/compiler:compiler_buildflags",
+     "//cc/paint",
+     "//components/attribution_reporting:features",
+--- a/content/renderer/BUILD.gn
++++ b/content/renderer/BUILD.gn
+@@ -241,6 +241,7 @@
+     "//components/metrics",
+     "//components/metrics:single_sample_metrics",
+     "//components/performance_manager/scenario_api",
++    "//components/phasmid",
+     "//components/startup_metric_utils",
+     "//components/url_formatter",
+     "//components/variations:variations_mojom",
+--- a/services/network/BUILD.gn
++++ b/services/network/BUILD.gn
+@@ -361,6 +361,7 @@
+     "//components/network_session_configurator/browser",
+     "//components/network_session_configurator/common",
+     "//components/os_crypt/common",
++    "//components/phasmid",
+     "//components/prefs",
+     "//components/unexportable_keys/mojom:mojo_service",
+     "//components/url_matcher",
+--- a/gpu/command_buffer/service/BUILD.gn
++++ b/gpu/command_buffer/service/BUILD.gn
+@@ -387,6 +387,7 @@
+     "//build:chromecast_buildflags",
+     "//components/crash/core/common",
+     "//components/persistent_cache",
++    "//components/phasmid",
+     "//components/version_info",
+     "//components/viz/common/resources:shared_image_format",
+     "//gpu/command_buffer/client",
+--- a/components/BUILD.gn
++++ b/components/BUILD.gn
+@@ -307,6 +307,7 @@
+     "//components/payments/core:unit_tests",
+     "//components/persistent_cache:unit_tests",
+     "//components/personal_context/core:unit_tests",
++    "//components/phasmid:unit_tests",
+     "//components/policy/core/browser:unit_tests",
+     "//components/policy/core/common:unit_tests",
+     "//components/policy/test_support:unittests",
+--- a/components/phasmid/font_allowlist_linux.cc
++++ b/components/phasmid/font_allowlist_linux.cc
+@@ -0,0 +1,1302 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "components/phasmid/font_allowlist_linux.h"
++
++#include <fontconfig/fontconfig.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <map>
++#include <memory>
++#include <optional>
++#include <set>
++#include <string>
++#include <string_view>
++#include <tuple>
++#include <utility>
++#include <vector>
++
++#include "base/command_line.h"
++#include "base/compiler_specific.h"
++#include "base/containers/span.h"
++#include "base/environment.h"
++#include "base/files/file.h"
++#include "base/files/file_enumerator.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/hash/sha1.h"
++#include "base/json/json_reader.h"
++#include "base/nix/xdg_util.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_split.h"
++#include "base/strings/string_util.h"
++#include "base/values.h"
++#include "base/version.h"
++#include "components/phasmid/profile.h"
++#include "components/phasmid/switches.h"
++#include "crypto/hash.h"
++#include "third_party/skia/include/core/SkFontMgr.h"
++#include "third_party/skia/include/core/SkFontStyle.h"
++#include "third_party/skia/include/core/SkRefCnt.h"
++#include "third_party/skia/include/core/SkStream.h"
++#include "third_party/skia/include/core/SkString.h"
++#include "third_party/skia/include/core/SkTypeface.h"
++#include "third_party/skia/include/ports/SkFontConfigInterface.h"
++
++namespace phasmid {
++
++namespace {
++
++constexpr char kFontconfigFileEnvVar[] = "FONTCONFIG_FILE";
++// The host's FONTCONFIG_FILE before Phasmid replaced it, empty when it was
++// unset.
++constexpr char kHostFontconfigFileEnvVar[] = "PHASMID_HOST_FONTCONFIG_FILE";
++
++// Blink's color emoji locale (font_cache.cc kColorEmojiLocale) and a
++// character every color emoji font has, U+1F600 GRINNING FACE.
++constexpr char kEmojiLocale[] = "und-Zsye";
++constexpr FcChar32 kEmojiCharacter = 0x1F600;
++
++// The family Windows Chrome draws emoji with when it is installed.
++constexpr char kWindowsEmoji[] = "Segoe UI Emoji";
++
++// Blink's AlternateFamilyName outside Windows: a family that does not match
++// is retried under its pair, so a listed name resolves when its pair does.
++constexpr std::pair<std::string_view, std::string_view> kBlinkAlternates[] = {
++    {"courier", "courier new"}, {"courier new", "courier"},
++    {"times", "times new roman"}, {"times new roman", "times"},
++    {"arial", "helvetica"},     {"helvetica", "arial"},
++};
++
++struct FcDeleter {
++  void operator()(FcConfig* config) const { FcConfigDestroy(config); }
++  void operator()(FcPattern* pattern) const { FcPatternDestroy(pattern); }
++  void operator()(FcObjectSet* objects) const { FcObjectSetDestroy(objects); }
++  void operator()(FcFontSet* fonts) const { FcFontSetDestroy(fonts); }
++  void operator()(FcStrList* strings) const { FcStrListDone(strings); }
++};
++template <typename T>
++using FcPtr = std::unique_ptr<T, FcDeleter>;
++
++std::string Err(const char* field, const std::string& what) {
++  return std::string("profile field '") + field + "' " + what;
++}
++
++base::span<FcPattern*> Patterns(const FcFontSet* fonts) {
++  if (!fonts || fonts->nfont <= 0) {
++    return {};
++  }
++  // SAFETY: an FcFontSet holds `nfont` patterns at `fonts`.
++  return UNSAFE_BUFFERS(
++      base::span(fonts->fonts, static_cast<size_t>(fonts->nfont)));
++}
++
++std::string PatternString(FcPattern* pattern, const char* object, int index) {
++  FcChar8* value = nullptr;
++  if (FcPatternGetString(pattern, object, index, &value) != FcResultMatch ||
++      !value) {
++    return std::string();
++  }
++  return std::string(reinterpret_cast<const char*>(value));
++}
++
++// The families a font publishes, in fontconfig's order.
++std::vector<std::string> Families(FcPattern* font) {
++  std::vector<std::string> families;
++  for (int i = 0;; ++i) {
++    std::string family = PatternString(font, FC_FAMILY, i);
++    if (family.empty()) {
++      return families;
++    }
++    families.push_back(std::move(family));
++  }
++}
++
++// Every font file `config` reaches, with the families its faces publish,
++// lowercased.
++std::map<std::string, std::set<std::string>> FamiliesByFile(
++    FcConfig* config) {
++  std::map<std::string, std::set<std::string>> out;
++  FcPtr<FcPattern> any(FcPatternCreate());
++  FcPtr<FcObjectSet> objects(FcObjectSetBuild(FC_FILE, FC_FAMILY, nullptr));
++  FcPtr<FcFontSet> fonts(FcFontList(config, any.get(), objects.get()));
++  for (FcPattern* font : Patterns(fonts.get())) {
++    std::string file = PatternString(font, FC_FILE, 0);
++    if (file.empty()) {
++      continue;
++    }
++    std::set<std::string>& families = out[file];
++    for (const std::string& family : Families(font)) {
++      families.insert(base::ToLowerASCII(family));
++    }
++  }
++  return out;
++}
++
++// The families of the font gfx::GetFallbackFontForChar picks for emoji: the
++// first scalable, readable TrueType or CFF font in fontconfig's order for
++// Blink's emoji locale whose charset has the character. Empty when none has.
++std::vector<std::string> EmojiFallbackFamilies(FcConfig* config) {
++  FcPtr<FcPattern> pattern(FcPatternCreate());
++  FcPatternAddString(pattern.get(), FC_LANG,
++                     reinterpret_cast<const FcChar8*>(kEmojiLocale));
++  FcPatternAddBool(pattern.get(), FC_SCALABLE, FcTrue);
++  FcConfigSubstitute(config, pattern.get(), FcMatchPattern);
++  FcDefaultSubstitute(pattern.get());
++  FcResult result;
++  FcPtr<FcFontSet> sorted(
++      FcFontSort(config, pattern.get(), FcFalse, nullptr, &result));
++  for (FcPattern* font : Patterns(sorted.get())) {
++    FcBool scalable = FcFalse;
++    if (FcPatternGetBool(font, FC_SCALABLE, 0, &scalable) != FcResultMatch ||
++        !scalable) {
++      continue;
++    }
++    std::string format = PatternString(font, FC_FONTFORMAT, 0);
++    if (format != "TrueType" && format != "CFF") {
++      continue;
++    }
++    std::string file = PatternString(font, FC_FILE, 0);
++    if (file.empty() || access(file.c_str(), R_OK) != 0) {
++      continue;
++    }
++    FcCharSet* charset = nullptr;
++    if (FcPatternGetCharSet(font, FC_CHARSET, 0, &charset) != FcResultMatch ||
++        !FcCharSetHasChar(charset, kEmojiCharacter)) {
++      continue;
++    }
++    return Families(font);
++  }
++  return {};
++}
++
++// Writes `contents` to `path` through a temporary file in the same
++// directory, so a concurrent reader sees the old file or the whole new one.
++bool WriteAtomically(const base::FilePath& path, std::string_view contents) {
++  base::FilePath temp;
++  if (!base::CreateTemporaryFileInDir(path.DirName(), &temp)) {
++    return false;
++  }
++  if (base::WriteFile(temp, contents) &&
++      base::ReplaceFile(temp, path, nullptr)) {
++    return true;
++  }
++  base::DeleteFile(temp);
++  return false;
++}
++
++// "A, B and C".
++std::string JoinNames(const std::vector<std::string>& names) {
++  std::string out;
++  for (size_t i = 0; i < names.size(); ++i) {
++    if (i > 0) {
++      out += i + 1 == names.size() ? " and " : ", ";
++    }
++    out += names[i];
++  }
++  return out;
++}
++
++std::string XmlText(std::string_view text) {
++  std::string out;
++  for (char c : text) {
++    switch (c) {
++      case '&':
++        out += "&amp;";
++        break;
++      case '<':
++        out += "&lt;";
++        break;
++      case '>':
++        out += "&gt;";
++        break;
++      default:
++        out += c;
++    }
++  }
++  return out;
++}
++
++// Creates the directory for Phasmid's fontconfig files and sets `resolved`
++// to its resolved path, as fontconfig records the files it loads. Returns an
++// error, or an empty string.
++std::string ConfigDirectory(base::Environment* env, base::FilePath* resolved) {
++  const base::FilePath dir =
++      base::nix::GetXDGDirectory(env, "XDG_CACHE_HOME", ".cache")
++          .Append("phasmid")
++          .Append("fontconfig");
++  *resolved = base::CreateDirectory(dir) ? base::MakeAbsoluteFilePath(dir)
++                                         : base::FilePath();
++  if (resolved->empty()) {
++    return Err("fonts.families", "cannot be backed: cannot create " +
++                                     dir.AsUTF8Unsafe());
++  }
++  return std::string();
++}
++
++// Writes `config` to `dir`, named by content, so concurrent browsers with
++// the same profile and host share one file and one with another profile
++// never rewrites it, and exports it as FONTCONFIG_FILE. Returns an error, or
++// an empty string with `path` set.
++std::string WriteAndExportConfig(base::Environment* env,
++                                 const base::FilePath& dir,
++                                 const std::string& config,
++                                 base::FilePath* path) {
++  *path = dir.Append(base::HexEncodeLower(base::SHA1HashString(config)) +
++                     ".conf");
++  std::string existing;
++  if ((!base::ReadFileToString(*path, &existing) || existing != config) &&
++      !WriteAtomically(*path, config)) {
++    return Err("fonts.families", "cannot be backed: cannot write " +
++                                     path->AsUTF8Unsafe());
++  }
++  if (!env->SetVar(kFontconfigFileEnvVar, path->value())) {
++    return "cannot export FONTCONFIG_FILE to the environment";
++  }
++  return std::string();
++}
++
++// Loads the exported file the way every process will. fontconfig answers a
++// configuration it cannot load with a fallback that reaches every font under
++// /usr/share/fonts, so that is ruled out here. Returns an error, or an empty
++// string with `check` set.
++std::string LoadExportedConfig(const base::FilePath& path,
++                               FcPtr<FcConfig>* check) {
++  check->reset(FcInitLoadConfigAndFonts());
++  bool loaded = false;
++  if (*check) {
++    FcPtr<FcStrList> files(FcConfigGetConfigFiles(check->get()));
++    while (FcChar8* file = files ? FcStrListNext(files.get()) : nullptr) {
++      loaded = loaded || path.value() == reinterpret_cast<const char*>(file);
++    }
++  }
++  if (!loaded) {
++    return Err("fonts.families", "cannot be backed: fontconfig does not load " +
++                                     path.AsUTF8Unsafe());
++  }
++  return std::string();
++}
++
++// The Windows font store: font files copied from a Windows installation the
++// user licenses, with a manifest naming each file's SHA-256 and the files
++// behind each family as DirectWrite names it.
++constexpr char kStoreManifest[] = "manifest.json";
++
++struct WindowsStore {
++  base::FilePath dir;
++  base::DictValue manifest;
++};
++
++// The store manifest in `dir`, when it is readable and has the fields this
++// file reads.
++std::optional<base::DictValue> ReadStoreManifest(const base::FilePath& dir) {
++  std::string contents;
++  if (!base::ReadFileToString(dir.Append(kStoreManifest), &contents)) {
++    return std::nullopt;
++  }
++  std::optional<base::Value> value =
++      base::JSONReader::Read(contents, base::JSON_PARSE_RFC);
++  if (!value || !value->is_dict()) {
++    return std::nullopt;
++  }
++  base::DictValue manifest = std::move(*value).TakeDict();
++  if (!manifest.FindString("set") ||
++      !manifest.FindStringByDottedPath("os.build") ||
++      !manifest.FindList("files") || !manifest.FindDict("families")) {
++    return std::nullopt;
++  }
++  return manifest;
++}
++
++// The files the manifest lists for `family`, matched ignoring ASCII case as
++// DirectWrite matches family names; null when it lists none.
++const base::ListValue* ManifestFiles(const base::DictValue& manifest,
++                                     std::string_view family) {
++  for (const auto [name, files] : *manifest.FindDict("families")) {
++    if (files.is_list() && base::EqualsCaseInsensitiveASCII(name, family)) {
++      return &files.GetList();
++    }
++  }
++  return nullptr;
++}
++
++// The family the manifest says `family` resolves to without a file of its
++// own (Blink's alternate names on Windows: Courier to Courier New, Helvetica
++// to Arial), or an empty string.
++std::string ManifestAlias(const base::DictValue& manifest,
++                          std::string_view family) {
++  const base::DictValue* aliases = manifest.FindDict("aliases");
++  if (!aliases) {
++    return std::string();
++  }
++  for (const auto [name, target] : *aliases) {
++    if (target.is_string() && base::EqualsCaseInsensitiveASCII(name, family)) {
++      return target.GetString();
++    }
++  }
++  return std::string();
++}
++
++// The directory given by --phasmid-windows-fonts, else, among
++// $XDG_DATA_HOME/phasmid/fonts/windows/<build> whose manifest names that
++// os.build, the one with the most of the listed families, the newest build
++// on a tie. Null, with `why` set, when there is none.
++std::optional<WindowsStore> FindWindowsStore(const Profile::Fonts& claimed,
++                                             base::Environment* env,
++                                             std::string* why) {
++  const base::CommandLine& command_line =
++      *base::CommandLine::ForCurrentProcess();
++  if (command_line.HasSwitch(switches::kPhasmidWindowsFonts)) {
++    const base::FilePath given =
++        command_line.GetSwitchValuePath(switches::kPhasmidWindowsFonts);
++    const base::FilePath dir = base::MakeAbsoluteFilePath(given);
++    std::optional<base::DictValue> manifest =
++        dir.empty() ? std::nullopt : ReadStoreManifest(dir);
++    if (!manifest) {
++      *why = given.AsUTF8Unsafe() + " (--phasmid-windows-fonts) has no " +
++             kStoreManifest;
++      return std::nullopt;
++    }
++    return WindowsStore{dir, std::move(*manifest)};
++  }
++  const base::FilePath root =
++      base::nix::GetXDGDirectory(env, "XDG_DATA_HOME", ".local/share")
++          .Append("phasmid")
++          .Append("fonts")
++          .Append("windows");
++  std::vector<base::FilePath> dirs;
++  base::FileEnumerator entries(root, false, base::FileEnumerator::DIRECTORIES);
++  for (base::FilePath dir = entries.Next(); !dir.empty();
++       dir = entries.Next()) {
++    dirs.push_back(dir);
++  }
++  std::sort(dirs.begin(), dirs.end());
++  std::optional<WindowsStore> best;
++  size_t best_listed = 0;
++  base::Version best_build;
++  for (const base::FilePath& dir : dirs) {
++    std::optional<base::DictValue> manifest = ReadStoreManifest(dir);
++    if (!manifest ||
++        *manifest->FindStringByDottedPath("os.build") != dir.BaseName().value()) {
++      continue;
++    }
++    size_t listed = 0;
++    for (const std::string& family : claimed.families) {
++      if (ManifestFiles(*manifest, family) ||
++          !ManifestAlias(*manifest, family).empty()) {
++        ++listed;
++      }
++    }
++    const base::Version build(dir.BaseName().value());
++    if (!best || listed > best_listed ||
++        (listed == best_listed && build.IsValid() &&
++         (!best_build.IsValid() || build > best_build))) {
++      best = WindowsStore{dir, std::move(*manifest)};
++      best_listed = listed;
++      best_build = build;
++    }
++  }
++  if (best) {
++    best->dir = base::MakeAbsoluteFilePath(best->dir);
++  }
++  if (!best || best->dir.empty()) {
++    *why = "no " + std::string(kStoreManifest) + " under " +
++           root.AsUTF8Unsafe() +
++           "/<build>; import the font files with the committed manifest "
++           "there or pass --phasmid-windows-fonts=<dir>";
++    return std::nullopt;
++  }
++  return best;
++}
++
++// CSS family names over the Windows font store as Windows Chrome resolves
++// them. DirectWrite's system collection knows a face by its
++// weight-stretch-style family: name ID 21; else the typographic family (16)
++// plus the words of its subfamily that are not style words (Bodoni MT
++// Poster); else the legacy family (1) with its style words moved into the
++// face's style (Franklin Gothic Demi Cond is Franklin Gothic at 600,
++// condensed); a named instance of a variable font by the WWS family the
++// manifest derives from STAT (Sitka Small). fontconfig knows the file's own
++// names instead, so the browser matches through the faces below.
++
++struct WindowsFace {
++  std::string file;
++  // fontconfig's FC_INDEX: the face, and the named instance + 1 in the
++  // upper 16 bits.
++  int index = 0;
++  std::vector<std::string> families;
++  // DWRITE_FONT_WEIGHT, DWRITE_FONT_STRETCH (1-9) and DWRITE_FONT_STYLE
++  // (0 normal, 1 oblique, 2 italic).
++  int weight = 400;
++  int stretch = 5;
++  int slope = 0;
++};
++
++struct StyleWord {
++  std::string_view word;
++  int weight;
++  int stretch;
++  int slope;
++};
++constexpr StyleWord kStyleWords[] = {
++    {"thin", 100, 0, 0},           {"hairline", 100, 0, 0},
++    {"extralight", 200, 0, 0},     {"ultralight", 200, 0, 0},
++    {"light", 300, 0, 0},          {"semilight", 350, 0, 0},
++    {"demilight", 350, 0, 0},      {"regular", 400, 0, 0},
++    {"normal", 400, 0, 0},         {"medium", 500, 0, 0},
++    {"demi", 600, 0, 0},           {"demibold", 600, 0, 0},
++    {"semibold", 600, 0, 0},       {"bold", 700, 0, 0},
++    {"extrabold", 800, 0, 0},      {"ultrabold", 800, 0, 0},
++    {"black", 900, 0, 0},          {"heavy", 900, 0, 0},
++    {"extrablack", 950, 0, 0},     {"ultrablack", 950, 0, 0},
++    {"ultracondensed", 0, 1, 0},   {"extracondensed", 0, 2, 0},
++    {"compressed", 0, 2, 0},       {"condensed", 0, 3, 0},
++    {"cond", 0, 3, 0},             {"cn", 0, 3, 0},
++    {"narrow", 0, 3, 0},           {"semicondensed", 0, 4, 0},
++    {"semiexpanded", 0, 6, 0},     {"expanded", 0, 7, 0},
++    {"extended", 0, 7, 0},         {"extraexpanded", 0, 8, 0},
++    {"ultraexpanded", 0, 9, 0},    {"italic", 0, 0, 2},
++    {"kursiv", 0, 0, 2},           {"oblique", 0, 0, 1},
++    {"slanted", 0, 0, 1},          {"inclined", 0, 0, 1},
++};
++// Style words only before another one (Extra Bold, Ext Condensed).
++constexpr std::string_view kStyleModifiers[] = {"extra", "ultra", "ext",
++                                                "semi", "demi"};
++
++const StyleWord* FindStyleWord(std::string_view lower) {
++  for (const StyleWord& word : kStyleWords) {
++    if (word.word == lower) {
++      return &word;
++    }
++  }
++  return nullptr;
++}
++
++// Whether `lower` is a style word; in a subfamily, Roman is one too
++// (Lucida Sans Demibold Roman).
++bool IsStyleWord(std::string_view lower, bool subfamily) {
++  return FindStyleWord(lower) || (subfamily && lower == "roman");
++}
++
++// `name` without its style words, which are appended to `words`, lowercased.
++std::string WithoutStyleWords(const std::string& name,
++                              bool subfamily,
++                              std::vector<std::string>* words) {
++  const std::vector<std::string> tokens = base::SplitString(
++      name, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++  std::string kept;
++  for (size_t i = 0; i < tokens.size(); ++i) {
++    const std::string lower = base::ToLowerASCII(tokens[i]);
++    const std::string next =
++        i + 1 < tokens.size() ? base::ToLowerASCII(tokens[i + 1]) : "";
++    const bool modifier =
++        std::find(std::begin(kStyleModifiers), std::end(kStyleModifiers),
++                  lower) != std::end(kStyleModifiers);
++    if (IsStyleWord(lower, subfamily) ||
++        (modifier && IsStyleWord(next, subfamily))) {
++      words->push_back(lower);
++    } else {
++      kept += (kept.empty() ? "" : " ") + tokens[i];
++    }
++  }
++  return kept;
++}
++
++// The style the moved words name: the first weight other than regular, the
++// last stretch and slope; 0 where they name none. Extra and Ultra join the
++// next word (Extra Bold is 800).
++StyleWord StyleOfWords(const std::vector<std::string>& words) {
++  StyleWord style{"", 0, 0, 0};
++  for (size_t i = 0; i < words.size(); ++i) {
++    std::string word = words[i];
++    if ((word == "extra" || word == "ultra") && i + 1 < words.size() &&
++        (words[i + 1] == "bold" || words[i + 1] == "light" ||
++         words[i + 1] == "condensed" || words[i + 1] == "expanded" ||
++         words[i + 1] == "black")) {
++      word += words[++i];
++    }
++    const StyleWord* found = FindStyleWord(word);
++    if (!found) {
++      continue;
++    }
++    if (found->weight && found->weight != 400 && !style.weight) {
++      style.weight = found->weight;
++    }
++    if (found->stretch) {
++      style.stretch = found->stretch;
++    }
++    if (found->slope) {
++      style.slope = found->slope;
++    }
++  }
++  return style;
++}
++
++std::string JoinWords(const std::string& a, const std::string& b) {
++  return a.empty() ? b : b.empty() ? a : a + " " + b;
++}
++
++std::string FaceString(const base::DictValue& face, const char* key) {
++  const std::string* value = face.FindString(key);
++  return value ? *value : std::string();
++}
++
++// A face without named instances: its family names, from the manifest's
++// name table facts, and its OS/2 weight, width and italic bit, which the
++// moved style words override where those say regular (Franklin Gothic
++// Demi has usWeightClass 400). `slope` is fontconfig's.
++void StaticWindowsFace(const base::DictValue& face,
++                       int slope,
++                       WindowsFace* out) {
++  std::vector<std::string> words;
++  std::string family = FaceString(face, "family_wws");
++  if (family.empty() && !FaceString(face, "family_typo").empty()) {
++    family = JoinWords(
++        FaceString(face, "family_typo"),
++        WithoutStyleWords(FaceString(face, "subfamily_typo"), true, &words));
++  } else if (family.empty()) {
++    const std::string legacy = FaceString(face, "family_legacy");
++    const std::string base = WithoutStyleWords(legacy, false, &words);
++    family = JoinWords(
++        base.empty() ? legacy : base,
++        WithoutStyleWords(FaceString(face, "subfamily_legacy"), true, &words));
++  }
++  if (family.empty()) {
++    return;
++  }
++  out->families.push_back(family);
++  if (const base::ListValue* localized =
++          face.FindList("family_names_localized")) {
++    for (const base::Value& name : *localized) {
++      std::vector<std::string> unused;
++      const std::string stripped =
++          name.is_string() ? WithoutStyleWords(name.GetString(), false, &unused)
++                           : std::string();
++      if (!stripped.empty() &&
++          std::find(out->families.begin(), out->families.end(), stripped) ==
++              out->families.end()) {
++        out->families.push_back(stripped);
++      }
++    }
++  }
++  out->weight = face.FindInt("weight").value_or(400);
++  out->stretch = face.FindInt("width").value_or(5);
++  out->slope = face.FindBool("italic").value_or(false) ? 2 : slope;
++  const StyleWord style = StyleOfWords(words);
++  if (out->weight == 400 && style.weight && style.weight != 500) {
++    out->weight = style.weight;
++  }
++  if (out->stretch == 5 && style.stretch) {
++    out->stretch = style.stretch;
++  }
++  if (!out->slope && style.slope) {
++    out->slope = style.slope;
++  }
++}
++
++// The WWS family of named instance `instance` (fontconfig's FC_INDEX >> 16,
++// 1-based) of `face`, or for 0 of the instance at the default coordinates,
++// which fontconfig lists only as the face itself. Null for a face without
++// named instances.
++const std::string* InstanceFamily(const base::DictValue& face, int instance) {
++  const base::ListValue* instances = face.FindList("instances");
++  if (!instances || instances->empty()) {
++    return nullptr;
++  }
++  if (instance > 0) {
++    const size_t i = static_cast<size_t>(instance) - 1;
++    if (i >= instances->size() || !(*instances)[i].is_dict()) {
++      return nullptr;
++    }
++    return (*instances)[i].GetDict().FindString("family_wws");
++  }
++  for (const char* key : {"subfamily_typo", "subfamily_legacy"}) {
++    const std::string subfamily = FaceString(face, key);
++    for (const base::Value& entry : *instances) {
++      const std::string* name =
++          entry.is_dict() ? entry.GetDict().FindString("subfamily") : nullptr;
++      if (!subfamily.empty() && name && *name == subfamily) {
++        return entry.GetDict().FindString("family_wws");
++      }
++    }
++  }
++  return nullptr;
++}
++
++// DWRITE_FONT_STRETCH of fontconfig's width (the usWidthClass percentages).
++int StretchOfFcWidth(double width) {
++  constexpr std::array<double, 9> kPercent = {50,  62.5, 75,  87.5, 100,
++                                              112.5, 125, 150, 200};
++  int stretch = 0;
++  double nearest = 0;
++  for (size_t i = 0; i < kPercent.size(); ++i) {
++    const double distance = std::abs(width - kPercent[i]);
++    if (!stretch || distance < nearest) {
++      stretch = static_cast<int>(i) + 1;
++      nearest = distance;
++    }
++  }
++  return stretch;
++}
++
++// The faces `config` reaches, as DirectWrite has them. Variable font
++// patterns are left out: DirectWrite's collection lists the named
++// instances.
++std::vector<WindowsFace> WindowsFaces(FcConfig* config,
++                                      const base::DictValue& manifest) {
++  std::map<std::string, const base::ListValue*> faces_by_file;
++  for (const base::Value& entry : *manifest.FindList("files")) {
++    const std::string* name =
++        entry.is_dict() ? entry.GetDict().FindString("name") : nullptr;
++    const base::ListValue* faces =
++        entry.is_dict() ? entry.GetDict().FindList("faces") : nullptr;
++    if (name && faces) {
++      faces_by_file[*name] = faces;
++    }
++  }
++  FcPtr<FcPattern> any(FcPatternCreate());
++  FcPtr<FcObjectSet> objects(FcObjectSetBuild(FC_FILE, FC_INDEX, FC_WEIGHT,
++                                              FC_WIDTH, FC_SLANT, FC_VARIABLE,
++                                              nullptr));
++  FcPtr<FcFontSet> fonts(FcFontList(config, any.get(), objects.get()));
++  std::vector<WindowsFace> out;
++  for (FcPattern* font : Patterns(fonts.get())) {
++    FcBool variable = FcFalse;
++    if (FcPatternGetBool(font, FC_VARIABLE, 0, &variable) == FcResultMatch &&
++        variable) {
++      continue;
++    }
++    WindowsFace face;
++    face.file = PatternString(font, FC_FILE, 0);
++    FcPatternGetInteger(font, FC_INDEX, 0, &face.index);
++    const auto entry =
++        faces_by_file.find(base::FilePath(face.file).BaseName().value());
++    if (face.file.empty() || entry == faces_by_file.end()) {
++      continue;
++    }
++    const base::DictValue* facts = nullptr;
++    for (const base::Value& candidate : *entry->second) {
++      if (candidate.is_dict() &&
++          candidate.GetDict().FindInt("index") == (face.index & 0xFFFF)) {
++        facts = &candidate.GetDict();
++      }
++    }
++    if (!facts) {
++      continue;
++    }
++    double weight = FC_WEIGHT_REGULAR;
++    double width = FC_WIDTH_NORMAL;
++    int slant = FC_SLANT_ROMAN;
++    FcPatternGetDouble(font, FC_WEIGHT, 0, &weight);
++    FcPatternGetDouble(font, FC_WIDTH, 0, &width);
++    FcPatternGetInteger(font, FC_SLANT, 0, &slant);
++    const int slope = slant == FC_SLANT_ITALIC    ? 2
++                      : slant == FC_SLANT_OBLIQUE ? 1
++                                                  : 0;
++    if (const std::string* family =
++            InstanceFamily(*facts, face.index >> 16)) {
++      face.families.push_back(*family);
++      face.weight =
++          static_cast<int>(std::lround(FcWeightToOpenTypeDouble(weight)));
++      face.stretch = StretchOfFcWidth(width);
++      face.slope = slope;
++    } else {
++      StaticWindowsFace(*facts, slope, &face);
++    }
++    if (!face.families.empty()) {
++      out.push_back(std::move(face));
++    }
++  }
++  // DirectWrite keeps the first of equally good faces, in this order.
++  std::sort(out.begin(), out.end(),
++            [](const WindowsFace& a, const WindowsFace& b) {
++              return std::tie(a.file, a.index) < std::tie(b.file, b.index);
++            });
++  return out;
++}
++
++// IDWriteFontFamily::GetFirstMatchingFont's choice between two faces:
++// the nearer in (stretch * 11, style * 7, weight / 100 * 5), and on a tie
++// the one further along the request (Franklin Gothic at 500 is Demi, 600,
++// not Medium, 400).
++bool BetterWindowsFace(const WindowsFace& next,
++                       const WindowsFace& current,
++                       const SkFontStyle& requested) {
++  const auto point = [](int weight, int stretch, int slope) {
++    return std::array<double, 3>{(stretch - 5) * 11.0, slope * 7.0,
++                                 (weight - 400) / 100.0 * 5.0};
++  };
++  const int requested_slope =
++      requested.slant() == SkFontStyle::kItalic_Slant    ? 2
++      : requested.slant() == SkFontStyle::kOblique_Slant ? 1
++                                                         : 0;
++  const std::array<double, 3> want =
++      point(requested.weight(), requested.width(), requested_slope);
++  const auto distance = [&](const std::array<double, 3>& v) {
++    return (v[0] - want[0]) * (v[0] - want[0]) +
++           (v[1] - want[1]) * (v[1] - want[1]) +
++           (v[2] - want[2]) * (v[2] - want[2]);
++  };
++  const auto dot = [&](const std::array<double, 3>& v) {
++    return v[0] * want[0] + v[1] * want[1] + v[2] * want[2];
++  };
++  const std::array<double, 3> a = point(next.weight, next.stretch, next.slope);
++  const std::array<double, 3> b =
++      point(current.weight, current.stretch, current.slope);
++  return distance(a) < distance(b) ||
++         (distance(a) == distance(b) && dot(a) > dot(b));
++}
++
++// The browser's family matcher for a windows profile with a store (the
++// global SkFontConfigInterface, which the font services and the browser's
++// font manager use): a family DirectWrite has resolves to its best face; a
++// name a page may ask for that it does not have fails, so that Blink
++// retries it; other names (the browser's own UI lookups) and the default
++// typeface keep fontconfig's answer.
++class WindowsStoreFontConfigInterface : public SkFontConfigInterface {
++ public:
++  explicit WindowsStoreFontConfigInterface(std::vector<WindowsFace> faces)
++      : direct_(
++            sk_ref_sp(SkFontConfigInterface::GetSingletonDirectInterface())),
++        faces_(std::move(faces)) {}
++
++  bool matchFamilyName(const char family_name[],
++                       SkFontStyle requested,
++                       FontIdentity* identity,
++                       SkString* out_family,
++                       SkFontStyle* out_style) override {
++    const std::string_view family = family_name ? family_name : "";
++    const WindowsFace* best = nullptr;
++    const std::string* best_name = nullptr;
++    for (const WindowsFace& face : faces_) {
++      for (const std::string& name : face.families) {
++        if (!family.empty() && base::EqualsCaseInsensitiveASCII(name, family) &&
++            (!best || BetterWindowsFace(face, *best, requested))) {
++          best = &face;
++          best_name = &name;
++        }
++      }
++    }
++    if (!best) {
++      return (family.empty() || !FontFamilyResolvable(family)) &&
++             direct_->matchFamilyName(family_name, requested, identity,
++                                      out_family, out_style);
++    }
++    if (identity) {
++      identity->fTTCIndex = best->index;
++      identity->fString.set(best->file.c_str());
++    }
++    if (out_family) {
++      out_family->set(best_name->c_str());
++    }
++    if (out_style) {
++      const SkFontStyle::Slant slant =
++          best->slope == 2   ? SkFontStyle::kItalic_Slant
++          : best->slope == 1 ? SkFontStyle::kOblique_Slant
++                             : SkFontStyle::kUpright_Slant;
++      *out_style = SkFontStyle(best->weight, best->stretch, slant);
++    }
++    return true;
++  }
++
++  SkStreamAsset* openStream(const FontIdentity& identity) override {
++    return direct_->openStream(identity);
++  }
++
++  sk_sp<SkTypeface> makeTypeface(const FontIdentity& identity,
++                                 sk_sp<SkFontMgr> manager) override {
++    return direct_->makeTypeface(identity, std::move(manager));
++  }
++
++ private:
++  const sk_sp<SkFontConfigInterface> direct_;
++  const std::vector<WindowsFace> faces_;
++};
++
++// A standalone fontconfig over the store only (no host font, alias or rule),
++// reaching the files of the listed families that match the manifest's
++// SHA-256. A missing or mismatched file is left out and its families are
++// absent, reported once as unbacked. Render settings are Windows' defaults:
++// antialiased, slight hinting, embedded bitmaps on (DirectWrite uses a
++// face's bitmap strikes), ClearType RGB subpixel order.
++std::string ExportWindowsStore(const WindowsStore& store,
++                               const Profile::Fonts& claimed,
++                               base::Environment* env,
++                               std::vector<std::string>* warnings) {
++  const base::DictValue& manifest = store.manifest;
++  std::map<std::string, std::string> hashes;
++  for (const base::Value& entry : *manifest.FindList("files")) {
++    const std::string* name =
++        entry.is_dict() ? entry.GetDict().FindString("name") : nullptr;
++    const std::string* sha256 =
++        entry.is_dict() ? entry.GetDict().FindString("sha256") : nullptr;
++    if (name && sha256) {
++      hashes[*name] = base::ToLowerASCII(*sha256);
++    }
++  }
++
++  // The files of the listed families, as the manifest names them.
++  std::set<std::string> wanted;
++  for (const std::string& family : claimed.families) {
++    if (const base::ListValue* files = ManifestFiles(manifest, family)) {
++      for (const base::Value& file : *files) {
++        if (file.is_string()) {
++          wanted.insert(file.GetString());
++        }
++      }
++    }
++  }
++  std::set<std::string> kept;
++  std::vector<std::string> missing;
++  std::vector<std::string> mismatched;
++  for (const std::string& name : wanted) {
++    const base::FilePath file = store.dir.Append(name);
++    base::File contents(file, base::File::FLAG_OPEN | base::File::FLAG_READ);
++    if (!contents.IsValid()) {
++      missing.push_back(name);
++      continue;
++    }
++    std::array<uint8_t, crypto::hash::kSha256Size> digest;
++    const auto hash = hashes.find(name);
++    if (hash == hashes.end() ||
++        !crypto::hash::HashFile(crypto::hash::kSha256, &contents, digest) ||
++        base::HexEncodeLower(digest) != hash->second) {
++      mismatched.push_back(name);
++      continue;
++    }
++    kept.insert(file.value());
++  }
++  std::vector<std::string> rejected;
++  base::FileEnumerator entries(store.dir, false, base::FileEnumerator::FILES);
++  for (base::FilePath file = entries.Next(); !file.empty();
++       file = entries.Next()) {
++    if (!kept.contains(file.value())) {
++      rejected.push_back(file.value());
++    }
++  }
++  std::sort(rejected.begin(), rejected.end());
++
++  base::FilePath dir;
++  std::string error = ConfigDirectory(env, &dir);
++  if (!error.empty()) {
++    return error;
++  }
++  const base::FilePath cache = dir.Append("cache");
++  if (!base::CreateDirectory(cache)) {
++    return Err("fonts.families", "cannot be backed: cannot create " +
++                                     cache.AsUTF8Unsafe());
++  }
++  std::string config =
++      "<?xml version=\"1.0\"?>\n"
++      "<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n"
++      "<!-- Phasmid: the Windows font store " +
++      XmlText(*manifest.FindString("set")) +
++      ", reaching only the files of the profile's fonts.families that match "
++      "its manifest. -->\n"
++      "<fontconfig>\n"
++      "  <dir>" +
++      XmlText(store.dir.value()) +
++      "</dir>\n"
++      "  <cachedir>" +
++      XmlText(cache.value()) +
++      "</cachedir>\n"
++      "  <match target=\"font\">\n"
++      "    <edit name=\"antialias\" mode=\"assign\"><bool>true</bool></edit>\n"
++      "    <edit name=\"hinting\" mode=\"assign\"><bool>true</bool></edit>\n"
++      "    <edit name=\"hintstyle\" mode=\"assign\"><const>hintslight</const>"
++      "</edit>\n"
++      "    <edit name=\"embeddedbitmap\" mode=\"assign\"><bool>true</bool>"
++      "</edit>\n"
++      "    <edit name=\"rgba\" mode=\"assign\"><const>rgb</const></edit>\n"
++      "  </match>\n"
++      "  <selectfont>\n"
++      "    <rejectfont>\n";
++  for (const std::string& file : rejected) {
++    config += "      <glob>" + XmlText(file) + "</glob>\n";
++  }
++  config +=
++      "    </rejectfont>\n"
++      "  </selectfont>\n"
++      "</fontconfig>\n";
++
++  base::FilePath path;
++  error = WriteAndExportConfig(env, dir, config, &path);
++  if (!error.empty()) {
++    return error;
++  }
++  FcPtr<FcConfig> check;
++  error = LoadExportedConfig(path, &check);
++  if (!error.empty()) {
++    return error;
++  }
++  // Exactly the verified files: anything else means the filter failed. A
++  // verified file fontconfig cannot read is unbacked like a missing one.
++  std::set<std::string> reached;
++  for (const auto& entry : FamiliesByFile(check.get())) {
++    if (!kept.contains(entry.first)) {
++      return Err("fonts.families",
++                 "cannot be backed: the Windows font store configuration "
++                 "reaches " + entry.first + ", which is not a verified file");
++    }
++    reached.insert(entry.first);
++  }
++  std::vector<std::string> unreadable;
++  for (const std::string& file : kept) {
++    if (!reached.contains(file)) {
++      unreadable.push_back(base::FilePath(file).BaseName().value());
++    }
++  }
++  if (!FcConfigSetCurrent(check.get())) {
++    return Err("fonts.families",
++               "cannot be backed: fontconfig cannot use " +
++                   path.AsUTF8Unsafe());
++  }
++  // Family names and faces as DirectWrite has them.
++  SkFontConfigInterface::SetGlobal(
++      sk_make_sp<WindowsStoreFontConfigInterface>(
++          WindowsFaces(check.get(), manifest)));
++
++  // A listed family is there when one of its files is; a name without a
++  // file of its own (Courier, Helvetica) when the family it resolves to is
++  // listed and there. The rest are absent, as uninstalled fonts.
++  const auto present = [&](std::string_view family) {
++    const base::ListValue* files = ManifestFiles(manifest, family);
++    if (!files) {
++      return false;
++    }
++    for (const base::Value& file : *files) {
++      if (file.is_string() &&
++          reached.contains(store.dir.Append(file.GetString()).value())) {
++        return true;
++      }
++    }
++    return false;
++  };
++  const auto listed = [&](std::string_view family) {
++    for (const std::string& name : claimed.families) {
++      if (base::EqualsCaseInsensitiveASCII(name, family)) {
++        return true;
++      }
++    }
++    return false;
++  };
++  std::vector<std::string> absent;
++  for (const std::string& family : claimed.families) {
++    const std::string alias = ManifestAlias(manifest, family);
++    if (!present(family) &&
++        (alias.empty() || !listed(alias) || !present(alias))) {
++      absent.push_back(family);
++    }
++  }
++  std::vector<std::string> problems;
++  if (!missing.empty()) {
++    problems.push_back(base::NumberToString(missing.size()) +
++                       " files are not in the store (" + JoinNames(missing) +
++                       ")");
++  }
++  if (!mismatched.empty()) {
++    problems.push_back(base::NumberToString(mismatched.size()) +
++                       " files do not match the manifest's SHA-256 (" +
++                       JoinNames(mismatched) + ")");
++  }
++  if (!unreadable.empty()) {
++    problems.push_back(base::NumberToString(unreadable.size()) +
++                       " files fontconfig cannot read (" +
++                       JoinNames(unreadable) + ")");
++  }
++  if (!absent.empty()) {
++    problems.push_back(base::NumberToString(absent.size()) + " of " +
++                       base::NumberToString(claimed.families.size()) +
++                       " families are absent (" + JoinNames(absent) + ")");
++  }
++  if (!problems.empty()) {
++    std::string detail;
++    for (const std::string& problem : problems) {
++      detail += (detail.empty() ? "" : "; ") + problem;
++    }
++    warnings->push_back("fonts.families: the Windows font store " +
++                        store.dir.AsUTF8Unsafe() + " (" +
++                        *manifest.FindString("set") + "): " + detail);
++  }
++
++  // Windows Chrome draws emoji with the first of Segoe UI Emoji and Segoe UI
++  // Symbol that is installed, whatever the profile says.
++  if (!claimed.emoji.empty()) {
++    if (!base::EqualsCaseInsensitiveASCII(claimed.emoji, kWindowsEmoji)) {
++      warnings->push_back("fonts.emoji: is " + claimed.emoji +
++                          " but Windows Chrome draws emoji with " +
++                          kWindowsEmoji + ", which pages see instead");
++    } else if (!present(claimed.emoji)) {
++      warnings->push_back("fonts.emoji: is " + claimed.emoji +
++                          " but the Windows font store has no verified file "
++                          "for it; emoji fall back without it");
++    }
++  }
++  return std::string();
++}
++
++}  // namespace
++
++std::string ExportFontAllowlist(std::vector<std::string>* warnings) {
++  const Profile* profile = Profile::Get();
++  if (!profile) {
++    return std::string();
++  }
++  const Profile::Fonts& claimed = profile->fonts();
++  std::unique_ptr<base::Environment> env = base::Environment::Create();
++
++  // Chromium sets FC_FONTATIONS=1 after this callback. Set it first, so that
++  // a font cache written here is indexed as the browser reads it afterwards.
++  if (!env->SetVar("FC_FONTATIONS", "1")) {
++    return "cannot set FC_FONTATIONS in the environment";
++  }
++
++  // A browser started from a Phasmid process (a relaunch, or anything that
++  // inherited its environment) finds the generated file in FONTCONFIG_FILE;
++  // the host's own value is the one that process started with.
++  if (std::optional<std::string> host_value =
++          env->GetVar(kHostFontconfigFileEnvVar)) {
++    if (host_value->empty() ? !env->UnSetVar(kFontconfigFileEnvVar)
++                            : !env->SetVar(kFontconfigFileEnvVar, *host_value)) {
++      return "cannot restore the host's FONTCONFIG_FILE";
++    }
++  }
++  if (!env->SetVar(kHostFontconfigFileEnvVar,
++                   env->GetVar(kFontconfigFileEnvVar).value_or(""))) {
++    return "cannot export the host's FONTCONFIG_FILE to the environment";
++  }
++
++  // Without a Windows font store, a windows profile runs on the host's files.
++  std::string no_store;
++  if (profile->os_family() == "windows") {
++    if (std::optional<WindowsStore> store =
++            FindWindowsStore(claimed, env.get(), &no_store)) {
++      return ExportWindowsStore(*store, claimed, env.get(), warnings);
++    }
++  }
++
++  // The host's own configuration, found as fontconfig's first initialization
++  // finds it (FONTCONFIG_FILE, FONTCONFIG_PATH, then /etc/fonts/fonts.conf).
++  FcPtr<FcConfig> host(FcInitLoadConfig());
++  FcChar8* host_file_name =
++      host ? FcConfigGetFilename(host.get(), nullptr) : nullptr;
++  if (!host_file_name) {
++    return Err("fonts.families",
++               "cannot be backed: this host has no fontconfig configuration");
++  }
++  const std::string host_file(reinterpret_cast<const char*>(host_file_name));
++  FcStrFree(host_file_name);
++  if (!FcConfigBuildFonts(host.get())) {
++    return Err("fonts.families",
++               "cannot be backed: fontconfig cannot load this host's fonts");
++  }
++
++  // The browser's own family matcher, which the font data service answers
++  // renderers with. It reads the current configuration on every call.
++  sk_sp<SkFontConfigInterface> matcher = SkFontConfigInterface::RefGlobal();
++  // The file `family` resolves to as a CSS family does on the current
++  // configuration: host aliases and metric-compatible names, then Blink's
++  // alternate name. Empty when it resolves nowhere; `resolved_family`, when
++  // given, is the family of the match.
++  const auto resolve = [&matcher](std::string_view family,
++                                  std::string* resolved_family) {
++    const auto match = [&](std::string_view name) {
++      SkFontConfigInterface::FontIdentity identity;
++      SkString matched_family;
++      if (!matcher ||
++          !matcher->matchFamilyName(std::string(name).c_str(), SkFontStyle(),
++                                    &identity, &matched_family, nullptr)) {
++        return std::string();
++      }
++      if (resolved_family) {
++        *resolved_family = matched_family.c_str();
++      }
++      return std::string(identity.fString.c_str());
++    };
++    std::string file = match(family);
++    const std::string key = base::ToLowerASCII(family);
++    for (const auto& [name, alternate] : kBlinkAlternates) {
++      if (file.empty() && name == key) {
++        file = match(alternate);
++      }
++    }
++    return file;
++  };
++
++  // A font file stays reachable when one of its faces publishes a listed
++  // family: a collection comes whole, as a package installs it.
++  std::set<std::string> listed;
++  for (const std::string& family : claimed.families) {
++    listed.insert(base::ToLowerASCII(family));
++  }
++  const std::map<std::string, std::set<std::string>> host_files =
++      FamiliesByFile(host.get());
++  std::set<std::string> published;
++  std::set<std::string> kept;
++  for (const auto& [file, families] : host_files) {
++    for (const std::string& family : families) {
++      published.insert(family);
++      if (listed.contains(family)) {
++        kept.insert(file);
++      }
++    }
++  }
++  // A windows profile without a store: a listed family no host file
++  // publishes keeps the file a metric-compatible host alias resolves it to
++  // (Arial to Liberation Sans). The warning below names each one.
++  if (profile->os_family() == "windows") {
++    if (!FcConfigSetCurrent(host.get())) {
++      return Err("fonts.families",
++                 "cannot be backed: fontconfig cannot use this host's "
++                 "configuration");
++    }
++    for (const std::string& family : claimed.families) {
++      if (published.contains(base::ToLowerASCII(family))) {
++        continue;
++      }
++      const std::string file = resolve(family, nullptr);
++      if (host_files.contains(file)) {
++        kept.insert(file);
++      }
++    }
++  }
++  std::vector<std::string> rejected;
++  for (const auto& entry : host_files) {
++    if (!kept.contains(entry.first)) {
++      rejected.push_back(entry.first);
++    }
++  }
++
++  // The host's configuration (its directories, caches, aliases and render
++  // settings) with every other font file rejected by path. Rejection by
++  // <glob> happens before a font's pattern is looked at, so a host
++  // <acceptfont> pattern cannot bring a rejected file back.
++  std::string config =
++      "<?xml version=\"1.0\"?>\n"
++      "<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n"
++      "<!-- Phasmid: the host configuration, reaching only the font files "
++      "that publish a family in the profile's fonts.families. -->\n"
++      "<fontconfig>\n"
++      "  <include ignore_missing=\"no\">" +
++      XmlText(host_file) +
++      "</include>\n"
++      "  <selectfont>\n"
++      "    <rejectfont>\n";
++  for (const std::string& file : rejected) {
++    config += "      <glob>" + XmlText(file) + "</glob>\n";
++  }
++  config +=
++      "    </rejectfont>\n"
++      "  </selectfont>\n"
++      "</fontconfig>\n";
++
++  base::FilePath dir;
++  std::string error = ConfigDirectory(env.get(), &dir);
++  if (!error.empty()) {
++    return error;
++  }
++  base::FilePath path;
++  error = WriteAndExportConfig(env.get(), dir, config, &path);
++  if (!error.empty()) {
++    return error;
++  }
++
++  // Check that it reaches exactly the kept files.
++  FcPtr<FcConfig> check;
++  error = LoadExportedConfig(path, &check);
++  if (!error.empty()) {
++    return error;
++  }
++  std::set<std::string> reached;
++  for (const auto& entry : FamiliesByFile(check.get())) {
++    reached.insert(entry.first);
++  }
++  if (reached != kept) {
++    for (const std::string& file : reached) {
++      if (!kept.contains(file)) {
++        return Err("fonts.families",
++                   "cannot be backed: the host fontconfig keeps " + file +
++                       " reachable although it publishes no listed family");
++      }
++    }
++    for (const std::string& file : kept) {
++      if (!reached.contains(file)) {
++        return Err("fonts.families", "cannot be backed: rejecting other "
++                                     "files also drops " + file);
++      }
++    }
++  }
++
++  // The browser's font matching from now on runs on it.
++  if (!FcConfigSetCurrent(check.get())) {
++    return Err("fonts.families",
++               "cannot be backed: fontconfig cannot use " +
++                   path.AsUTF8Unsafe());
++  }
++
++  // A listed family that resolves nowhere on the kept files stays absent, as
++  // an uninstalled font, and is reported.
++  std::vector<std::string> unbacked;
++  std::vector<std::string> aliased;
++  for (const std::string& family : claimed.families) {
++    std::string resolved_family;
++    if (resolve(family, &resolved_family).empty()) {
++      unbacked.push_back(family);
++    } else if (!published.contains(base::ToLowerASCII(family))) {
++      aliased.push_back(family + " -> " + resolved_family);
++    }
++  }
++  const std::string listed_count =
++      base::NumberToString(claimed.families.size());
++  if (profile->os_family() == "windows") {
++    // A name that resolves only through an alias carries the alias's
++    // metrics, so it is named too.
++    {
++      std::string detail =
++          "a windows profile without a Windows font store (" + no_store +
++          "), on the host's font files: " +
++          base::NumberToString(unbacked.size()) + " of " + listed_count +
++          " families have no font here and are absent";
++      if (!unbacked.empty()) {
++        detail += " (" + JoinNames(unbacked) + ")";
++      }
++      detail += "; " + base::NumberToString(aliased.size()) +
++                " resolve only through host aliases and measure as the alias";
++      if (!aliased.empty()) {
++        detail += " (" + JoinNames(aliased) + ")";
++      }
++      warnings->push_back("fonts.families: " + detail);
++    }
++  } else if (!unbacked.empty()) {
++    warnings->push_back(
++        "fonts.families: " + base::NumberToString(unbacked.size()) + " of " +
++        listed_count + " families have no font on this host and are absent (" +
++        JoinNames(unbacked) + ")");
++  }
++
++  // Emoji fall back through fontconfig's order for the emoji locale, which
++  // only the host's rules decide; a claim they do not pick runs with what
++  // they pick.
++  if (!claimed.emoji.empty()) {
++    std::vector<std::string> emoji = EmojiFallbackFamilies(check.get());
++    bool matches = false;
++    for (const std::string& family : emoji) {
++      matches = matches || base::EqualsCaseInsensitiveASCII(family,
++                                                            claimed.emoji);
++    }
++    if (!matches) {
++      warnings->push_back(
++          "fonts.emoji: is " + claimed.emoji +
++          " but emoji on this host fall back to " +
++          (emoji.empty() ? std::string("no font") : emoji.front()) +
++          ", which pages see instead");
++    }
++  }
++  return std::string();
++}
++
++}  // namespace phasmid
+--- a/components/phasmid/font_allowlist_linux.h
++++ b/components/phasmid/font_allowlist_linux.h
+@@ -0,0 +1,31 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_PHASMID_FONT_ALLOWLIST_LINUX_H_
++#define COMPONENTS_PHASMID_FONT_ALLOWLIST_LINUX_H_
++
++#include <string>
++#include <vector>
++
++namespace phasmid {
++
++// Makes only the font files that publish a family in fonts.families
++// reachable, in every process: on Linux every font lookup ends in
++// fontconfig.
++//
++// Browser process, before any child process exists. Writes a fontconfig
++// configuration that includes the host's own and rejects every other font
++// file, exports it as FONTCONFIG_FILE and makes it this process's current
++// configuration. A windows profile with a Windows font store instead gets a
++// standalone configuration over the store, and the browser's global
++// SkFontConfigInterface matches the store's families as DirectWrite names
++// them. Returns an error naming the profile field when the filter cannot be
++// put in place, or an empty string. Claims the fonts cannot back are
++// appended to `warnings` as "<field>: <detail>". Does nothing when Phasmid
++// is not active.
++std::string ExportFontAllowlist(std::vector<std::string>* warnings);
++
++}  // namespace phasmid
++
++#endif  // COMPONENTS_PHASMID_FONT_ALLOWLIST_LINUX_H_

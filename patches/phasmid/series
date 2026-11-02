@@ -12,3 +12,6 @@ build/chromium-155-remove-private-verification-tokens.patch
 build/chromium-155-revert-crubit-changes.patch
 build/chromium-155-revert-public-input-changes.patch
 build/chromium-155-use-system-esbuild.patch
+
+# Core: profile loading and plumbing. Everything below depends on it.
+core/profile.patch
