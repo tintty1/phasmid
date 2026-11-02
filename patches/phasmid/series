@@ -71,3 +71,6 @@ network/connection.patch
 
 # Display group: OS coherence
 display/system-colors.patch
+
+# Fonts
+fonts/availability.patch

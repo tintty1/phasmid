@@ -1,0 +1,216 @@
+Phasmid: font availability
+
+What:     Only font files that publish a family in fonts.families are
+          reachable (CSS, fallback, emoji, local(), queryLocalFonts(),
+          canvas). At startup the browser writes a fontconfig file, checks
+          that it reaches exactly the kept files and exports it as
+          FONTCONFIG_FILE to every child. Linux profiles filter the host's
+          configuration. Windows profiles use a standalone configuration over
+          the Windows font store (--phasmid-windows-fonts, default
+          $XDG_DATA_HOME/phasmid/fonts/windows/<build>) with Windows render
+          settings, and resolve only listed family names. Missing files are
+          logged once and their families stay absent. fonts.default_* become
+          the generic family pref defaults.
+Why:      Host fonts outside the claimed device's set identify the host, and
+          a Windows profile must not resolve Linux families.
+Profile:  os.family, fonts.families, fonts.default_sans, fonts.default_serif,
+          fonts.default_monospace, fonts.emoji, fonts.ui_font
+Hooks:    chrome/app/chrome_main_delegate.cc BasicStartupComplete;
+          chrome/browser/ui/prefs/prefs_tab_helper.cc RegisterProfilePrefs;
+          components/services/font_data/font_data_service_impl.cc
+          MatchFamilyName, LegacyMakeTypeface;
+          components/services/font/font_service_app.cc MatchFamilyName;
+          GN deps in chrome/BUILD.gn, chrome/app/BUILD.gn,
+          chrome/browser/ui/prefs/BUILD.gn,
+          components/services/font{,_data}/BUILD.gn
+Contexts: main, same- and cross-origin iframe, worker, shared worker, service
+          worker, OffscreenCanvas in workers; headless and headful.
+Guard:    tests/guards/fonts/availability.py
+
+--- a/chrome/app/chrome_main_delegate.cc
++++ b/chrome/app/chrome_main_delegate.cc
+@@ -172,6 +172,7 @@
+ 
+ #if BUILDFLAG(IS_LINUX)
+ #include "base/nix/scoped_xdg_activation_token_injector.h"
++#include "components/phasmid/font_allowlist_linux.h"
+ #endif
+ 
+ #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) || \
+@@ -1195,6 +1196,19 @@
+       LOG(ERROR) << "Phasmid: " << phasmid_error;
+       return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+     }
++#if BUILDFLAG(IS_LINUX)
++    // Phasmid: only font files that publish a family in fonts.families are
++    // reachable, through a fontconfig file every process inherits.
++    std::vector<std::string> fonts_warnings;
++    std::string fonts_error = phasmid::ExportFontAllowlist(&fonts_warnings);
++    for (const std::string& warning : fonts_warnings) {
++      LOG(ERROR) << "Phasmid: host cannot back " << warning;
++    }
++    if (!fonts_error.empty()) {
++      LOG(ERROR) << "Phasmid: " << fonts_error;
++      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
++    }
++#endif
+     // Phasmid: the device pixel ratio is the display's, so the browser UI,
+     // the headless screen and every widget are laid out at the profile's
+     // scale and ScreenInfo carries it to the renderers. Set before the
+--- a/chrome/app/BUILD.gn
++++ b/chrome/app/BUILD.gn
+@@ -240,6 +240,10 @@
+     deps += [ ":chrome_crash_reporter_client" ]
+   }
+ 
++  if (is_linux || is_chromeos) {
++    deps += [ "//components/phasmid:font_allowlist" ]
++  }
++
+   if (!is_android) {
+     deps += [ "//chrome/browser:chrome_process_singleton" ]
+   }
+--- a/chrome/BUILD.gn
++++ b/chrome/BUILD.gn
+@@ -307,6 +307,7 @@
+         "//chrome/browser/lifetime",
+         "//chrome/common:version_header",
+         "//components/phasmid",
++        "//components/phasmid:font_allowlist",
+ 
+         # For the sampling profiler.
+         "//chrome/common/profiler",
+--- a/chrome/browser/ui/prefs/BUILD.gn
++++ b/chrome/browser/ui/prefs/BUILD.gn
+@@ -48,6 +48,7 @@
+     "//chrome/browser/ui/zoom",
+     "//components/language/core/browser",
+     "//components/live_caption:constants",
++    "//components/phasmid",
+     "//components/pref_registry",
+     "//components/proxy_config",
+     "//components/universal_optout",
+--- a/chrome/browser/ui/prefs/prefs_tab_helper.cc
++++ b/chrome/browser/ui/prefs/prefs_tab_helper.cc
+@@ -32,6 +32,7 @@
+ #include "chrome/common/pref_names_util.h"
+ #include "chrome/grit/platform_locale_settings.h"
+ #include "components/language/core/browser/pref_names.h"
++#include "components/phasmid/profile.h"
+ #include "components/pref_registry/pref_registry_syncable.h"
+ #include "components/prefs/overlay_user_pref_store.h"
+ #include "components/prefs/pref_service.h"
+@@ -135,6 +136,26 @@
+ }
+ #endif
+ 
++// Phasmid: the profile's family for a generic family pref, or null to keep
++// Chrome's default. The standard font follows serif, as on Linux.
++const std::string* PhasmidGenericFamily(const char* pref_name) {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!profile) {
++    return nullptr;
++  }
++  const phasmid::Profile::Fonts& fonts = profile->fonts();
++  const std::string* family = nullptr;
++  if (pref_name == prefs::kWebKitStandardFontFamily ||
++      pref_name == prefs::kWebKitSerifFontFamily) {
++    family = &fonts.default_serif;
++  } else if (pref_name == prefs::kWebKitSansSerifFontFamily) {
++    family = &fonts.default_sans;
++  } else if (pref_name == prefs::kWebKitFixedFontFamily) {
++    family = &fonts.default_monospace;
++  }
++  return family && !family->empty() ? family : nullptr;
++}
++
+ struct FontDefault {
+   const char* pref_name;
+   int resource_id;
+@@ -453,6 +474,9 @@
+           << "This platform doesn't support default font lists. "
+           << pref.pref_name << "=" << value;
+ #endif  // PREFS_FONT_LIST
++      if (const std::string* family = PhasmidGenericFamily(pref.pref_name)) {
++        value = *family;
++      }
+       registry->RegisterStringPref(pref.pref_name, value);
+       fonts_with_defaults.insert(pref.pref_name);
+     }
+--- a/components/services/font_data/BUILD.gn
++++ b/components/services/font_data/BUILD.gn
+@@ -21,6 +21,7 @@
+ 
+   deps = [
+     "//base",
++    "//components/phasmid",
+     "//components/services/font_data/public/mojom",
+     "//mojo/public/cpp/bindings",
+     "//mojo/public/cpp/system",
+--- a/components/services/font_data/font_data_service_impl.cc
++++ b/components/services/font_data/font_data_service_impl.cc
+@@ -21,6 +21,7 @@
+ #include "base/notreached.h"
+ #include "base/task/thread_pool.h"
+ #include "base/trace_event/trace_event.h"
++#include "components/phasmid/profile.h"
+ #include "skia/ext/font_utils.h"
+ #include "third_party/skia/include/core/SkFontStyle.h"
+ #include "third_party/skia/include/core/SkStream.h"
+@@ -271,8 +272,11 @@
+   // family request.
+   SkFontStyle sk_font_style(style->weight, style->width,
+                             ConvertToFontStyle(style->slant));
++  // Phasmid: a windows profile resolves only its listed families.
+   sk_sp<SkTypeface> typeface =
+-      font_manager_->matchFamilyStyle(family_name.c_str(), sk_font_style);
++      phasmid::FontFamilyResolvable(family_name)
++          ? font_manager_->matchFamilyStyle(family_name.c_str(), sk_font_style)
++          : nullptr;
+ 
+   std::move(callback).Run(
+       CreateMatchFamilyNameResult(typeface, family_name, sk_font_style));
+@@ -341,8 +345,11 @@
+   SkFontStyle sk_font_style(style->weight, style->width,
+                             ConvertToFontStyle(style->slant));
+ 
+-  sk_sp<SkTypeface> typeface = font_manager_->legacyMakeTypeface(
+-      family_name ? family_name->c_str() : nullptr, sk_font_style);
++  sk_sp<SkTypeface> typeface =
++      !family_name || phasmid::FontFamilyResolvable(*family_name)
++          ? font_manager_->legacyMakeTypeface(
++                family_name ? family_name->c_str() : nullptr, sk_font_style)
++          : nullptr;
+ 
+   // CreateMatchFamilyNameResult uses `family_name` to check against a list of
+   // hard-coded family names so passing "" when `family_name` is `nullopt` is
+--- a/components/services/font/BUILD.gn
++++ b/components/services/font/BUILD.gn
+@@ -15,6 +15,7 @@
+ 
+   deps = [
+     "//base",
++    "//components/phasmid",
+     "//components/services/font/public/mojom",
+     "//mojo/public/cpp/bindings",
+     "//mojo/public/cpp/system",
+--- a/components/services/font/font_service_app.cc
++++ b/components/services/font/font_service_app.cc
+@@ -19,6 +19,7 @@
+ #include "base/logging.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "components/services/font/fontconfig_matching.h"
+ #include "mojo/public/cpp/system/platform_handle.h"
+ #include "pdf/buildflags.h"
+@@ -124,7 +125,9 @@
+     return;
+   }
+ 
++  // Phasmid: a windows profile resolves only its listed families.
+   const bool r =
++      phasmid::FontFamilyResolvable(family_name) &&
+       fc->matchFamilyName(family_name.data(), font_style, &result_identity,
+                           &result_family, &result_style);
+ 
