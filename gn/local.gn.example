@@ -1,0 +1,2 @@
+# Developer overrides, git-ignored. Example:
+# cc_wrapper = "sccache"

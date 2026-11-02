@@ -1,0 +1,6 @@
+# ungoogled-chromium patches Phasmid does not apply, one per line:
+#   <path relative to patches/>  # <what a page can observe>
+# A patch belongs here when a page can observe its effect. Upstream patches
+# are never edited.
+extra/ungoogled-chromium/default-webrtc-ip-handling-policy.patch  # Defaults the WebRTC IP handling policy to disable_non_proxied_udp, so RTCPeerConnection gathers no candidates where stock Chrome gathers mDNS host candidates; Phasmid sets the policy per profile.
+extra/inox-patchset/0006-modify-default-prefs.patch  # Changes pref defaults a page can observe: the bookmark bar is shown (34 px less viewport), third-party cookies are blocked, PaymentRequest.canMakePayment is off, hyperlink auditing, preloading and credential auto sign-in are disabled.

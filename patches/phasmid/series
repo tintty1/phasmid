@@ -1,0 +1,14 @@
+# Phasmid patch order. Applied after the ungoogled-chromium series
+# (patches/series) minus the entries in disabled-upstream.txt.
+# One patch per surface. core/ comes first; everything else depends on it.
+
+# Build fixes (vendored from ungoogled-chromium-portablelinux; see build/README.md)
+build/use-oauth2-client-switches-as-default.patch
+build/fix-compiling-on-arm64.patch
+build/chromium-138-drop-nodejs-version-check.patch
+build/chromium-153-revert-hermetic-python.patch
+build/chromium-154-revert-typescript-changes.patch
+build/chromium-155-remove-private-verification-tokens.patch
+build/chromium-155-revert-crubit-changes.patch
+build/chromium-155-revert-public-input-changes.patch
+build/chromium-155-use-system-esbuild.patch

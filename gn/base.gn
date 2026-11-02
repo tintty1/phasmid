@@ -1,0 +1,25 @@
+# Phasmid GN arguments shared by every flavor. Appended after upstream flags.gn.
+# Linux x64 release configuration, from ungoogled-chromium-portablelinux flags.linux.gn.
+is_official_build = true
+is_debug = false
+is_clang = true
+symbol_level = 0
+blink_symbol_level = 0
+disable_fieldtrial_testing_config = true
+blink_enable_generated_code_formatting = false
+ffmpeg_branding = "Chrome"
+proprietary_codecs = true
+fatal_linker_warnings = false
+rtc_use_pipewire = true
+use_kerberos = false
+use_sysroot = true
+use_vaapi = true
+use_system_libffi = false
+v8_use_metagen_instance_types = false
+# sccache cannot cache clang module compiles (-fmodules); with modules on, the
+# shared cache stays empty.
+use_clang_modules = false
+# Upstream flags.gn turns mDNS off, which leaves WebRTC no way to hide host
+# addresses: candidates then carry the raw LAN and global IPv6 addresses,
+# where stock Chrome shows <uuid>.local names. Service discovery stays off.
+enable_mdns = true
