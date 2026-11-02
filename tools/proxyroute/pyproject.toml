@@ -1,0 +1,14 @@
+[project]
+name = "phasmid-proxyroute"
+version = "0.0.1"
+description = "Launch Phasmid with requests routed to proxies by host pattern"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.uv]
+package = false
