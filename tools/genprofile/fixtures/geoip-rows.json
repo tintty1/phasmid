@@ -1,0 +1,30 @@
+{
+ "comment": "TEST FIXTURE, not data: never read by the generator. Rows shaped as DB-IP City Lite mmdb records, trimmed to the fields location.py reads. 'source' says which rows were copied from the pinned build (dbip-city-lite.json) and which are hand-written for a case the tests need.",
+ "rows": [
+  {
+   "network": "14.161.0.0/23",
+   "record": {"city": {"names": {"en": "Hanoi"}}, "country": {"iso_code": "VN"}, "location": {"latitude": 21.0278, "longitude": 105.834}},
+   "source": "DB-IP City Lite 2026-10, trimmed"
+  },
+  {
+   "network": "5.9.0.0/27",
+   "record": {"city": {"names": {"en": "Falkenstein"}}, "country": {"iso_code": "DE"}, "location": {"latitude": 50.475, "longitude": 12.365}},
+   "source": "DB-IP City Lite 2026-10, trimmed"
+  },
+  {
+   "network": "2001:4860:4840::/42",
+   "record": {"city": {"names": {"en": "Montreal"}}, "country": {"iso_code": "CA"}, "location": {"latitude": 45.5019, "longitude": -73.5674}},
+   "source": "DB-IP City Lite 2026-10, trimmed"
+  },
+  {
+   "network": "46.14.0.0/24",
+   "record": {"city": {"names": {"en": "Geneva"}}, "country": {"iso_code": "CH"}, "location": {"latitude": 46.2044, "longitude": 6.1432}},
+   "source": "hand-written, arbitrary public range: a city a few km from a zone and national border (France)"
+  },
+  {
+   "network": "8.8.8.0/24",
+   "record": {"country": {"iso_code": "US"}, "location": {"latitude": 37.751, "longitude": -97.822}},
+   "source": "hand-written: the country-only US centroid GeoLite2 gives 8.8.8.8; DB-IP 2026-10 has a city for it"
+  }
+ ]
+}

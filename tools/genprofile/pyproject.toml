@@ -1,0 +1,22 @@
+[project]
+name = "phasmid-genprofile"
+version = "0.0.1"
+description = "Phasmid sample profile generator: BrowserForge marginals plus captured device data"
+requires-python = ">=3.12"
+dependencies = [
+    "browserforge==1.2.4",
+    "apify-fingerprint-datapoints==0.15.0",
+    "jsonschema>=4.23",
+    "zstandard>=0.25.0",
+    "timezonefinder==9.2.0",
+    "maxminddb==3.2.0",
+    "timezonefinder-data==4.2026.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.uv]
+package = false
