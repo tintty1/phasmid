@@ -65,3 +65,6 @@ graphics/hardware-decode.patch
 platform/webauthn-hybrid.patch
 
 platform/media-devices.patch
+
+# Network Information
+network/connection.patch

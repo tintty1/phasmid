@@ -1,0 +1,148 @@
+Phasmid: Network Information and the network Client Hints
+
+What:     navigator.connection.effectiveType, rtt and downlink and the ECT,
+          RTT and Downlink Client Hints report network.connection, fixed for
+          the session. Stock's per-host noise stays but is keyed on the
+          profile seed, so JavaScript and every header agree for a host.
+Why:      The estimator follows the host's real network, and stock salts the
+          browser and each renderer separately, so its header and JS differ.
+Profile:  network.connection.effective_type, network.connection.rtt,
+          network.connection.downlink, seed
+Hooks:    services/network/public/cpp/network_quality_tracker.cc
+          NetworkQualityTracker constructor, OnNetworkQualityChanged;
+          content/browser/client_hints/client_hints.cc GetRandomMultiplier;
+          third_party/blink/renderer/platform/network/network_state_notifier.cc
+          NetworkStateNotifier::GetRandomMultiplier; BUILD.gn deps
+Contexts: main, iframe, worker, shared worker, service worker, headers
+          (worker requests carry no network hints, as in stock)
+Guard:    tests/guards/network/connection.py
+
+--- a/services/network/public/cpp/network_quality_tracker.cc
++++ b/services/network/public/cpp/network_quality_tracker.cc
+@@ -9,12 +9,33 @@
+ 
+ #include "base/check_op.h"
+ #include "base/functional/bind.h"
++#include "base/notreached.h"
+ #include "base/observer_list.h"
++#include "components/phasmid/profile.h"
+ #include "mojo/public/cpp/bindings/remote.h"
+ #include "services/network/public/mojom/network_service.mojom.h"
+ 
+ namespace network {
+ 
++namespace {
++
++net::EffectiveConnectionType PhasmidEffectiveConnectionType(
++    phasmid::Profile::Connection::EffectiveType type) {
++  switch (type) {
++    case phasmid::Profile::Connection::EffectiveType::kSlow2G:
++      return net::EFFECTIVE_CONNECTION_TYPE_SLOW_2G;
++    case phasmid::Profile::Connection::EffectiveType::k2G:
++      return net::EFFECTIVE_CONNECTION_TYPE_2G;
++    case phasmid::Profile::Connection::EffectiveType::k3G:
++      return net::EFFECTIVE_CONNECTION_TYPE_3G;
++    case phasmid::Profile::Connection::EffectiveType::k4G:
++      return net::EFFECTIVE_CONNECTION_TYPE_4G;
++  }
++  NOTREACHED();
++}
++
++}  // namespace
++
+ NetworkQualityTracker::NetworkQualityTracker(
+     base::RepeatingCallback<network::mojom::NetworkService*()> callback)
+     : get_network_service_callback_(callback),
+@@ -23,6 +44,16 @@
+       network_quality_overridden_for_testing_(false) {
+   InitializeMojoChannel();
+   DCHECK(receiver_.is_bound());
++  // Phasmid: set from the start so the first navigation and every
++  // renderer's first notification carry it. The transport RTT stays 0
++  // ("unavailable"); no page can read it.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    const phasmid::Profile::Connection& connection = profile->connection();
++    effective_connection_type_ =
++        PhasmidEffectiveConnectionType(connection.effective_type);
++    http_rtt_ = base::Milliseconds(connection.rtt_ms);
++    downlink_bandwidth_kbps_ = connection.downlink_kbps;
++  }
+ }
+ 
+ NetworkQualityTracker::~NetworkQualityTracker() {}
+@@ -119,6 +150,11 @@
+   if (network_quality_overridden_for_testing_)
+     return;
+ 
++  // Phasmid: the host's estimate never replaces the profile's.
++  if (phasmid::Profile::Get()) {
++    return;
++  }
++
+   // If the RTT values are unavailable, set them to value 0.
+   if (http_rtt.is_negative())
+     http_rtt = base::TimeDelta();
+--- a/services/network/public/cpp/BUILD.gn
++++ b/services/network/public/cpp/BUILD.gn
+@@ -215,6 +215,7 @@
+     "//components/link_header_util",
+     "//components/os_crypt/browser",
+     "//components/os_crypt/common",
++    "//components/phasmid",
+     "//components/prefs",
+     "//components/url_pattern",
+     "//ipc",
+--- a/content/browser/client_hints/client_hints.cc
++++ b/content/browser/client_hints/client_hints.cc
+@@ -20,6 +20,7 @@
+ #include "base/strings/string_util.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/devtools/devtools_instrumentation.h"
+ #include "content/browser/preloading/prerender/prerender_host.h"
+ #include "content/browser/renderer_host/frame_tree.h"
+@@ -88,6 +89,11 @@
+   // cross-origin fingerprinting. The random number should also be a function
+   // of randomized salt which is known only to the device. This prevents
+   // origin from removing noise from the estimates.
++  // Phasmid: the profile's seed in place of the salt, the same factor the
++  // renderer applies to navigator.connection.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->ConnectionNoiseMultiplier(host);
++  }
+   unsigned hash = std::hash<std::string>{}(host) + RandomizationSalt();
+   double random_multiplier =
+       0.9 + static_cast<double>((hash % kMaxRandomNumbers)) * 0.01;
+--- a/third_party/blink/renderer/platform/network/network_state_notifier.cc
++++ b/third_party/blink/renderer/platform/network/network_state_notifier.cc
+@@ -30,6 +30,7 @@
+ 
+ #include "base/synchronization/lock.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "components/phasmid/profile.h"
+ #include "net/nqe/effective_connection_type.h"
+ #include "net/nqe/network_quality_estimator_params.h"
+ #include "services/network/public/cpp/client_hints.h"
+@@ -375,6 +376,11 @@
+   if (!host)
+     return 1.0;
+ 
++  // Phasmid: the profile's seed in place of the per-process salt, so the
++  // browser and every renderer use one factor per host.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->ConnectionNoiseMultiplier(host.Utf8());
++  }
+   uint32_t hash = GetHash(host) + RandomizationSalt();
+   double random_multiplier = 0.9 + static_cast<double>((hash % 21)) * 0.01;
+   DCHECK_LE(0.90, random_multiplier);
+--- a/third_party/blink/renderer/platform/network/BUILD.gn
++++ b/third_party/blink/renderer/platform/network/BUILD.gn
+@@ -67,6 +67,7 @@
+   sources += get_target_outputs(":http_names")
+ 
+   deps = [
++    "//components/phasmid",
+     "//media",
+     "//services/metrics/public/cpp:ukm_builders",
+     "//third_party/blink/renderer/platform:allow_discouraged_type",
