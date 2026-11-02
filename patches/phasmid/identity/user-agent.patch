@@ -1,0 +1,158 @@
+Phasmid: user agent and client hints
+
+What:     The UA string, navigator.userAgent, appVersion and platform, the
+          Sec-CH-UA* headers and navigator.userAgentData come from os.*. The
+          brand list is GREASE, Chromium and Google Chrome; every version is
+          the build's own. No Headless token when automation.report_headful
+          is set.
+Why:      The UA, navigator.platform and every client hint must name one OS,
+          and a two-entry brand list or a Headless token marks a non-Chrome
+          or automated build.
+Profile:  os.ua_platform_token, os.navigator_platform, os.ch_platform,
+          os.ch_platform_version, os.architecture, os.bitness, os.wow64,
+          os.model, os.form_factors, automation.report_headful
+Hooks:    components/embedder_support/user_agent_utils.cc
+          GetUserAgentBrandList, GetUserAgentInternal, GetPlatformVersion,
+          GetPlatformForUAMetadata, GetFormFactorsClientHint,
+          GetCpuArchitecture, GetCpuBitness, BuildModelInfo, IsWoW64;
+          third_party/blink/renderer/core/execution_context/navigator_base.cc
+          GetReducedNavigatorPlatform
+Contexts: main, iframe, worker, shared worker, service worker, headers
+Guard:    tests/guards/identity/user-agent.py
+
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -28,6 +28,7 @@
+ #include "build/build_config.h"
+ #include "components/embedder_support/pref_names.h"
+ #include "components/embedder_support/switches.h"
++#include "components/phasmid/profile.h"
+ #include "components/policy/core/common/policy_pref_names.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/version_info/version_info.h"
+@@ -166,6 +167,10 @@
+ #if !BUILDFLAG(CHROMIUM_BRANDING)
+   brand = version_info::GetProductName();
+ #endif
++  // Phasmid: stock Chrome's list is GREASE, Chromium and Google Chrome.
++  if (phasmid::Profile::Get()) {
++    brand = "Google Chrome";
++  }
+ 
+   std::string brand_version =
+       output_version_type == blink::UserAgentBrandVersionType::kFullVersion
+@@ -217,7 +222,9 @@
+ // depending on the Reduce User-Agent reduction phase features.
+ std::string GetUserAgentInternal() {
+   std::string product = GetProductAndVersion();
+-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(kHeadless)) {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(kHeadless) &&
++      !(profile && profile->report_headful())) {
+     product.insert(0, "Headless");
+   }
+ 
+@@ -227,6 +234,12 @@
+   }
+ #endif
+ 
++  // Phasmid: the reduced UA format; product and version stay the build's.
++  if (profile) {
++    return BuildUserAgentFromOSAndProduct(profile->ua_platform_token(),
++                                          product);
++  }
++
+   return ShouldSendUserAgentUnifiedPlatform()
+              ? BuildUnifiedPlatformUserAgentFromProduct(product)
+              : BuildUserAgentFromProduct(product);
+@@ -601,6 +614,9 @@
+ }
+ 
+ std::string GetPlatformVersion() {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->ch_platform_version();
++  }
+ #if BUILDFLAG(IS_ANDROID)
+   // For Android XR or desktop form factors, report a non-empty platform
+   // version when kAndroidDesktopUAPlatform is enabled to follow the spec:
+@@ -632,6 +648,9 @@
+ }
+ 
+ std::string GetPlatformForUAMetadata() {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->ch_platform();
++  }
+ #if BUILDFLAG(IS_ANDROID)
+   if (base::android::device_info::is_desktop() ||
+       base::android::device_info::is_xr()) {
+@@ -707,6 +726,9 @@
+ std::vector<std::string> GetFormFactorsClientHint(
+     const blink::UserAgentMetadata& metadata,
+     bool is_mobile) {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->form_factors();
++  }
+   // By default, use "Mobile" or "Desktop" depending on the `mobile` bit.
+   std::vector<std::string> form_factors = {
+       is_mobile ? blink::kMobileFormFactor : blink::kDesktopFormFactor};
+@@ -732,6 +754,9 @@
+ // Return the CPU architecture in Windows/Mac/POSIX/Fuchsia and the empty string
+ // on Android or if unknown.
+ std::string GetCpuArchitecture() {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->architecture();
++  }
+ #if BUILDFLAG(IS_WIN)
+   base::win::OSInfo::WindowsArchitecture windows_architecture =
+       base::win::OSInfo::GetInstance()->GetArchitecture();
+@@ -781,6 +806,9 @@
+ // Return the CPU bitness in Windows/Mac/POSIX/Fuchsia and the empty string
+ // on Android.
+ std::string GetCpuBitness() {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->bitness();
++  }
+ #if BUILDFLAG(IS_WIN)
+   return (base::win::OSInfo::GetInstance()->GetArchitecture() ==
+           base::win::OSInfo::X86_ARCHITECTURE)
+@@ -860,6 +888,9 @@
+ }
+ 
+ std::string BuildModelInfo() {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->model();
++  }
+ #if BUILDFLAG(IS_ANDROID)
+   // Model information is not exposed on Android desktop.
+   if (base::android::device_info::is_desktop()) {
+@@ -949,6 +980,9 @@
+ }
+ 
+ bool IsWoW64() {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->wow64();
++  }
+ #if BUILDFLAG(IS_WIN)
+   base::win::OSInfo* os_info = base::win::OSInfo::GetInstance();
+   return os_info->IsWowX86OnAMD64();
+--- a/third_party/blink/renderer/core/execution_context/navigator_base.cc
++++ b/third_party/blink/renderer/core/execution_context/navigator_base.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/feature_list.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
+@@ -32,6 +33,10 @@
+ #endif
+ 
+ String GetReducedNavigatorPlatform() {
++  // Phasmid: NavigatorBase backs both Navigator and WorkerNavigator.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return String(profile->navigator_platform().c_str());
++  }
+ #if BUILDFLAG(IS_ANDROID)
+   if (base::android::device_info::is_desktop() ||
+       base::android::device_info::is_xr()) {

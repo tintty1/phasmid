@@ -19,3 +19,6 @@ core/profile.patch
 # Hardware group
 hardware/hardware-concurrency.patch
 hardware/device-memory.patch
+
+# Identity group
+identity/user-agent.patch
