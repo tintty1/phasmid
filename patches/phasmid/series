@@ -28,3 +28,4 @@ display/screen-window.patch
 
 # Automation
 automation/signals.patch
+automation/cdp-stealth.patch
