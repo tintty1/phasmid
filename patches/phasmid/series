@@ -79,3 +79,4 @@ fonts/availability.patch
 fonts/generic-families.patch
 fonts/system-font.patch
 fonts/metrics.patch
+fonts/windows-fallback.patch
