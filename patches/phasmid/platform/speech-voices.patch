@@ -1,0 +1,94 @@
+Phasmid: speech synthesis voices
+
+What:     speechSynthesis.getVoices() lists speech.voices in profile order
+          (the first is the default) in place of the platform's. Each voice
+          belongs to the unloaded "Google Network Speech" engine, so speak()
+          gets no event until cancel(), as Google Chrome with its speech
+          server unreachable. The host's speech-dispatcher is never used.
+Why:      Google Chrome lists its network voices (and the local Microsoft
+          voices on Windows); an ungoogled build lists none and has no API
+          key to synthesize with.
+Profile:  speech.voices
+Hooks:    content/browser/speech/tts_controller_impl.cc
+          TtsControllerImpl::GetVoices;
+          content/browser/speech/tts_linux.cc TtsPlatformImplLinux constructor
+Contexts: main, iframe; workers have no speechSynthesis
+Guard:    tests/guards/platform/speech-voices.py
+
+--- a/content/browser/speech/tts_controller_impl.cc
++++ b/content/browser/speech/tts_controller_impl.cc
+@@ -22,6 +22,7 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/values.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/speech/tts_utterance_impl.h"
+ #include "content/public/browser/content_browser_client.h"
+ #include "content/public/browser/tts_utterance.h"
+@@ -135,6 +136,35 @@
+   return LocaleMatchLevel::kExact;
+ }
+ 
++// Phasmid: the "Google Network Speech" component extension, which this build
++// does not load, so an utterance gets no event until it is cancelled, as in
++// Google Chrome when its speech server cannot be reached.
++constexpr char kPhasmidNetworkSpeechEngineId[] =
++    "fignfifoniblkonapihmkfakmlgkbkcf";
++
++// Phasmid: the first voice is the default (SendVoiceListToObserver). Event
++// types are the network engine's, as TtsExtensionEngine::GetVoices builds them.
++void ReplaceWithPhasmidVoices(std::vector<VoiceData>* out_voices) {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!profile) {
++    return;
++  }
++  out_voices->clear();
++  for (const phasmid::Profile::SpeechVoice& profile_voice :
++       profile->speech_voices()) {
++    VoiceData& voice = out_voices->emplace_back();
++    voice.name = profile_voice.name;
++    voice.lang = profile_voice.lang;
++    voice.engine_id = kPhasmidNetworkSpeechEngineId;
++    // localService is !remote (SendVoiceListToObserver). A local voice is
++    // still non-native, so speak() takes the same silent engine path.
++    voice.remote = !profile_voice.local_service;
++    voice.native = false;
++    voice.events = {TTS_EVENT_START, TTS_EVENT_END, TTS_EVENT_ERROR,
++                    TTS_EVENT_CANCELLED, TTS_EVENT_INTERRUPTED};
++  }
++}
++
+ }  // namespace
+ 
+ //
+@@ -475,6 +505,7 @@
+   }
+ 
+   tts_platform->FinalizeVoiceOrdering(*out_voices);
++  ReplaceWithPhasmidVoices(out_voices);
+ 
+   if (!allow_remote_voices_) {
+     auto it =
+--- a/content/browser/speech/tts_linux.cc
++++ b/content/browser/speech/tts_linux.cc
+@@ -21,6 +21,7 @@
+ #include "base/task/task_traits.h"
+ #include "base/task/thread_pool.h"
+ #include "base/threading/sequence_bound.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/speech/tts_platform_impl.h"
+ #include "content/public/browser/browser_task_traits.h"
+ #include "content/public/browser/browser_thread.h"
+@@ -406,8 +407,11 @@
+         base::NotFatalUntil::M159);
+   const base::CommandLine& command_line =
+       *base::CommandLine::ForCurrentProcess();
+-  if (!command_line.HasSwitch(switches::kEnableSpeechDispatcher))
++  // Phasmid: the host's speech-dispatcher voices are the host's.
++  if (!command_line.HasSwitch(switches::kEnableSpeechDispatcher) ||
++      phasmid::Profile::Get()) {
+     return;
++  }
+ 
+   // The TTS platform is supported. The Tts platform initialisation will happen
+   // on a worker thread and it will become initialized.
