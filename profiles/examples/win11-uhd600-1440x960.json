@@ -1,0 +1,1045 @@
+{
+ "audio": {
+  "base_latency": 0.01,
+  "max_channel_count": 2,
+  "noise": false,
+  "output_latency": 0,
+  "sample_rate": 48000
+ },
+ "automation": {
+  "report_headful": true
+ },
+ "canvas": {
+  "noise": false
+ },
+ "capabilities": {
+  "battery": {
+   "charging": true,
+   "level": 1
+  },
+  "bluetooth": true,
+  "bluetooth_available": true,
+  "web_share": true
+ },
+ "captured": {
+  "browser_version": "Google Chrome 156.0.8078.48",
+  "date": "2026-10-26",
+  "dump_sha256": "148ceb5108cbf4d8ce739422454303dfdc8749bfe5d63a4e58ceee9bfb179a79",
+  "note": "Captured on a CHUWI laptop (Celeron J4125, 4 threads, 8 GB, Intel UHD Graphics 600, internal 2160x1440 panel at 150%) running Windows 11 25H2 build 26200.9711, with stock Google Chrome 156.0.8078.48 headful in a fresh user data directory, maximized, through consistency collect over an ssh tunnel to the host's localhost, Asia/Saigon. GPU ids, device and driver strings and GL strings from CDP SystemInfo.getInfo and chrome://gpu, read from the same browser process right after the visit and added to the dump as system_info and gpu_report (command lines dropped); physical memory (Win32_ComputerSystem) and disk (Get-Volume C:) measured on the host. The reported version follows the build; browser_version is provenance only. Media device labels from enumerateDevices() after a CDP camera and microphone grant in the same browser build on the same machine, 2026-10-26 (profiles/data/captures/win11-uhd600-1440x960.chrome156-media-devices.json); the Default and Communications entries are the browser's own and are not listed."
+ },
+ "display": {
+  "avail_height": 912,
+  "avail_left": 0,
+  "avail_top": 0,
+  "avail_width": 1440,
+  "color_depth": 24,
+  "color_gamut": "srgb",
+  "device_pixel_ratio": 1.5,
+  "dynamic_range": "standard",
+  "forced_colors": "none",
+  "height": 960,
+  "is_extended": false,
+  "orientation": {
+   "angle": 0,
+   "type": "landscape-primary"
+  },
+  "pointer": {
+   "any_hover": [
+    "hover"
+   ],
+   "any_pointer": [
+    "fine"
+   ],
+   "hover": "hover",
+   "primary": "fine"
+  },
+  "prefers_color_scheme": "light",
+  "prefers_contrast": "no-preference",
+  "prefers_reduced_motion": "no-preference",
+  "width": 1440,
+  "window": {
+   "inner_height": 825,
+   "inner_width": 1440,
+   "outer_height": 912,
+   "outer_width": 1440,
+   "screen_x": 0,
+   "screen_y": 0
+  }
+ },
+ "fonts": {
+  "families": [
+   "Agency FB",
+   "Algerian",
+   "Arial",
+   "Arial Black",
+   "Arial Narrow",
+   "Arial Rounded MT",
+   "Arial Rounded MT Bold",
+   "Bahnschrift",
+   "Bahnschrift Condensed",
+   "Bahnschrift Light",
+   "Bahnschrift SemiBold",
+   "Bahnschrift SemiCondensed",
+   "Baskerville Old Face",
+   "Bauhaus 93",
+   "Bell MT",
+   "Berlin Sans FB",
+   "Bernard MT",
+   "Bernard MT Condensed",
+   "Blackadder ITC",
+   "Bodoni MT",
+   "Bodoni MT Black",
+   "Bodoni MT Condensed",
+   "Bodoni MT Poster",
+   "Book Antiqua",
+   "Bookman Old Style",
+   "Bookshelf Symbol 7",
+   "Bradley Hand ITC",
+   "Britannic",
+   "Broadway",
+   "Brush Script MT",
+   "Calibri",
+   "Calibri Light",
+   "Californian FB",
+   "Calisto MT",
+   "Cambria",
+   "Cambria Math",
+   "Candara",
+   "Candara Light",
+   "Castellar",
+   "Centaur",
+   "Century",
+   "Century Gothic",
+   "Century Schoolbook",
+   "Chiller",
+   "Colonna MT",
+   "Comic Sans MS",
+   "Consolas",
+   "Constantia",
+   "Cooper",
+   "Cooper Black",
+   "Copperplate Gothic",
+   "Copperplate Gothic Light",
+   "Corbel",
+   "Corbel Light",
+   "Courier",
+   "Courier New",
+   "Curlz MT",
+   "Dubai",
+   "Dubai Light",
+   "Dubai Medium",
+   "Dubai Regular",
+   "Ebrima",
+   "Edwardian Script ITC",
+   "Elephant",
+   "Engravers MT",
+   "Eras ITC",
+   "Felix Titling",
+   "Footlight MT",
+   "Footlight MT Light",
+   "Forte",
+   "Franklin Gothic",
+   "Franklin Gothic Book",
+   "Franklin Gothic Heavy",
+   "Franklin Gothic Medium",
+   "Freestyle Script",
+   "French Script MT",
+   "Gabriola",
+   "Gadugi",
+   "Garamond",
+   "Georgia",
+   "Gigi",
+   "Gill Sans MT",
+   "Gill Sans MT Condensed",
+   "Gloucester MT",
+   "Goudy Old Style",
+   "Goudy Stout",
+   "Haettenschweiler",
+   "Harlow Solid",
+   "Harrington",
+   "Helvetica",
+   "High Tower Text",
+   "Impact",
+   "Imprint MT Shadow",
+   "Informal Roman",
+   "Ink Free",
+   "Javanese Text",
+   "Jokerman",
+   "Juice ITC",
+   "Kristen ITC",
+   "Kunstler Script",
+   "Leelawadee",
+   "Leelawadee UI",
+   "Lucida Bright",
+   "Lucida Bright Demibold",
+   "Lucida Calligraphy",
+   "Lucida Console",
+   "Lucida Fax",
+   "Lucida Fax Demibold",
+   "Lucida Fax Regular",
+   "Lucida Handwriting",
+   "Lucida Sans",
+   "Lucida Sans Demibold",
+   "Lucida Sans Regular",
+   "Lucida Sans Typewriter",
+   "Lucida Sans Typewriter Regular",
+   "Lucida Sans Unicode",
+   "MS Gothic",
+   "MS Outlook",
+   "MS PGothic",
+   "MS Reference Sans Serif",
+   "MS Reference Specialty",
+   "MS UI Gothic",
+   "MT Extra",
+   "MV Boli",
+   "Magneto",
+   "Maiandra GD",
+   "Malgun Gothic",
+   "Marlett",
+   "Matura MT Script Capitals",
+   "Microsoft Himalaya",
+   "Microsoft JhengHei",
+   "Microsoft JhengHei Light",
+   "Microsoft JhengHei UI",
+   "Microsoft JhengHei UI Light",
+   "Microsoft New Tai Lue",
+   "Microsoft PhagsPa",
+   "Microsoft Sans Serif",
+   "Microsoft Tai Le",
+   "Microsoft Uighur",
+   "Microsoft YaHei",
+   "Microsoft YaHei Light",
+   "Microsoft YaHei UI",
+   "Microsoft YaHei UI Light",
+   "Microsoft Yi Baiti",
+   "MingLiU-ExtB",
+   "MingLiU_HKSCS-ExtB",
+   "MingLiU_MSCS-ExtB",
+   "Mistral",
+   "Modern No. 20",
+   "Mongolian Baiti",
+   "Monotype Corsiva",
+   "Myanmar Text",
+   "NSimSun",
+   "Niagara Engraved",
+   "Niagara Solid",
+   "Nirmala Text",
+   "Nirmala UI",
+   "OCR A",
+   "Old English Text MT",
+   "Onyx",
+   "PMingLiU-ExtB",
+   "Palace Script MT",
+   "Palatino Linotype",
+   "Papyrus",
+   "Parchment",
+   "Perpetua",
+   "Perpetua Titling MT",
+   "Perpetua Titling MT Light",
+   "Playbill",
+   "Poor Richard",
+   "Pristina",
+   "Rage",
+   "Ravie",
+   "Rockwell",
+   "Rockwell Condensed",
+   "Sans Serif Collection",
+   "Script MT",
+   "Segoe Fluent Icons",
+   "Segoe MDL2 Assets",
+   "Segoe Print",
+   "Segoe Script",
+   "Segoe UI",
+   "Segoe UI Black",
+   "Segoe UI Emoji",
+   "Segoe UI Historic",
+   "Segoe UI Light",
+   "Segoe UI Semibold",
+   "Segoe UI Symbol",
+   "Segoe UI Variable Display",
+   "Segoe UI Variable Small",
+   "Segoe UI Variable Text",
+   "Showcard Gothic",
+   "SimSun",
+   "SimSun-ExtB",
+   "SimSun-ExtG",
+   "Sitka Banner",
+   "Sitka Banner Semibold",
+   "Sitka Display",
+   "Sitka Display Semibold",
+   "Sitka Heading",
+   "Sitka Heading Semibold",
+   "Sitka Small",
+   "Sitka Small Semibold",
+   "Sitka Subheading",
+   "Sitka Subheading Semibold",
+   "Sitka Text",
+   "Sitka Text Semibold",
+   "Snap ITC",
+   "Stencil",
+   "Sylfaen",
+   "Symbol",
+   "Tahoma",
+   "Tempus Sans ITC",
+   "Times",
+   "Times New Roman",
+   "Trebuchet MS",
+   "Tw Cen MT",
+   "Tw Cen MT Condensed",
+   "Verdana",
+   "Viner Hand ITC",
+   "Vivaldi",
+   "Vladimir Script",
+   "Webdings",
+   "Wide Latin",
+   "Wingdings",
+   "Wingdings 2",
+   "Wingdings 3",
+   "Yu Gothic",
+   "Yu Gothic Light",
+   "Yu Gothic Medium",
+   "Yu Gothic Regular",
+   "Yu Gothic UI",
+   "Yu Gothic UI Light",
+   "Yu Gothic UI Regular",
+   "Yu Gothic UI Semibold",
+   "\u5b8b\u4f53",
+   "\u5fae\u8edf\u6b63\u9ed1\u9ad4",
+   "\u5fae\u8edf\u6b63\u9ed1\u9ad4 Light",
+   "\u5fae\u8f6f\u96c5\u9ed1",
+   "\u5fae\u8f6f\u96c5\u9ed1 Light",
+   "\u65b0\u5b8b\u4f53",
+   "\u65b0\u7d30\u660e\u9ad4-ExtB",
+   "\u6e38\u30b4\u30b7\u30c3\u30af",
+   "\u6e38\u30b4\u30b7\u30c3\u30af Light",
+   "\u6e38\u30b4\u30b7\u30c3\u30af Medium",
+   "\u6e38\u30b4\u30b7\u30c3\u30af Regular",
+   "\u7d30\u660e\u9ad4-ExtB",
+   "\u7d30\u660e\u9ad4_HKSCS-ExtB",
+   "\u7d30\u660e\u9ad4_MSCS-ExtB",
+   "\ub9d1\uc740 \uace0\ub515",
+   "\uff2d\uff33 \u30b4\u30b7\u30c3\u30af",
+   "\uff2d\uff33 \uff30\u30b4\u30b7\u30c3\u30af"
+  ],
+  "ui_font": {
+   "family": "Arial",
+   "size_px": 16.0
+  }
+ },
+ "gpu": {
+  "angle_backend": "d3d11",
+  "device_id": "0x3185",
+  "device_name": "Intel(R) UHD Graphics 600",
+  "driver_vendor": "Intel",
+  "driver_version": "31.0.101.2140",
+  "gl_renderer": "ANGLE (Intel, Intel(R) UHD Graphics 600 (0x00003185) Direct3D11 vs_5_0 ps_5_0, D3D11-31.0.101.2140)",
+  "gl_vendor": "Google Inc. (Intel)",
+  "gl_version": "OpenGL ES 3.0 (ANGLE 2.1.28973 git hash: 3b89d84e9d59)",
+  "hardware_decode": {
+   "av1": false,
+   "h264": true,
+   "hevc": true,
+   "vp9": true
+  },
+  "vendor_id": "0x8086",
+  "vendor_name": "",
+  "webgl": {
+   "context_attributes": {
+    "alpha": true,
+    "antialias": true,
+    "depth": true,
+    "desynchronized": false,
+    "failIfMajorPerformanceCaveat": false,
+    "powerPreference": "default",
+    "premultipliedAlpha": true,
+    "preserveDrawingBuffer": true,
+    "stencil": false,
+    "xrCompatible": false
+   },
+   "extensions": [
+    "ANGLE_instanced_arrays",
+    "EXT_blend_minmax",
+    "EXT_clip_control",
+    "EXT_color_buffer_half_float",
+    "EXT_depth_clamp",
+    "EXT_disjoint_timer_query",
+    "EXT_float_blend",
+    "EXT_frag_depth",
+    "EXT_polygon_offset_clamp",
+    "EXT_sRGB",
+    "EXT_shader_texture_lod",
+    "EXT_texture_compression_bptc",
+    "EXT_texture_compression_rgtc",
+    "EXT_texture_filter_anisotropic",
+    "EXT_texture_mirror_clamp_to_edge",
+    "KHR_parallel_shader_compile",
+    "OES_element_index_uint",
+    "OES_fbo_render_mipmap",
+    "OES_standard_derivatives",
+    "OES_texture_float",
+    "OES_texture_float_linear",
+    "OES_texture_half_float",
+    "OES_texture_half_float_linear",
+    "OES_vertex_array_object",
+    "WEBGL_blend_func_extended",
+    "WEBGL_color_buffer_float",
+    "WEBGL_compressed_texture_s3tc",
+    "WEBGL_compressed_texture_s3tc_srgb",
+    "WEBGL_debug_renderer_info",
+    "WEBGL_debug_shaders",
+    "WEBGL_depth_texture",
+    "WEBGL_draw_buffers",
+    "WEBGL_lose_context",
+    "WEBGL_multi_draw",
+    "WEBGL_polygon_mode"
+   ],
+   "max_anisotropy": 16,
+   "max_draw_buffers": 8,
+   "params": {
+    "ALIASED_LINE_WIDTH_RANGE": [
+     1,
+     1
+    ],
+    "ALIASED_POINT_SIZE_RANGE": [
+     1,
+     1024
+    ],
+    "ALPHA_BITS": 8,
+    "BLUE_BITS": 8,
+    "DEPTH_BITS": 24,
+    "GREEN_BITS": 8,
+    "IMPLEMENTATION_COLOR_READ_FORMAT": 6408,
+    "IMPLEMENTATION_COLOR_READ_TYPE": 5121,
+    "MAX_COMBINED_TEXTURE_IMAGE_UNITS": 32,
+    "MAX_CUBE_MAP_TEXTURE_SIZE": 16384,
+    "MAX_FRAGMENT_UNIFORM_VECTORS": 1024,
+    "MAX_RENDERBUFFER_SIZE": 16384,
+    "MAX_TEXTURE_IMAGE_UNITS": 16,
+    "MAX_TEXTURE_SIZE": 16384,
+    "MAX_VARYING_VECTORS": 30,
+    "MAX_VERTEX_ATTRIBS": 16,
+    "MAX_VERTEX_TEXTURE_IMAGE_UNITS": 16,
+    "MAX_VERTEX_UNIFORM_VECTORS": 4096,
+    "MAX_VIEWPORT_DIMS": [
+     32767,
+     32767
+    ],
+    "RED_BITS": 8,
+    "SAMPLES": 4,
+    "SAMPLE_BUFFERS": 1,
+    "STENCIL_BITS": 0,
+    "SUBPIXEL_BITS": 4
+   },
+   "precision": {
+    "FRAGMENT_SHADER.HIGH_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "FRAGMENT_SHADER.HIGH_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "FRAGMENT_SHADER.LOW_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "FRAGMENT_SHADER.LOW_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "FRAGMENT_SHADER.MEDIUM_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "FRAGMENT_SHADER.MEDIUM_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "VERTEX_SHADER.HIGH_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "VERTEX_SHADER.HIGH_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "VERTEX_SHADER.LOW_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "VERTEX_SHADER.LOW_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "VERTEX_SHADER.MEDIUM_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "VERTEX_SHADER.MEDIUM_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    }
+   },
+   "renderer": "WebKit WebGL",
+   "shading_language_version": "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)",
+   "unmasked_renderer": "ANGLE (Intel, Intel(R) UHD Graphics 600 (0x00003185) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+   "unmasked_vendor": "Google Inc. (Intel)",
+   "vendor": "WebKit",
+   "version": "WebGL 1.0 (OpenGL ES 2.0 Chromium)"
+  },
+  "webgl2": {
+   "context_attributes": {
+    "alpha": true,
+    "antialias": true,
+    "depth": true,
+    "desynchronized": false,
+    "failIfMajorPerformanceCaveat": false,
+    "powerPreference": "default",
+    "premultipliedAlpha": true,
+    "preserveDrawingBuffer": true,
+    "stencil": false,
+    "xrCompatible": false
+   },
+   "extensions": [
+    "EXT_clip_control",
+    "EXT_color_buffer_float",
+    "EXT_color_buffer_half_float",
+    "EXT_conservative_depth",
+    "EXT_depth_clamp",
+    "EXT_disjoint_timer_query_webgl2",
+    "EXT_float_blend",
+    "EXT_polygon_offset_clamp",
+    "EXT_render_snorm",
+    "EXT_texture_compression_bptc",
+    "EXT_texture_compression_rgtc",
+    "EXT_texture_filter_anisotropic",
+    "EXT_texture_mirror_clamp_to_edge",
+    "EXT_texture_norm16",
+    "KHR_parallel_shader_compile",
+    "NV_shader_noperspective_interpolation",
+    "OES_draw_buffers_indexed",
+    "OES_sample_variables",
+    "OES_shader_multisample_interpolation",
+    "OES_texture_float_linear",
+    "OVR_multiview2",
+    "WEBGL_blend_func_extended",
+    "WEBGL_clip_cull_distance",
+    "WEBGL_compressed_texture_s3tc",
+    "WEBGL_compressed_texture_s3tc_srgb",
+    "WEBGL_debug_renderer_info",
+    "WEBGL_debug_shaders",
+    "WEBGL_lose_context",
+    "WEBGL_multi_draw",
+    "WEBGL_polygon_mode",
+    "WEBGL_provoking_vertex",
+    "WEBGL_stencil_texturing"
+   ],
+   "max_anisotropy": 16,
+   "max_draw_buffers": null,
+   "params": {
+    "ALIASED_LINE_WIDTH_RANGE": [
+     1,
+     1
+    ],
+    "ALIASED_POINT_SIZE_RANGE": [
+     1,
+     1024
+    ],
+    "ALPHA_BITS": 8,
+    "BLUE_BITS": 8,
+    "DEPTH_BITS": 24,
+    "GREEN_BITS": 8,
+    "IMPLEMENTATION_COLOR_READ_FORMAT": 6408,
+    "IMPLEMENTATION_COLOR_READ_TYPE": 5121,
+    "MAX_3D_TEXTURE_SIZE": 2048,
+    "MAX_ARRAY_TEXTURE_LAYERS": 2048,
+    "MAX_CLIENT_WAIT_TIMEOUT_WEBGL": 0,
+    "MAX_COLOR_ATTACHMENTS": 8,
+    "MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS": 200704,
+    "MAX_COMBINED_TEXTURE_IMAGE_UNITS": 32,
+    "MAX_COMBINED_UNIFORM_BLOCKS": 24,
+    "MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS": 212992,
+    "MAX_CUBE_MAP_TEXTURE_SIZE": 16384,
+    "MAX_DRAW_BUFFERS": 8,
+    "MAX_ELEMENTS_INDICES": 2147483647,
+    "MAX_ELEMENTS_VERTICES": 2147483647,
+    "MAX_ELEMENT_INDEX": 4294967294,
+    "MAX_FRAGMENT_INPUT_COMPONENTS": 120,
+    "MAX_FRAGMENT_UNIFORM_BLOCKS": 12,
+    "MAX_FRAGMENT_UNIFORM_COMPONENTS": 4096,
+    "MAX_FRAGMENT_UNIFORM_VECTORS": 1024,
+    "MAX_PROGRAM_TEXEL_OFFSET": 7,
+    "MAX_RENDERBUFFER_SIZE": 16384,
+    "MAX_SAMPLES": 16,
+    "MAX_SERVER_WAIT_TIMEOUT": 0,
+    "MAX_TEXTURE_IMAGE_UNITS": 16,
+    "MAX_TEXTURE_LOD_BIAS": 2,
+    "MAX_TEXTURE_SIZE": 16384,
+    "MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS": 120,
+    "MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS": 4,
+    "MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS": 4,
+    "MAX_UNIFORM_BLOCK_SIZE": 65536,
+    "MAX_UNIFORM_BUFFER_BINDINGS": 24,
+    "MAX_VARYING_COMPONENTS": 120,
+    "MAX_VARYING_VECTORS": 30,
+    "MAX_VERTEX_ATTRIBS": 16,
+    "MAX_VERTEX_OUTPUT_COMPONENTS": 120,
+    "MAX_VERTEX_TEXTURE_IMAGE_UNITS": 16,
+    "MAX_VERTEX_UNIFORM_BLOCKS": 12,
+    "MAX_VERTEX_UNIFORM_COMPONENTS": 16384,
+    "MAX_VERTEX_UNIFORM_VECTORS": 4096,
+    "MAX_VIEWPORT_DIMS": [
+     32767,
+     32767
+    ],
+    "MIN_PROGRAM_TEXEL_OFFSET": -8,
+    "RED_BITS": 8,
+    "SAMPLES": 4,
+    "SAMPLE_BUFFERS": 1,
+    "STENCIL_BITS": 0,
+    "SUBPIXEL_BITS": 4,
+    "UNIFORM_BUFFER_OFFSET_ALIGNMENT": 256
+   },
+   "precision": {
+    "FRAGMENT_SHADER.HIGH_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "FRAGMENT_SHADER.HIGH_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "FRAGMENT_SHADER.LOW_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "FRAGMENT_SHADER.LOW_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "FRAGMENT_SHADER.MEDIUM_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "FRAGMENT_SHADER.MEDIUM_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "VERTEX_SHADER.HIGH_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "VERTEX_SHADER.HIGH_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "VERTEX_SHADER.LOW_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "VERTEX_SHADER.LOW_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    },
+    "VERTEX_SHADER.MEDIUM_FLOAT": {
+     "precision": 23,
+     "rangeMax": 127,
+     "rangeMin": 127
+    },
+    "VERTEX_SHADER.MEDIUM_INT": {
+     "precision": 0,
+     "rangeMax": 30,
+     "rangeMin": 31
+    }
+   },
+   "renderer": "WebKit WebGL",
+   "shading_language_version": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+   "unmasked_renderer": "ANGLE (Intel, Intel(R) UHD Graphics 600 (0x00003185) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+   "unmasked_vendor": "Google Inc. (Intel)",
+   "vendor": "WebKit",
+   "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+  },
+  "webgpu": {
+   "architecture": "gen-9",
+   "available": true,
+   "description": "",
+   "device": "",
+   "features": [
+    "bgra8unorm-storage",
+    "clip-distances",
+    "core-features-and-limits",
+    "depth-clip-control",
+    "depth32float-stencil8",
+    "dual-source-blending",
+    "float32-blendable",
+    "float32-filterable",
+    "indirect-first-instance",
+    "primitive-index",
+    "rg11b10ufloat-renderable",
+    "shader-f16",
+    "texture-component-swizzle",
+    "texture-compression-bc",
+    "texture-compression-bc-sliced-3d",
+    "texture-compression-unaligned",
+    "texture-formats-tier1",
+    "texture-formats-tier2",
+    "timestamp-query"
+   ],
+   "is_fallback_adapter": false,
+   "limits": {
+    "maxBindGroups": 4,
+    "maxBindGroupsPlusVertexBuffers": 24,
+    "maxBindingsPerBindGroup": 1000,
+    "maxBufferSize": 2147483648,
+    "maxColorAttachmentBytesPerSample": 128,
+    "maxColorAttachments": 8,
+    "maxComputeInvocationsPerWorkgroup": 1024,
+    "maxComputeWorkgroupSizeX": 1024,
+    "maxComputeWorkgroupSizeY": 1024,
+    "maxComputeWorkgroupSizeZ": 64,
+    "maxComputeWorkgroupStorageSize": 32768,
+    "maxComputeWorkgroupsPerDimension": 65535,
+    "maxDynamicStorageBuffersPerPipelineLayout": 8,
+    "maxDynamicUniformBuffersPerPipelineLayout": 10,
+    "maxImmediateSize": 64,
+    "maxInterStageShaderVariables": 28,
+    "maxSampledTexturesPerShaderStage": 48,
+    "maxSamplersPerShaderStage": 16,
+    "maxStorageBufferBindingSize": 2147483644,
+    "maxStorageBuffersInFragmentStage": 16,
+    "maxStorageBuffersInVertexStage": 16,
+    "maxStorageBuffersPerShaderStage": 16,
+    "maxStorageTexturesInFragmentStage": 8,
+    "maxStorageTexturesInVertexStage": 8,
+    "maxStorageTexturesPerShaderStage": 8,
+    "maxTextureArrayLayers": 2048,
+    "maxTextureDimension1D": 16384,
+    "maxTextureDimension2D": 16384,
+    "maxTextureDimension3D": 2048,
+    "maxUniformBufferBindingSize": 65536,
+    "maxUniformBuffersPerShaderStage": 12,
+    "maxVertexAttributes": 30,
+    "maxVertexBufferArrayStride": 2048,
+    "maxVertexBuffers": 8,
+    "minStorageBufferOffsetAlignment": 256,
+    "minUniformBufferOffsetAlignment": 256
+   },
+   "preferred_canvas_format": "bgra8unorm",
+   "subgroup_max_size": 16,
+   "subgroup_min_size": 16,
+   "vendor": "intel",
+   "wgsl_language_features": [
+    "buffer_view",
+    "immediate_address_space",
+    "linear_indexing",
+    "packed_4x8_integer_dot_product",
+    "pointer_composite_access",
+    "readonly_and_readwrite_storage_textures",
+    "subgroup_id",
+    "subgroup_uniformity",
+    "swizzle_assignment",
+    "texture_and_sampler_let",
+    "texture_formats_tier1",
+    "uniform_buffer_standard_layout",
+    "unrestricted_pointer_parameters"
+   ]
+  }
+ },
+ "hardware": {
+  "concurrency": 4,
+  "device_memory": 8,
+  "disk_total_bytes": 254927695872,
+  "js_heap_size_limit": 4301783040,
+  "max_touch_points": 0,
+  "physical_memory_mb": 8013
+ },
+ "id": "win11-uhd600-1440x960",
+ "locale": {
+  "languages": [
+   "en-US",
+   "en"
+  ],
+  "timezone": "Asia/Saigon"
+ },
+ "media": {
+  "dolby_audio": false,
+  "hevc": true,
+  "widevine": {
+   "robustness": [
+    "SW_SECURE_DECODE"
+   ],
+   "supported": true
+  }
+ },
+ "media_devices": {
+  "audioinput": 1,
+  "audiooutput": 1,
+  "labels": {
+   "audioinput": [
+    "Microphone (Realtek High Definition Audio)"
+   ],
+   "audiooutput": [
+    "Speakers (Realtek High Definition Audio)"
+   ],
+   "videoinput": [
+    "USB Camera (0c45:636b)"
+   ]
+  },
+  "videoinput": 1
+ },
+ "network": {
+  "connection": {
+   "downlink": 1.7,
+   "effective_type": "4g",
+   "rtt": 100
+  },
+  "webrtc": {
+   "ip_handling_policy": "default"
+  }
+ },
+ "os": {
+  "architecture": "x86",
+  "bitness": "64",
+  "ch_platform": "Windows",
+  "ch_platform_version": "19.0.0",
+  "family": "windows",
+  "form_factors": [
+   "Desktop"
+  ],
+  "model": "",
+  "navigator_platform": "Win32",
+  "ua_platform_token": "Windows NT 10.0; Win64; x64",
+  "version": "11",
+  "wow64": false
+ },
+ "schema_version": 1,
+ "seed": "857f0e9de505858f82a160b7e240ce82",
+ "speech": {
+  "voices": [
+   {
+    "default": true,
+    "lang": "en-GB",
+    "local_service": true,
+    "name": "Microsoft George - English (United Kingdom)",
+    "voice_uri": "Microsoft George - English (United Kingdom)"
+   },
+   {
+    "default": false,
+    "lang": "en-GB",
+    "local_service": true,
+    "name": "Microsoft Hazel - English (United Kingdom)",
+    "voice_uri": "Microsoft Hazel - English (United Kingdom)"
+   },
+   {
+    "default": false,
+    "lang": "en-GB",
+    "local_service": true,
+    "name": "Microsoft Susan - English (United Kingdom)",
+    "voice_uri": "Microsoft Susan - English (United Kingdom)"
+   },
+   {
+    "default": false,
+    "lang": "de-DE",
+    "local_service": false,
+    "name": "Google Deutsch",
+    "voice_uri": "Google Deutsch"
+   },
+   {
+    "default": false,
+    "lang": "en-US",
+    "local_service": false,
+    "name": "Google US English",
+    "voice_uri": "Google US English"
+   },
+   {
+    "default": false,
+    "lang": "en-GB",
+    "local_service": false,
+    "name": "Google UK English Female",
+    "voice_uri": "Google UK English Female"
+   },
+   {
+    "default": false,
+    "lang": "en-GB",
+    "local_service": false,
+    "name": "Google UK English Male",
+    "voice_uri": "Google UK English Male"
+   },
+   {
+    "default": false,
+    "lang": "es-ES",
+    "local_service": false,
+    "name": "Google espa\u00f1ol",
+    "voice_uri": "Google espa\u00f1ol"
+   },
+   {
+    "default": false,
+    "lang": "es-US",
+    "local_service": false,
+    "name": "Google espa\u00f1ol de Estados Unidos",
+    "voice_uri": "Google espa\u00f1ol de Estados Unidos"
+   },
+   {
+    "default": false,
+    "lang": "fr-FR",
+    "local_service": false,
+    "name": "Google fran\u00e7ais",
+    "voice_uri": "Google fran\u00e7ais"
+   },
+   {
+    "default": false,
+    "lang": "hi-IN",
+    "local_service": false,
+    "name": "Google \u0939\u093f\u0928\u094d\u0926\u0940",
+    "voice_uri": "Google \u0939\u093f\u0928\u094d\u0926\u0940"
+   },
+   {
+    "default": false,
+    "lang": "id-ID",
+    "local_service": false,
+    "name": "Google Bahasa Indonesia",
+    "voice_uri": "Google Bahasa Indonesia"
+   },
+   {
+    "default": false,
+    "lang": "it-IT",
+    "local_service": false,
+    "name": "Google italiano",
+    "voice_uri": "Google italiano"
+   },
+   {
+    "default": false,
+    "lang": "ja-JP",
+    "local_service": false,
+    "name": "Google \u65e5\u672c\u8a9e",
+    "voice_uri": "Google \u65e5\u672c\u8a9e"
+   },
+   {
+    "default": false,
+    "lang": "ko-KR",
+    "local_service": false,
+    "name": "Google \ud55c\uad6d\uc758",
+    "voice_uri": "Google \ud55c\uad6d\uc758"
+   },
+   {
+    "default": false,
+    "lang": "nl-NL",
+    "local_service": false,
+    "name": "Google Nederlands",
+    "voice_uri": "Google Nederlands"
+   },
+   {
+    "default": false,
+    "lang": "pl-PL",
+    "local_service": false,
+    "name": "Google polski",
+    "voice_uri": "Google polski"
+   },
+   {
+    "default": false,
+    "lang": "pt-BR",
+    "local_service": false,
+    "name": "Google portugu\u00eas do Brasil",
+    "voice_uri": "Google portugu\u00eas do Brasil"
+   },
+   {
+    "default": false,
+    "lang": "ru-RU",
+    "local_service": false,
+    "name": "Google \u0440\u0443\u0441\u0441\u043a\u0438\u0439",
+    "voice_uri": "Google \u0440\u0443\u0441\u0441\u043a\u0438\u0439"
+   },
+   {
+    "default": false,
+    "lang": "zh-CN",
+    "local_service": false,
+    "name": "Google\u00a0\u666e\u901a\u8bdd\uff08\u4e2d\u56fd\u5927\u9646\uff09",
+    "voice_uri": "Google\u00a0\u666e\u901a\u8bdd\uff08\u4e2d\u56fd\u5927\u9646\uff09"
+   },
+   {
+    "default": false,
+    "lang": "zh-HK",
+    "local_service": false,
+    "name": "Google\u00a0\u7ca4\u8a9e\uff08\u9999\u6e2f\uff09",
+    "voice_uri": "Google\u00a0\u7ca4\u8a9e\uff08\u9999\u6e2f\uff09"
+   },
+   {
+    "default": false,
+    "lang": "zh-TW",
+    "local_service": false,
+    "name": "Google \u570b\u8a9e\uff08\u81fa\u7063\uff09",
+    "voice_uri": "Google \u570b\u8a9e\uff08\u81fa\u7063\uff09"
+   }
+  ]
+ },
+ "system_colors": {
+  "AccentColor": "rgb(0, 117, 255)",
+  "AccentColorText": "rgb(255, 255, 255)",
+  "ActiveBorder": "rgb(0, 0, 0)",
+  "ActiveCaption": "rgb(255, 255, 255)",
+  "ActiveText": "rgb(0, 102, 204)",
+  "AppWorkspace": "rgb(255, 255, 255)",
+  "Background": "rgb(255, 255, 255)",
+  "ButtonBorder": "rgb(0, 0, 0)",
+  "ButtonFace": "rgb(240, 240, 240)",
+  "ButtonHighlight": "rgb(240, 240, 240)",
+  "ButtonShadow": "rgb(240, 240, 240)",
+  "ButtonText": "rgb(0, 0, 0)",
+  "Canvas": "rgb(255, 255, 255)",
+  "CanvasText": "rgb(0, 0, 0)",
+  "CaptionText": "rgb(0, 0, 0)",
+  "Field": "rgb(255, 255, 255)",
+  "FieldText": "rgb(0, 0, 0)",
+  "GrayText": "rgb(109, 109, 109)",
+  "Highlight": "rgb(0, 120, 215)",
+  "HighlightText": "rgb(255, 255, 255)",
+  "InactiveBorder": "rgb(0, 0, 0)",
+  "InactiveCaption": "rgb(255, 255, 255)",
+  "InactiveCaptionText": "rgb(128, 128, 128)",
+  "InfoBackground": "rgb(255, 255, 255)",
+  "InfoText": "rgb(0, 0, 0)",
+  "LinkText": "rgb(0, 102, 204)",
+  "Mark": "rgb(255, 255, 0)",
+  "MarkText": "rgb(0, 0, 0)",
+  "Menu": "rgb(255, 255, 255)",
+  "MenuText": "rgb(0, 0, 0)",
+  "Scrollbar": "rgb(255, 255, 255)",
+  "SelectedItem": "rgb(25, 103, 210)",
+  "SelectedItemText": "rgb(255, 255, 255)",
+  "ThreeDDarkShadow": "rgb(0, 0, 0)",
+  "ThreeDFace": "rgb(240, 240, 240)",
+  "ThreeDHighlight": "rgb(0, 0, 0)",
+  "ThreeDLightShadow": "rgb(0, 0, 0)",
+  "ThreeDShadow": "rgb(0, 0, 0)",
+  "VisitedText": "rgb(0, 102, 204)",
+  "Window": "rgb(255, 255, 255)",
+  "WindowFrame": "rgb(0, 0, 0)",
+  "WindowText": "rgb(0, 0, 0)"
+ },
+ "webauthn": {
+  "conditional_mediation": true,
+  "user_verifying_platform_authenticator": true
+ }
+}

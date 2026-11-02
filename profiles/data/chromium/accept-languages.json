@@ -1,0 +1,436 @@
+{
+ "accept_languages": {
+  "af": [
+   "en-US",
+   "en"
+  ],
+  "am": [
+   "am",
+   "en-GB",
+   "en"
+  ],
+  "ar": [
+   "ar",
+   "en-US",
+   "en"
+  ],
+  "bg": [
+   "bg-BG",
+   "bg"
+  ],
+  "bn": [
+   "bn-IN",
+   "bn",
+   "en-US",
+   "en"
+  ],
+  "ca": [
+   "ca-ES",
+   "ca"
+  ],
+  "cs": [
+   "cs-CZ",
+   "cs"
+  ],
+  "da": [
+   "da-DK",
+   "da",
+   "en-US",
+   "en"
+  ],
+  "de": [
+   "de-DE",
+   "de",
+   "en-US",
+   "en"
+  ],
+  "el": [
+   "el-GR",
+   "el"
+  ],
+  "en-GB": [
+   "en-GB",
+   "en-US",
+   "en"
+  ],
+  "en-US": [
+   "en-US",
+   "en"
+  ],
+  "es": [
+   "es-ES",
+   "es"
+  ],
+  "es-419": [
+   "es-419",
+   "es"
+  ],
+  "et": [
+   "et-EE",
+   "et",
+   "en-US",
+   "en"
+  ],
+  "fa": [
+   "fa",
+   "en-US",
+   "en"
+  ],
+  "fi": [
+   "fi-FI",
+   "fi",
+   "en-US",
+   "en"
+  ],
+  "fil": [
+   "fil",
+   "fil-PH",
+   "tl",
+   "en-US",
+   "en"
+  ],
+  "fr": [
+   "fr-FR",
+   "fr",
+   "en-US",
+   "en"
+  ],
+  "gu": [
+   "gu-IN",
+   "gu",
+   "hi-IN",
+   "hi",
+   "en-US",
+   "en"
+  ],
+  "he": [
+   "he-IL",
+   "he",
+   "en-US",
+   "en"
+  ],
+  "hi": [
+   "hi-IN",
+   "hi",
+   "en-US",
+   "en"
+  ],
+  "hr": [
+   "hr-HR",
+   "hr",
+   "en-US",
+   "en"
+  ],
+  "hu": [
+   "hu-HU",
+   "hu",
+   "en-US",
+   "en"
+  ],
+  "id": [
+   "id-ID",
+   "id",
+   "en-US",
+   "en"
+  ],
+  "it": [
+   "it-IT",
+   "it",
+   "en-US",
+   "en"
+  ],
+  "ja": [
+   "ja",
+   "en-US",
+   "en"
+  ],
+  "kn": [
+   "kn-IN",
+   "kn",
+   "en-US",
+   "en"
+  ],
+  "ko": [
+   "ko-KR",
+   "ko",
+   "en-US",
+   "en"
+  ],
+  "lt": [
+   "lt",
+   "en-US",
+   "en",
+   "ru",
+   "pl"
+  ],
+  "lv": [
+   "lv-LV",
+   "lv",
+   "en-US",
+   "en"
+  ],
+  "ml": [
+   "ml-IN",
+   "ml",
+   "en-US",
+   "en"
+  ],
+  "mr": [
+   "mr-IN",
+   "mr",
+   "hi-IN",
+   "hi",
+   "en-US",
+   "en"
+  ],
+  "ms": [
+   "en-US",
+   "en"
+  ],
+  "nb": [
+   "nb-NO",
+   "nb",
+   "no",
+   "nn",
+   "en-US",
+   "en"
+  ],
+  "nl": [
+   "nl-NL",
+   "nl",
+   "en-US",
+   "en"
+  ],
+  "pl": [
+   "pl-PL",
+   "pl",
+   "en-US",
+   "en"
+  ],
+  "pt-BR": [
+   "pt-BR",
+   "pt",
+   "en-US",
+   "en"
+  ],
+  "pt-PT": [
+   "pt-PT",
+   "pt",
+   "en-US",
+   "en"
+  ],
+  "ro": [
+   "ro-RO",
+   "ro",
+   "en-US",
+   "en"
+  ],
+  "ru": [
+   "ru-RU",
+   "ru",
+   "en-US",
+   "en"
+  ],
+  "sk": [
+   "sk-SK",
+   "sk",
+   "cs",
+   "en-US",
+   "en"
+  ],
+  "sl": [
+   "sl-SI",
+   "sl",
+   "en-GB",
+   "en"
+  ],
+  "sr": [
+   "sr-RS",
+   "sr",
+   "en-US",
+   "en"
+  ],
+  "sv": [
+   "sv-SE",
+   "sv",
+   "en-US",
+   "en"
+  ],
+  "sw": [
+   "sw",
+   "en-GB",
+   "en"
+  ],
+  "ta": [
+   "ta-IN",
+   "ta",
+   "en-US",
+   "en"
+  ],
+  "te": [
+   "te-IN",
+   "te",
+   "hi-IN",
+   "hi",
+   "en-US",
+   "en"
+  ],
+  "th": [
+   "th-TH",
+   "th"
+  ],
+  "tr": [
+   "tr-TR",
+   "tr",
+   "en-US",
+   "en"
+  ],
+  "uk": [
+   "uk-UA",
+   "uk",
+   "en-US",
+   "en"
+  ],
+  "ur": [
+   "en-US",
+   "en"
+  ],
+  "vi": [
+   "vi-VN",
+   "vi",
+   "fr-FR",
+   "fr",
+   "en-US",
+   "en"
+  ],
+  "zh-CN": [
+   "zh-CN",
+   "zh"
+  ],
+  "zh-TW": [
+   "zh-TW",
+   "zh",
+   "en-US",
+   "en"
+  ]
+ },
+ "desktop_locales": [
+  "af",
+  "am",
+  "ar",
+  "bg",
+  "bn",
+  "ca",
+  "cs",
+  "da",
+  "de",
+  "el",
+  "en-GB",
+  "en-US",
+  "es",
+  "es-419",
+  "et",
+  "fa",
+  "fi",
+  "fil",
+  "fr",
+  "gu",
+  "he",
+  "hi",
+  "hr",
+  "hu",
+  "id",
+  "it",
+  "ja",
+  "kn",
+  "ko",
+  "lt",
+  "lv",
+  "ml",
+  "mr",
+  "ms",
+  "nb",
+  "nl",
+  "pl",
+  "pt-BR",
+  "pt-PT",
+  "ro",
+  "ru",
+  "sk",
+  "sl",
+  "sr",
+  "sv",
+  "sw",
+  "ta",
+  "te",
+  "th",
+  "tr",
+  "uk",
+  "ur",
+  "vi",
+  "zh-CN",
+  "zh-TW"
+ ],
+ "source": {
+  "chromium": "155.0.8059.84",
+  "default": "en-US,en",
+  "files": {
+   "build/config/locales.gni": "736f5f1d23e7e4abe8ee939cf36da6dcb7870acb",
+   "components/components_locale_settings.grd": "b38478da3f5dbbda810dda1d1c4a44af6a410296",
+   "components/strings/components_locale_settings_am.xtb": "5f4f4d1ecdb5ae0af7ee72173b868188eee142c9",
+   "components/strings/components_locale_settings_ar-XB.xtb": "25a564f740ff8947ba24c859b6e04d2f58b0202d",
+   "components/strings/components_locale_settings_ar.xtb": "e6fc8a91911b23bfd47442e34873e18a1d323892",
+   "components/strings/components_locale_settings_bg.xtb": "5be4a2f733372b16beb219212a6fe95a5c240190",
+   "components/strings/components_locale_settings_bn.xtb": "a388cb3d7459307e6a56bafe9d115aa8d85cc01b",
+   "components/strings/components_locale_settings_ca.xtb": "5b932b47004b59fa096399308f40044408a624a0",
+   "components/strings/components_locale_settings_cs.xtb": "998ef72fe6a14bbdd67801981dacd480eae1ccbe",
+   "components/strings/components_locale_settings_da.xtb": "d3c0dd8793999835ad3ce9699533addb6f038635",
+   "components/strings/components_locale_settings_de.xtb": "578d05f7ef57c3df4621fa1ea884731d1528caa1",
+   "components/strings/components_locale_settings_el.xtb": "53639a37afd21c022fd5d812dd77a6394313dd46",
+   "components/strings/components_locale_settings_en-GB.xtb": "6dc07fa16130d44b76bcf0983512d4a54b62d489",
+   "components/strings/components_locale_settings_es-419.xtb": "9f1d3c369592dc0da4c6ac847eb79d90d8d7a5ad",
+   "components/strings/components_locale_settings_es.xtb": "d9bfcf5fff5f703f1eadf388cb0fd0a1f0f3919f",
+   "components/strings/components_locale_settings_et.xtb": "bd22d81d8bd757da06a4ad4be9ac50d408b499b6",
+   "components/strings/components_locale_settings_fa.xtb": "b984b58e18efda7c772ceecf6e8ad4b7565deaaf",
+   "components/strings/components_locale_settings_fi.xtb": "c7aca4a212c6835ce8d6a62d91b2ff3ba750e3f8",
+   "components/strings/components_locale_settings_fil.xtb": "fce09d66d687a9977090fc658ab07827bbd1cab3",
+   "components/strings/components_locale_settings_fr.xtb": "39865818c628a553ac01050356100344ac86b80a",
+   "components/strings/components_locale_settings_gu.xtb": "baa5fbcad6d650e4c98a089064450da8604deeeb",
+   "components/strings/components_locale_settings_he.xtb": "b454efa6324c5ca9aaeaabc5a0e56c08783dfc0c",
+   "components/strings/components_locale_settings_hi.xtb": "22b856ffdbe0c1a0a5d5c124f61578f209b4538c",
+   "components/strings/components_locale_settings_hr.xtb": "c95ab70656f0cf5bcf62eef8190d3f2d845a7c91",
+   "components/strings/components_locale_settings_hu.xtb": "c4582e32d7136b95d885aebeb8e3de522f2d9e47",
+   "components/strings/components_locale_settings_id.xtb": "61105d41ca6adba0ca70520441883b2f6769844a",
+   "components/strings/components_locale_settings_it.xtb": "4043519e0d6754b48078c8b55d17facebfb9ca29",
+   "components/strings/components_locale_settings_ja.xtb": "aeffb30f199d2e85128b5fff976adc97e5c0167a",
+   "components/strings/components_locale_settings_kn.xtb": "de73404db9a4000c9062a0859d56e5c01e760f80",
+   "components/strings/components_locale_settings_ko.xtb": "9195c59ba035d0f18c1b406352bb92ff68c68eef",
+   "components/strings/components_locale_settings_lt.xtb": "0fa1195fb1ee5269bb3819480a88babfc1753f98",
+   "components/strings/components_locale_settings_lv.xtb": "b9e2e9142576542a3d50eaed3fd7cce4a1bc7e08",
+   "components/strings/components_locale_settings_ml.xtb": "58f06c6c80b3ccdbaf842ea9d39299ff279cafee",
+   "components/strings/components_locale_settings_mr.xtb": "e251a9969ec08e4ba62fa390c8ac73c3f6faa51b",
+   "components/strings/components_locale_settings_ms.xtb": "1fb470abf065fc15525d531d9682f85c88d61675",
+   "components/strings/components_locale_settings_nb.xtb": "b9af09ebb70e5b52808f873ee307676bca3b4ae8",
+   "components/strings/components_locale_settings_nl.xtb": "d94d3b6b21945117c3a5fdfdb07816ca60815eed",
+   "components/strings/components_locale_settings_pl.xtb": "db79aae725a7def2b422e158fcc81448cbf331a4",
+   "components/strings/components_locale_settings_pt-BR.xtb": "b26558cb3bc96e3e31180d9ea42b96f76712bbd9",
+   "components/strings/components_locale_settings_pt-PT.xtb": "a3cd86cff9641144e396435c74d41f4b502b92de",
+   "components/strings/components_locale_settings_ro.xtb": "74af2b8d94fe28a941e8649c0e028b06ea5ede06",
+   "components/strings/components_locale_settings_ru.xtb": "7e83d57722a2b5ca4e09dcbd5a2a3bf5f282e889",
+   "components/strings/components_locale_settings_sk.xtb": "721882083f1ca71d350c3870e1a8a9f088d96548",
+   "components/strings/components_locale_settings_sl.xtb": "f314192710d6db3e2b6891ad7c49df43c0d21a40",
+   "components/strings/components_locale_settings_sr.xtb": "e0d231cc8ff8774a4f8ddb3f632e16aede236940",
+   "components/strings/components_locale_settings_sv.xtb": "8541864acb9b60d4cf8223fcbe72d64730f9dd13",
+   "components/strings/components_locale_settings_sw.xtb": "a83486254a63876e0323b5083b95bdc0d38dea5b",
+   "components/strings/components_locale_settings_ta.xtb": "e0fe2e786b4fb6c43fb002c83eb8b608d2574b87",
+   "components/strings/components_locale_settings_te.xtb": "e60b05302d41becad2a39cd3f85f93741e50a0c3",
+   "components/strings/components_locale_settings_th.xtb": "0ef1f05bb6587169b184c7c0cfef475e6b6b1cfe",
+   "components/strings/components_locale_settings_tr.xtb": "d56f7b4e2b4ed098ce4ad25351c8234b68086c11",
+   "components/strings/components_locale_settings_uk.xtb": "1bfb5814d11ed260692e8b81aebcde68d9838f85",
+   "components/strings/components_locale_settings_vi.xtb": "c5a5db3db136f11da5bf096d0b924309d05f39f8",
+   "components/strings/components_locale_settings_zh-CN.xtb": "97a88f5447fb4fd35e954bbf505627e12d152b7e",
+   "components/strings/components_locale_settings_zh-TW.xtb": "117501cd84afbc014e7d978d748b6532d9201734"
+  },
+  "message": "IDS_ACCEPT_LANGUAGES"
+ }
+}

@@ -1,0 +1,71 @@
+{
+ "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+ "before": [
+  {
+   "kind": "audioinput",
+   "label": "",
+   "groupId": "",
+   "deviceId": ""
+  },
+  {
+   "kind": "videoinput",
+   "label": "",
+   "groupId": "",
+   "deviceId": ""
+  },
+  {
+   "kind": "audiooutput",
+   "label": "",
+   "groupId": "",
+   "deviceId": ""
+  }
+ ],
+ "permissions": {
+  "camera": "granted",
+  "microphone": "granted"
+ },
+ "after": [
+  {
+   "kind": "audioinput",
+   "label": "Default - Microphone (Realtek High Definition Audio)",
+   "groupId": "f5dead617f9d3e303d1641ef6a978ca699b4f30f54d4aaf74c73c38607f79946",
+   "deviceId": "default"
+  },
+  {
+   "kind": "audioinput",
+   "label": "Communications - Microphone (Realtek High Definition Audio)",
+   "groupId": "f5dead617f9d3e303d1641ef6a978ca699b4f30f54d4aaf74c73c38607f79946",
+   "deviceId": "communications"
+  },
+  {
+   "kind": "audioinput",
+   "label": "Microphone (Realtek High Definition Audio)",
+   "groupId": "f5dead617f9d3e303d1641ef6a978ca699b4f30f54d4aaf74c73c38607f79946",
+   "deviceId": "5b465f56907dc159599e8c816a18ccf5307c9c88e124c2ef3604ec6ce7e8533b"
+  },
+  {
+   "kind": "videoinput",
+   "label": "USB Camera (0c45:636b)",
+   "groupId": "6a75243ccd0e3b9a6de92e4d72d88600e40798a16e1f44224f0733512f4cf436",
+   "deviceId": "96142e2b0b3577e2f4b96eb68a7336415269ff9132c302b3346d5eaa88af5653"
+  },
+  {
+   "kind": "audiooutput",
+   "label": "Default - Speakers (Realtek High Definition Audio)",
+   "groupId": "f5dead617f9d3e303d1641ef6a978ca699b4f30f54d4aaf74c73c38607f79946",
+   "deviceId": "default"
+  },
+  {
+   "kind": "audiooutput",
+   "label": "Communications - Speakers (Realtek High Definition Audio)",
+   "groupId": "f5dead617f9d3e303d1641ef6a978ca699b4f30f54d4aaf74c73c38607f79946",
+   "deviceId": "communications"
+  },
+  {
+   "kind": "audiooutput",
+   "label": "Speakers (Realtek High Definition Audio)",
+   "groupId": "f5dead617f9d3e303d1641ef6a978ca699b4f30f54d4aaf74c73c38607f79946",
+   "deviceId": "bf52763e59aa717843cc535316569d18786c7d9685c1ebd34988f0fc6e60a16f"
+  }
+ ]
+}
