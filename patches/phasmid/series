@@ -44,3 +44,6 @@ graphics/canvas-readback.patch
 
 # Audio
 audio/webaudio.patch
+
+# Media
+platform/widevine.patch

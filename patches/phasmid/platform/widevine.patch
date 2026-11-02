@@ -1,0 +1,62 @@
+Phasmid: Widevine from the installed CDM, or none
+
+What:     When media.widevine.supported is true, the CDM is the installed
+          Google Chrome's (--phasmid-widevine-cdm, default
+          /opt/google/chrome/WidevineCdm), registered from the profile in
+          place of the component updater's hint file. When false, Widevine
+          is absent even if a hint file exists, as it is for a claim without
+          an installed CDM or on a Windows profile. Nothing is bundled or
+          downloaded, and the component updater stays blocked.
+Why:      Google Chrome on Linux always has Widevine and an ungoogled build
+          never does; a fake CDM is easy to detect and Google's CDM may not
+          be redistributed.
+Profile:  media.widevine.supported, media.widevine.robustness
+Hooks:    chrome/common/media/component_widevine_cdm_hint_file_linux.cc
+          GetHintedWidevineCdmDirectory,
+          GetBundledVersionDuringLastComponentUpdate; chrome/common/BUILD.gn
+Contexts: main, iframe; workers have no EME
+Guard:    tests/guards/platform/widevine.py
+
+--- a/chrome/common/BUILD.gn
++++ b/chrome/common/BUILD.gn
+@@ -416,6 +416,7 @@
+           "media/component_widevine_cdm_hint_file_linux.cc",
+           "media/component_widevine_cdm_hint_file_linux.h",
+         ]
++        deps += [ "//components/phasmid" ]
+       }
+       deps += [ "//third_party/widevine/cdm:headers" ]
+     }
+--- a/chrome/common/media/component_widevine_cdm_hint_file_linux.cc
++++ b/chrome/common/media/component_widevine_cdm_hint_file_linux.cc
+@@ -19,6 +19,7 @@
+ #include "base/version.h"
+ #include "build/branding_buildflags.h"
+ #include "chrome/common/chrome_paths.h"
++#include "components/phasmid/profile.h"
+ 
+ namespace {
+ 
+@@ -101,6 +102,11 @@
+ }
+ 
+ base::FilePath GetHintedWidevineCdmDirectory() {
++  // Phasmid: the CDM validated at load, or none, so a stale hint file cannot
++  // switch Widevine on.
++  if (phasmid::Profile::Get()) {
++    return phasmid::WidevineCdmDirectory();
++  }
+   base::DictValue dict = GetHintFileContents();
+ 
+   auto* path_str = dict.FindString(kPath);
+@@ -117,6 +123,10 @@
+ }
+ 
+ std::optional<base::Version> GetBundledVersionDuringLastComponentUpdate() {
++  // Phasmid: no bundled CDM and no component update to compare against.
++  if (phasmid::Profile::Get()) {
++    return std::nullopt;
++  }
+   base::DictValue dict = GetHintFileContents();
+ 
+   auto* version_str = dict.FindString(kLastBundledVersion);
