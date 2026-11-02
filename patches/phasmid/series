@@ -93,3 +93,6 @@ platform/battery.patch
 
 # Graphics group: headless renders on the host GPU
 graphics/headless-gpu.patch
+
+# Location group: geolocation
+locale/geolocation.patch

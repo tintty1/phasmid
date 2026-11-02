@@ -1,0 +1,272 @@
+Phasmid: geolocation
+
+What:     A granted page gets locale.geolocation from a provider that
+          behaves as stock Chrome's on the claimed OS: nothing before the
+          grant, the first fix a seeded 200 to 300 ms after start, altitude,
+          heading and speed null. Linux (network provider) stamps the start
+          time and re-reports after 2 s; Windows (WinRT) stamps on delivery.
+          Without the field the build's network provider runs and fails.
+Why:      An ungoogled build cannot reach Google's location service, so a
+          granted page gets an error where Google Chrome has a position; an
+          instant fix looks like DevTools' override.
+Profile:  locale.geolocation.latitude, locale.geolocation.longitude,
+          locale.geolocation.accuracy, seed, os.family
+Hooks:    services/device/geolocation/location_provider_manager.cc
+          LocationProviderManager::InitializeProvider; new
+          services/device/geolocation/profile_location_provider.{h,cc};
+          services/device/geolocation/BUILD.gn
+Contexts: main, iframe (cross-origin with allow="geolocation"); workers have
+          no geolocation
+Guard:    tests/guards/locale/geolocation.py
+
+--- a/services/device/geolocation/BUILD.gn
++++ b/services/device/geolocation/BUILD.gn
+@@ -31,6 +31,8 @@
+     "position_cache.h",
+     "position_cache_impl.cc",
+     "position_cache_impl.h",
++    "profile_location_provider.cc",
++    "profile_location_provider.h",
+     "public_ip_address_geolocation_provider.cc",
+     "public_ip_address_geolocation_provider.h",
+     "public_ip_address_geolocator.cc",
+@@ -54,6 +56,7 @@
+     "//build/config/linux/dbus:buildflags",
+     "//components/content_settings/core/common:features",
+     "//components/device_event_log",
++    "//components/phasmid",
+     "//mojo/public/cpp/bindings",
+     "//mojo/public/cpp/system",
+     "//net",
+--- a/services/device/geolocation/location_provider_manager.cc
++++ b/services/device/geolocation/location_provider_manager.cc
+@@ -19,6 +19,7 @@
+ #include "build/config/linux/dbus/buildflags.h"
+ #include "components/device_event_log/device_event_log.h"
+ #include "services/device/geolocation/network_location_provider.h"
++#include "services/device/geolocation/profile_location_provider.h"
+ #include "services/device/geolocation/wifi_polling_policy.h"
+ #include "services/device/public/cpp/device_features.h"
+ #include "services/device/public/cpp/geolocation/geoposition.h"
+@@ -212,6 +213,12 @@
+       provider_manager_mode_ = kCustomOnly;
+     }
+   }
++  // Phasmid: a claimed position replaces every other provider.
++  if (std::unique_ptr<LocationProvider> profile_provider =
++          NewProfileLocationProvider()) {
++    custom_location_provider_ = std::move(profile_provider);
++    provider_manager_mode_ = kCustomOnly;
++  }
+ 
+   switch (provider_manager_mode_) {
+     case kCustomOnly:
+--- a/services/device/geolocation/profile_location_provider.h
++++ b/services/device/geolocation/profile_location_provider.h
+@@ -0,0 +1,20 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef SERVICES_DEVICE_GEOLOCATION_PROFILE_LOCATION_PROVIDER_H_
++#define SERVICES_DEVICE_GEOLOCATION_PROFILE_LOCATION_PROVIDER_H_
++
++#include <memory>
++
++#include "services/device/public/cpp/geolocation/location_provider.h"
++
++namespace device {
++
++// Returns a provider reporting locale.geolocation as stock Chrome's provider
++// on the claimed OS would, or nullptr when the profile claims no position.
++std::unique_ptr<LocationProvider> NewProfileLocationProvider();
++
++}  // namespace device
++
++#endif  // SERVICES_DEVICE_GEOLOCATION_PROFILE_LOCATION_PROVIDER_H_
+--- a/services/device/geolocation/profile_location_provider.cc
++++ b/services/device/geolocation/profile_location_provider.cc
+@@ -0,0 +1,183 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "services/device/geolocation/profile_location_provider.h"
++
++#include <optional>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/location.h"
++#include "base/memory/weak_ptr.h"
++#include "base/sequence_checker.h"
++#include "base/task/sequenced_task_runner.h"
++#include "base/time/time.h"
++#include "components/phasmid/profile.h"
++#include "services/device/public/mojom/geolocation_internals.mojom.h"
++#include "services/device/public/mojom/geoposition.mojom.h"
++
++namespace device {
++
++namespace {
++
++// NetworkLocationProvider's kDataCompleteWaitSeconds: two seconds after it
++// starts, RequestPosition re-reports the last fix with a fresh timestamp.
++constexpr base::TimeDelta kNetworkRefixDelay = base::Seconds(2);
++
++// NetworkLocationProvider's kLastPositionMaxAgeSeconds: a fix younger than
++// this is re-reported at once when a new provider starts.
++constexpr base::TimeDelta kNetworkLastFixMaxAge = base::Minutes(10);
++
++// Kept across provider restarts, as the manager's position cache is. Only
++// used on the geolocation thread.
++base::Time& LastNetworkFixTimestamp() {
++  static base::Time timestamp;
++  return timestamp;
++}
++
++class ProfileLocationProvider : public LocationProvider {
++ public:
++  // `network_model`: behave as NetworkLocationProvider (Linux), else as
++  // LocationProviderWinrt (Windows).
++  ProfileLocationProvider(const phasmid::Profile::Geolocation& claim,
++                          bool network_model)
++      : claim_(claim), network_model_(network_model) {}
++
++  ProfileLocationProvider(const ProfileLocationProvider&) = delete;
++  ProfileLocationProvider& operator=(const ProfileLocationProvider&) = delete;
++
++  ~ProfileLocationProvider() override = default;
++
++  // LocationProvider:
++  void FillDiagnostics(mojom::GeolocationDiagnostics& diagnostics) override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    if (!start_time_) {
++      diagnostics.provider_state =
++          mojom::GeolocationDiagnostics::ProviderState::kStopped;
++    } else if (high_accuracy_) {
++      diagnostics.provider_state =
++          mojom::GeolocationDiagnostics::ProviderState::kHighAccuracy;
++    } else {
++      diagnostics.provider_state =
++          mojom::GeolocationDiagnostics::ProviderState::kLowAccuracy;
++    }
++  }
++
++  void SetUpdateCallback(
++      const LocationProviderUpdateCallback& callback) override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    callback_ = callback;
++  }
++
++  // enableHighAccuracy changes nothing: neither stock provider has a more
++  // precise source on a desktop.
++  void StartProvider(bool high_accuracy) override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    high_accuracy_ = high_accuracy;
++    if (start_time_) {
++      return;
++    }
++    start_time_ = base::Time::Now();
++    if (network_model_) {
++      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++          FROM_HERE,
++          base::BindOnce(&ProfileLocationProvider::Refix,
++                         weak_factory_.GetWeakPtr()),
++          kNetworkRefixDelay);
++    }
++    MaybeScheduleFix();
++  }
++
++  void StopProvider() override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    start_time_.reset();
++    fix_scheduled_ = false;
++    weak_factory_.InvalidateWeakPtrs();
++  }
++
++  const mojom::GeopositionResult* GetPosition() override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    return last_result_.get();
++  }
++
++  // Both stock providers report nothing before permission is granted: the
++  // network provider sends no request, the WinRT one registers no callback.
++  void OnPermissionGranted() override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    permission_granted_ = true;
++    MaybeScheduleFix();
++  }
++
++ private:
++  void MaybeScheduleFix() {
++    if (!permission_granted_ || !start_time_ || fix_scheduled_) {
++      return;
++    }
++    fix_scheduled_ = true;
++    const base::Time last = LastNetworkFixTimestamp();
++    if (network_model_ && !last.is_null() &&
++        base::Time::Now() - last < kNetworkLastFixMaxAge) {
++      Report(base::Time::Now());
++      return;
++    }
++    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(&ProfileLocationProvider::FirstFix,
++                       weak_factory_.GetWeakPtr()),
++        base::Milliseconds(claim_.fix_delay_ms));
++  }
++
++  // The network provider's fix carries the time its Wi-Fi data was read, at
++  // start, before the request; WinRT's CreateGeoposition stamps the fix when
++  // it arrives.
++  void FirstFix() { Report(network_model_ ? *start_time_ : base::Time::Now()); }
++
++  void Refix() {
++    if (last_result_) {
++      Report(base::Time::Now());
++    }
++  }
++
++  // Latitude, longitude and accuracy only: altitude, altitudeAccuracy,
++  // heading and speed stay at their kBad* defaults and read as null, as from
++  // the network provider and a desktop WinRT fix.
++  void Report(base::Time timestamp) {
++    mojom::GeopositionPtr position = mojom::Geoposition::New();
++    position->latitude = claim_.latitude;
++    position->longitude = claim_.longitude;
++    position->accuracy = claim_.accuracy_m;
++    position->timestamp = timestamp;
++    if (network_model_) {
++      LastNetworkFixTimestamp() = timestamp;
++    }
++    last_result_ = mojom::GeopositionResult::NewPosition(std::move(position));
++    if (callback_) {
++      callback_.Run(this, last_result_.Clone());
++    }
++  }
++
++  const phasmid::Profile::Geolocation claim_;
++  const bool network_model_;
++  LocationProviderUpdateCallback callback_;
++  bool high_accuracy_ = false;
++  bool permission_granted_ = false;
++  bool fix_scheduled_ = false;
++  std::optional<base::Time> start_time_;
++  mojom::GeopositionResultPtr last_result_;
++  SEQUENCE_CHECKER(sequence_checker_);
++  base::WeakPtrFactory<ProfileLocationProvider> weak_factory_{this};
++};
++
++}  // namespace
++
++std::unique_ptr<LocationProvider> NewProfileLocationProvider() {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!profile || !profile->geolocation()) {
++    return nullptr;
++  }
++  return std::make_unique<ProfileLocationProvider>(
++      *profile->geolocation(), profile->os_family() == "linux");
++}
++
++}  // namespace device
