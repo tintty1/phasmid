@@ -1,0 +1,176 @@
+Phasmid: Web Bluetooth and Web Share as on Windows
+
+What:     A Windows profile gets navigator.bluetooth and navigator.share and
+          canShare, as Windows Chrome has them. getAvailability() reports
+          capabilities.bluetooth_available, never the host's BlueZ;
+          requestDevice() without a claimed adapter rejects as on Windows
+          without one. share() runs the stock checks and then ends as a
+          dismissed share sheet: AbortError. Linux profiles are unchanged.
+Why:      Windows Chrome always exposes both APIs and Linux Chrome neither,
+          so their absence names Linux. Without a ShareService binder a
+          share() call would kill the renderer.
+Profile:  capabilities.bluetooth, capabilities.web_share,
+          capabilities.bluetooth_available
+Hooks:    chrome/renderer/chrome_content_renderer_client.cc
+          SetRuntimeFeaturesDefaultsBeforeBlinkInitialization;
+          chrome/browser/chrome_browser_interface_binders.cc
+          PopulateChromeFrameBinders;
+          chrome/browser/webshare/share_service_impl.cc RunShareOperation;
+          content/browser/bluetooth/web_bluetooth_service_impl.cc
+          WebBluetoothServiceImpl::GetAvailability;
+          content/browser/bluetooth/bluetooth_device_chooser_controller.cc
+          BluetoothDeviceChooserController::GetDevice; BUILD.gn files
+Contexts: main, iframe; both APIs are window-only, as in stock
+Guard:    tests/guards/platform/bluetooth-share.py
+
+--- a/chrome/renderer/BUILD.gn
++++ b/chrome/renderer/BUILD.gn
+@@ -176,6 +176,7 @@
+     "//components/pdf/common:constants",
+     "//components/pdf/common:util",
+     "//components/permissions:permissions_common",
++    "//components/phasmid",
+     "//components/plugins/renderer",
+     "//components/record_replay/core/common",
+     "//components/resources:components_resources",
+--- a/chrome/renderer/chrome_content_renderer_client.cc
++++ b/chrome/renderer/chrome_content_renderer_client.cc
+@@ -113,6 +113,7 @@
+ #include "components/pdf/common/constants.h"
+ #include "components/pdf/common/pdf_util.h"
+ #include "components/permissions/features.h"
++#include "components/phasmid/profile.h"
+ #include "components/safe_browsing/buildflags.h"
+ #include "components/sampling_profiler/process_type.h"
+ #include "components/sampling_profiler/thread_profiler.h"
+@@ -1496,6 +1497,15 @@
+     BUILDFLAG(IS_MAC)
+   blink::WebRuntimeFeatures::EnableWebShare(true);
+ #endif
++  // Phasmid: Windows profiles have both APIs, Linux profiles neither.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    if (profile->capabilities().web_share) {
++      blink::WebRuntimeFeatures::EnableWebShare(true);
++    }
++    if (profile->capabilities().web_bluetooth) {
++      blink::WebRuntimeFeatures::EnableWebBluetooth(true);
++    }
++  }
+ 
+   if (base::FeatureList::IsEnabled(
+           autofill::features::kAutofillPolicyControlledFeatureAutofill)) {
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -3102,7 +3102,7 @@
+     }
+   }
+ 
+-  if (is_win || is_chromeos || is_mac) {
++  if (is_win || is_chromeos || is_mac || is_linux) {
+     deps += [
+       "//chrome/browser/webshare",
+       "//chrome/browser/webshare:impl",
+--- a/chrome/browser/chrome_browser_interface_binders.cc
++++ b/chrome/browser/chrome_browser_interface_binders.cc
+@@ -118,8 +118,9 @@
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
+-    BUILDFLAG(IS_ANDROID)
+-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
++    BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX)
++#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
++    BUILDFLAG(IS_LINUX)
+ #include "chrome/browser/webshare/share_service_impl.h"
+ #include "chrome/common/chrome_features.h"
+ #endif
+@@ -517,7 +518,10 @@
+   map->Add<blink::mojom::SetShapeService>(&ash::SetShapeServiceImpl::Create);
+ #endif
+ 
+-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
++// Phasmid: on Linux for Windows profiles, whose renderers expose
++// navigator.share.
++#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
++    BUILDFLAG(IS_LINUX)
+   map->Add<blink::mojom::ShareService>(&ShareServiceImpl::Create);
+ #endif
+ #if BUILDFLAG(IS_ANDROID)
+--- a/chrome/browser/webshare/BUILD.gn
++++ b/chrome/browser/webshare/BUILD.gn
+@@ -27,7 +27,8 @@
+   }
+ }
+ 
+-if (is_win || is_chromeos || is_mac) {
++# Phasmid: built on Linux too, for Windows profiles.
++if (is_win || is_chromeos || is_mac || is_linux) {
+   source_set("webshare") {
+     public = [ "share_service_impl.h" ]
+ 
+--- a/chrome/browser/webshare/share_service_impl.cc
++++ b/chrome/browser/webshare/share_service_impl.cc
+@@ -58,7 +58,8 @@
+           content::WebContents::FromRenderFrameHost(&render_frame_host))
+ #endif
+ {
+-#if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC)
++#if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_MAC) && \
++    !BUILDFLAG(IS_LINUX)
+   NOTREACHED();
+ #endif
+ }
+@@ -367,6 +368,9 @@
+           },
+           std::move(share_operation), std::move(*blocker),
+           std::move(callback)));
++#elif BUILDFLAG(IS_LINUX)
++  // Phasmid: Linux has no share sheet; end as a dismissed one.
++  std::move(callback).Run(blink::mojom::ShareError::CANCELED);
+ #else
+   NOTREACHED();
+ #endif
+--- a/content/browser/bluetooth/web_bluetooth_service_impl.cc
++++ b/content/browser/bluetooth/web_bluetooth_service_impl.cc
+@@ -23,6 +23,7 @@
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/bluetooth/advertisement_client.h"
+ #include "content/browser/bluetooth/bluetooth_adapter_factory_wrapper.h"
+ #include "content/browser/bluetooth/bluetooth_allowed_devices.h"
+@@ -764,6 +765,12 @@
+     return;
+   }
+ 
++  // Phasmid: the host's BlueZ is never consulted.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    std::move(callback).Run(profile->bluetooth_available());
++    return;
++  }
++
+   if (!BluetoothAdapterFactoryWrapper::Get().IsLowEnergySupported()) {
+     std::move(callback).Run(/*result=*/false);
+     return;
+--- a/content/browser/bluetooth/bluetooth_device_chooser_controller.cc
++++ b/content/browser/bluetooth/bluetooth_device_chooser_controller.cc
+@@ -16,6 +16,7 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/time/time.h"
+ #include "base/types/optional_util.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/bluetooth/bluetooth_blocklist.h"
+ #include "content/browser/bluetooth/bluetooth_metrics.h"
+ #include "content/browser/bluetooth/bluetooth_util.h"
+@@ -304,7 +305,9 @@
+     return;
+   }
+ 
+-  if (!adapter_->IsPresent()) {
++  // Phasmid: a profile without an adapter has none, whatever BlueZ has.
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!adapter_->IsPresent() || (profile && !profile->bluetooth_available())) {
+     DVLOG(1) << "Bluetooth Adapter not present. Can't serve requestDevice.";
+     PostErrorCallback(WebBluetoothResult::NO_BLUETOOTH_ADAPTER);
+     return;

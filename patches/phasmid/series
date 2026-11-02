@@ -88,3 +88,4 @@ graphics/webgl-caveat.patch
 
 # Platform capabilities: Windows claims
 platform/webauthn.patch
+platform/bluetooth-share.patch
