@@ -1,0 +1,142 @@
+Phasmid: system font (Windows profiles)
+
+What:     For a windows profile, system-ui is the Windows menu font: Segoe UI,
+          or by the first of locale.languages Yu Gothic UI (ja), Microsoft
+          YaHei UI (zh-CN), Microsoft JhengHei UI (zh-TW, HK, MO, Hant) or
+          Malgun Gothic (ko). The CSS keywords menu, small-caption and
+          status-bar use it at 12 px; the other keywords stay Arial at the
+          default size, as in layout_theme_font_provider_win.cc. Linux
+          profiles are unchanged.
+Why:      Linux Chrome sends the GTK UI font as system-ui and answers every
+          system font keyword with Arial.
+Profile:  os.family, locale.languages
+Hooks:    content/browser/renderer_host/render_view_host_impl.cc
+          RenderViewHostImpl::GetPlatformSpecificPrefs;
+          third_party/blink/renderer/core/layout/
+          layout_theme_font_provider_default.cc
+          LayoutThemeFontProvider::SystemFontFamily, SystemFontSize
+Contexts: main, iframes and workers of a page's renderer; a worker-only
+          process has no system font family, as in stock.
+Guard:    tests/guards/fonts/windows_metrics.py
+
+--- a/content/browser/renderer_host/render_view_host_impl.cc
++++ b/content/browser/renderer_host/render_view_host_impl.cc
+@@ -8,6 +8,7 @@
+ #include <optional>
+ #include <set>
+ #include <string>
++#include <string_view>
+ #include <utility>
+ #include <vector>
+ 
+@@ -38,6 +39,7 @@
+ #include "cc/base/switches.h"
+ #include "components/input/native_web_keyboard_event.h"
+ #include "components/input/timeout_monitor.h"
++#include "components/phasmid/profile.h"
+ #include "components/viz/common/features.h"
+ #include "content/browser/bad_message.h"
+ #include "content/browser/dom_storage/session_storage_namespace_handle_impl.h"
+@@ -145,6 +147,35 @@
+ }
+ #endif  // BUILDFLAG(IS_WIN)
+ 
++#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
++// Phasmid: the Windows 11 menu font (NONCLIENTMETRICS) for the UI language,
++// the first of locale.languages.
++std::string PhasmidWindowsMenuFontFamily() {
++  const std::string language =
++      base::ToLowerASCII(phasmid::Profile::Get()->languages().front());
++  const auto is = [&language](std::string_view base_language) {
++    return language == base_language ||
++           (language.starts_with(base_language) &&
++            language[base_language.size()] == '-');
++  };
++  if (is("ja")) {
++    return "Yu Gothic UI";
++  }
++  if (is("ko")) {
++    return "Malgun Gothic";
++  }
++  if (is("zh")) {
++    for (std::string_view hant : {"-hant", "-tw", "-hk", "-mo"}) {
++      if (language.find(hant) != std::string::npos) {
++        return "Microsoft JhengHei UI";
++      }
++    }
++    return "Microsoft YaHei UI";
++  }
++  return "Segoe UI";
++}
++#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
++
+ // Set of RenderViewHostImpl* that can be attached as UserData to a
+ // RenderProcessHost. Used to keep track of whether any RenderViewHostImpl
+ // instances are in the bfcache.
+@@ -270,7 +301,11 @@
+ 
+ #elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+-  if (command_line->HasSwitch(switches::kSystemFontFamily)) {
++  if (phasmid::ClaimsWindows()) {
++    // Phasmid: system-ui on Windows is the menu font
++    // (font_cache_skia_win.cc FontCache::SystemFontFamily).
++    prefs->system_font_family_name = PhasmidWindowsMenuFontFamily();
++  } else if (command_line->HasSwitch(switches::kSystemFontFamily)) {
+     prefs->system_font_family_name =
+         command_line->GetSwitchValueASCII(switches::kSystemFontFamily);
+   } else {
+--- a/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc
++++ b/third_party/blink/renderer/core/layout/layout_theme_font_provider_default.cc
+@@ -25,6 +25,7 @@
+ 
+ #include "third_party/blink/renderer/core/layout/layout_theme_font_provider.h"
+ 
++#include "components/phasmid/profile.h"
+ #include "third_party/blink/renderer/core/css_value_keywords.h"
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
+ #include "third_party/blink/renderer/platform/fonts/font_description.h"
+@@ -33,9 +34,27 @@
+ 
+ namespace blink {
+ 
++namespace {
++
++// Phasmid: the keywords Windows answers with the menu font.
++bool PhasmidWindowsSystemFont(CSSValueID system_font_id) {
++  return phasmid::ClaimsWindows() &&
++         (system_font_id == CSSValueID::kMenu ||
++          system_font_id == CSSValueID::kSmallCaption ||
++          system_font_id == CSSValueID::kStatusBar);
++}
++
++}  // namespace
++
+ // static
+ const AtomicString& LayoutThemeFontProvider::SystemFontFamily(
+     CSSValueID system_font_id) {
++  // Phasmid: the browser sends the menu font as the system font family. The
++  // other keywords stay Arial, as in layout_theme_font_provider_win.cc.
++  if (PhasmidWindowsSystemFont(system_font_id) &&
++      !FontCache::SystemFontFamily().empty()) {
++    return FontCache::SystemFontFamily();
++  }
+   return DefaultGUIFont();
+ }
+ 
+@@ -43,6 +62,15 @@
+ float LayoutThemeFontProvider::SystemFontSize(CSSValueID system_font_id,
+                                               const Document* document) {
+   switch (system_font_id) {
++    case CSSValueID::kMenu:
++    case CSSValueID::kSmallCaption:
++    case CSSValueID::kStatusBar:
++      // Phasmid: 9 pt at 96 dpi, Windows 11's NONCLIENTMETRICS size for
++      // these fonts (FontCache::MenuFontHeight() there).
++      if (PhasmidWindowsSystemFont(system_font_id)) {
++        return 12.0f;
++      }
++      return DefaultFontSize(document);
+     case CSSValueID::kWebkitMiniControl:
+     case CSSValueID::kWebkitSmallControl:
+     case CSSValueID::kWebkitControl:
