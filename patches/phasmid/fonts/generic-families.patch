@@ -1,0 +1,243 @@
+Phasmid: generic font families (Windows profiles)
+
+What:     A windows profile registers Windows Chrome's font pref defaults:
+          Times New Roman, Arial, Consolas (fixed, as under ClearType),
+          Comic Sans MS, Impact, Cambria Math, and the per-script entries of
+          locale_settings_win.grd. The first of locale.languages selects
+          Windows Chrome's ja, ko, zh-CN or zh-TW translations and the
+          minimum logical font size. fonts.default_* still override the
+          unknown-script entries. Linux profiles are unchanged.
+Why:      A Linux build compiles only locale_settings_linux.grd, so monospace
+          and math resolved to Linux family names Windows does not have.
+Profile:  os.family, locale.languages, fonts.default_*
+Hooks:    chrome/browser/ui/prefs/prefs_tab_helper.cc RegisterProfilePrefs
+          (after fonts/availability.patch, whose PhasmidGenericFamily it
+          reuses)
+Contexts: main, iframes, workers.
+Guard:    tests/guards/fonts/windows_metrics.py
+
+--- a/chrome/browser/ui/prefs/prefs_tab_helper.cc
++++ b/chrome/browser/ui/prefs/prefs_tab_helper.cc
+@@ -14,6 +14,7 @@
+ 
+ #include "base/command_line.h"
+ #include "base/compiler_specific.h"
++#include "base/containers/span.h"
+ #include "base/functional/bind.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+@@ -333,6 +334,182 @@
+ }
+ #endif
+ 
++// Phasmid: Windows Chrome's font pref defaults, as in locale_settings_win.grd
++// and the kFontDefaults entries Windows registers. A family starting with a
++// comma is a list resolved to the first available one.
++struct PhasmidWindowsFont {
++  const char* pref_name;
++  const char* family;
++};
++constexpr auto kPhasmidWindowsFonts = std::to_array<PhasmidWindowsFont>({
++    {prefs::kWebKitStandardFontFamily, "Times New Roman"},
++    {prefs::kWebKitFixedFontFamily, "Courier New"},
++    {prefs::kWebKitSerifFontFamily, "Times New Roman"},
++    {prefs::kWebKitSansSerifFontFamily, "Arial"},
++    {prefs::kWebKitCursiveFontFamily, "Comic Sans MS"},
++    {prefs::kWebKitFantasyFontFamily, "Impact"},
++    {prefs::kWebKitMathFontFamily, "Cambria Math"},
++    {"webkit.webprefs.fonts.standard.Jpan",
++     ",Noto Sans JP,Noto Sans CJK JP,Meiryo,Yu Gothic"},
++    {"webkit.webprefs.fonts.fixed.Jpan", ",BIZ UDGothic,MS Gothic"},
++    {"webkit.webprefs.fonts.serif.Jpan",
++     ",Noto Serif JP,Noto Serif CJK JP,Yu Mincho,MS PMincho"},
++    {"webkit.webprefs.fonts.sansserif.Jpan",
++     ",Noto Sans JP,Noto Sans CJK JP,Meiryo,Yu Gothic"},
++    {"webkit.webprefs.fonts.standard.Hang",
++     ",Noto Sans KR,Noto Sans CJK KR,Malgun Gothic"},
++    {"webkit.webprefs.fonts.fixed.Hang", "Gulimche"},
++    {"webkit.webprefs.fonts.serif.Hang",
++     ",Noto Serif KR,Noto Serif CJK KR,Batang"},
++    {"webkit.webprefs.fonts.sansserif.Hang",
++     ",Noto Sans KR,Noto Sans CJK KR,Malgun Gothic"},
++    {"webkit.webprefs.fonts.cursive.Hang", "Gungsuh"},
++    {"webkit.webprefs.fonts.standard.Hans",
++     ",Noto Sans SC,Noto Sans CJK SC,Microsoft YaHei"},
++    {"webkit.webprefs.fonts.fixed.Hans", "NSimsun"},
++    {"webkit.webprefs.fonts.serif.Hans",
++     ",Noto Serif SC,Noto Serif CJK SC,Simsun"},
++    {"webkit.webprefs.fonts.sansserif.Hans",
++     ",Noto Sans SC,Noto Sans CJK SC,Microsoft YaHei"},
++    {"webkit.webprefs.fonts.cursive.Hans", "KaiTi"},
++    {"webkit.webprefs.fonts.standard.Hant",
++     ",Noto Sans TC,Noto Sans CJK TC,Microsoft JhengHei"},
++    {"webkit.webprefs.fonts.fixed.Hant", "MingLiU"},
++    {"webkit.webprefs.fonts.serif.Hant",
++     ",Noto Serif TC,Noto Serif CJK TC,PMingLiU"},
++    {"webkit.webprefs.fonts.sansserif.Hant",
++     ",Noto Sans TC,Noto Sans CJK TC,Microsoft JhengHei"},
++    {"webkit.webprefs.fonts.cursive.Hant", "DFKai-SB"},
++    {"webkit.webprefs.fonts.standard.Deva", "Nirmala UI"},
++    {"webkit.webprefs.fonts.fixed.Deva", "Consolas"},
++    {"webkit.webprefs.fonts.serif.Deva", "Nirmala UI"},
++    {"webkit.webprefs.fonts.sansserif.Deva", "Nirmala UI"},
++    {"webkit.webprefs.fonts.fixed.Arab", "Courier New"},
++    {"webkit.webprefs.fonts.sansserif.Arab", "Segoe UI"},
++    {"webkit.webprefs.fonts.standard.Cyrl", "Times New Roman"},
++    {"webkit.webprefs.fonts.fixed.Cyrl", "Courier New"},
++    {"webkit.webprefs.fonts.serif.Cyrl", "Times New Roman"},
++    {"webkit.webprefs.fonts.sansserif.Cyrl", "Arial"},
++    {"webkit.webprefs.fonts.standard.Grek", "Times New Roman"},
++    {"webkit.webprefs.fonts.fixed.Grek", "Courier New"},
++    {"webkit.webprefs.fonts.serif.Grek", "Times New Roman"},
++    {"webkit.webprefs.fonts.sansserif.Grek", "Arial"},
++});
++
++// The translations Windows Chrome's UI locales give the unknown-script
++// (Zyyy) families (platform_locale_settings/locale_settings_win_*.xtb; the
++// other locales translate none).
++struct PhasmidWindowsLocaleFont {
++  const char* locale;
++  const char* pref_name;
++  const char* family;
++};
++constexpr auto kPhasmidWindowsLocaleFonts =
++    std::to_array<PhasmidWindowsLocaleFont>({
++        {"ja", prefs::kWebKitStandardFontFamily,
++         ",Noto Sans JP,Noto Sans CJK JP,Meiryo,Yu Gothic"},
++        {"ja", prefs::kWebKitFixedFontFamily, ",BIZ UDGothic,MS Gothic"},
++        {"ja", prefs::kWebKitSerifFontFamily,
++         ",Noto Serif JP,Noto Serif CJK JP,Yu Mincho,MS PMincho"},
++        {"ja", prefs::kWebKitSansSerifFontFamily,
++         ",Noto Sans JP,Noto Sans CJK JP,Meiryo,Yu Gothic"},
++        {"ko", prefs::kWebKitStandardFontFamily,
++         ",Noto Sans KR,Noto Sans CJK KR,Malgun Gothic"},
++        {"ko", prefs::kWebKitFixedFontFamily, "Gulimche"},
++        {"ko", prefs::kWebKitSerifFontFamily,
++         ",Noto Serif KR,Noto Serif CJK KR,Batang"},
++        {"ko", prefs::kWebKitSansSerifFontFamily,
++         ",Noto Sans KR,Noto Sans CJK KR,Malgun Gothic"},
++        {"ko", prefs::kWebKitCursiveFontFamily, "Gungsuh"},
++        {"zh-CN", prefs::kWebKitStandardFontFamily,
++         ",Noto Sans SC,Noto Sans CJK SC,Microsoft YaHei"},
++        {"zh-CN", prefs::kWebKitFixedFontFamily, "NSimsun"},
++        {"zh-CN", prefs::kWebKitSerifFontFamily,
++         ",Noto Serif SC,Noto Serif CJK SC,Simsun"},
++        {"zh-CN", prefs::kWebKitSansSerifFontFamily,
++         ",Noto Sans SC,Noto Sans CJK SC,Microsoft YaHei"},
++        {"zh-CN", prefs::kWebKitCursiveFontFamily, "KaiTi"},
++        {"zh-TW", prefs::kWebKitCursiveFontFamily, "DFKai-SB"},
++    });
++
++// The first of locale.languages as Windows Chrome's UI locale: Japanese,
++// Korean and Chinese tags reduce to ja, ko, zh-CN or zh-TW (Hant, TW, HK,
++// MO).
++std::string PhasmidWindowsUiLocale() {
++  const std::string& tag = phasmid::Profile::Get()->languages().front();
++  const std::string lower = base::ToLowerASCII(tag);
++  const auto is = [&lower](std::string_view language) {
++    return lower == language ||
++           (lower.starts_with(language) && lower[language.size()] == '-');
++  };
++  if (is("ja")) {
++    return "ja";
++  }
++  if (is("ko")) {
++    return "ko";
++  }
++  if (is("zh")) {
++    for (std::string_view hant : {"-hant", "-tw", "-hk", "-mo"}) {
++      if (lower.find(hant) != std::string::npos) {
++        return "zh-TW";
++      }
++    }
++    return "zh-CN";
++  }
++  return tag;
++}
++
++// RegisterProfilePrefs's kFontDefaults loop on the Windows table: the UI
++// locale's translations, Consolas for a Courier fixed font (ClearType, as
++// ShouldUseAlternateDefaultFixedFont), no default for the UI locale's own
++// script, and fonts.default_* last.
++void PhasmidRegisterWindowsFontDefaults(
++    user_prefs::PrefRegistrySyncable* registry,
++    std::set<std::string>* fonts_with_defaults) {
++  const std::string ui_locale = PhasmidWindowsUiLocale();
++  const UScriptCode ui_script = GetScriptOfBrowserLocale(ui_locale);
++  for (const PhasmidWindowsFont& font : kPhasmidWindowsFonts) {
++    if (GetScriptOfFontPref(font.pref_name) == ui_script) {
++      continue;
++    }
++    std::string value = font.family;
++    for (const PhasmidWindowsLocaleFont& translated :
++         kPhasmidWindowsLocaleFonts) {
++      if (ui_locale == translated.locale &&
++          std::string_view(font.pref_name) == translated.pref_name) {
++        value = translated.family;
++      }
++    }
++    if (std::string_view(font.pref_name) == prefs::kWebKitFixedFontFamily &&
++        base::StartsWith(value, "courier",
++                         base::CompareCase::INSENSITIVE_ASCII)) {
++      value = "Consolas";
++    }
++#if PREFS_FONT_LIST
++    if (value.starts_with(',')) {
++      value = gfx::FontList::FirstAvailableOrFirst(value);
++    }
++#endif
++    if (const std::string* family = PhasmidGenericFamily(font.pref_name)) {
++      value = *family;
++    }
++    registry->RegisterStringPref(font.pref_name, value);
++    fonts_with_defaults->insert(font.pref_name);
++  }
++}
++
++// Windows Chrome's IDS_MINIMUM_LOGICAL_FONT_SIZE for the UI locale.
++int PhasmidWindowsMinimumLogicalFontSize() {
++  const std::string ui_locale = PhasmidWindowsUiLocale();
++  if (ui_locale == "ja" || ui_locale == "ko") {
++    return 10;
++  }
++  if (ui_locale == "zh-CN" || ui_locale == "zh-TW") {
++    return 12;
++  }
++  return 6;
++}
++
+ }  // namespace
+ 
+ PrefsTabHelper::PrefsTabHelper(WebContents* contents)
+@@ -439,7 +616,14 @@
+   // Register font prefs that have defaults.
+   std::set<std::string> fonts_with_defaults;
+   UScriptCode browser_script = GetScriptOfBrowserLocale(locale);
+-  for (FontDefault pref : kFontDefaults) {
++  // Phasmid: a windows profile registers Windows Chrome's defaults instead.
++  const bool phasmid_windows = phasmid::ClaimsWindows();
++  if (phasmid_windows) {
++    PhasmidRegisterWindowsFontDefaults(registry, &fonts_with_defaults);
++  }
++  for (FontDefault pref :
++       phasmid_windows ? base::span<const FontDefault>()
++                       : base::span<const FontDefault>(kFontDefaults)) {
+ #if BUILDFLAG(IS_WIN)
+     if (pref.pref_name == prefs::kWebKitFixedFontFamily) {
+       if (ShouldUseAlternateDefaultFixedFont(
+@@ -489,8 +673,13 @@
+   registry->RegisterIntegerPref(prefs::kWebKitDefaultFontSize, 16);
+   registry->RegisterIntegerPref(prefs::kWebKitDefaultFixedFontSize, 13);
+   registry->RegisterIntegerPref(prefs::kWebKitMinimumFontSize, 0);
+-  RegisterLocalizedFontPref(registry, prefs::kWebKitMinimumLogicalFontSize,
+-                            IDS_MINIMUM_LOGICAL_FONT_SIZE);
++  if (phasmid_windows) {
++    registry->RegisterIntegerPref(prefs::kWebKitMinimumLogicalFontSize,
++                                  PhasmidWindowsMinimumLogicalFontSize());
++  } else {
++    RegisterLocalizedFontPref(registry, prefs::kWebKitMinimumLogicalFontSize,
++                              IDS_MINIMUM_LOGICAL_FONT_SIZE);
++  }
+ #endif
+ }
+ 

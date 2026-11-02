@@ -74,3 +74,6 @@ display/system-colors.patch
 
 # Fonts
 fonts/availability.patch
+
+# Fonts: Windows profiles (generic families, system-ui, metrics, fallback)
+fonts/generic-families.patch
