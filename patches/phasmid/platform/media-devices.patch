@@ -1,0 +1,220 @@
+Phasmid: media devices
+
+What:     enumerateDevices() lists the profile's devices, never the host's,
+          after the virtual entries the claimed OS puts first in each audio
+          kind ("Default" on Linux; "Default - ..." and "Communications -
+          ..." on Windows). Blanking before permission and the per-origin
+          hash stay stock; the ID salt derives from the seed per storage key.
+          Host hot-plugs fire no devicechange. Capture on a claimed device
+          rejects with NotReadableError; "default" input opens the host's
+          microphone.
+Why:      Headless and Xvfb have no capture devices while a desktop has real
+          ones, and the host's labels and counts identify it.
+Profile:  media_devices.audioinput, media_devices.audiooutput,
+          media_devices.videoinput, media_devices.labels.*, seed, os.family
+Hooks:    content/browser/renderer_host/media/media_devices_manager.cc
+          MediaDevicesManager::DevicesEnumerated, new GetProfileDevices;
+          content/browser/media/media_devices_util.cc
+          GetMediaDeviceSaltAndOrigin, GotSalt
+Contexts: main, iframe, before and after permission; workers have no
+          navigator.mediaDevices
+Guard:    tests/guards/platform/media-devices.py
+
+--- a/content/browser/media/media_devices_util.cc
++++ b/content/browser/media/media_devices_util.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "content/browser/media/media_devices_util.h"
+ 
++#include <cinttypes>
+ #include <utility>
+ #include <vector>
+ 
+@@ -14,6 +15,8 @@
+ #include "base/strings/string_split.h"
+ #include "base/strings/string_tokenizer.h"
+ #include "base/strings/string_util.h"
++#include "base/strings/stringprintf.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/browser_main_loop.h"
+ #include "content/browser/renderer_host/frame_tree.h"
+ #include "content/browser/renderer_host/frame_tree_node.h"
+@@ -41,14 +44,20 @@
+ namespace {
+ 
+ void GotSalt(const std::string& frame_salt,
++             const std::string& profile_salt,
+              const url::Origin& origin,
+              bool has_focus,
+              bool is_background,
+              std::optional<ukm::SourceId> source_id,
+              MediaDeviceSaltAndOriginCallback callback,
+              bool are_persistent_device_ids_allowed,
+-             const std::string& salt) {
++             const std::string& stored_salt) {
+   DCHECK_CURRENTLY_ON(BrowserThread::UI);
++  // Phasmid: the ephemeral salt used where cookies are blocked stays, so IDs
++  // there still change with every document.
++  const std::string& salt =
++      are_persistent_device_ids_allowed && !profile_salt.empty() ? profile_salt
++                                                                 : stored_salt;
+   std::string device_id_salt = salt;
+   if (!are_persistent_device_ids_allowed) {
+     device_id_salt += frame_salt;
+@@ -152,12 +161,23 @@
+   WebContents* web_contents = WebContents::FromRenderFrameHost(frame_host);
+   bool is_background = web_contents && web_contents->IsNeverComposited();
+   std::string frame_salt = frame_host->GetMediaDeviceIDSaltBase();
++  // Phasmid: one salt per storage key, as MediaDeviceSaltService keeps,
++  // derived from the seed. Opaque origins keep the per-session salt.
++  std::string profile_salt;
++  const phasmid::Profile* phasmid_profile = phasmid::Profile::Get();
++  if (phasmid_profile && !frame_host->GetStorageKey().origin().opaque()) {
++    const phasmid::NoiseKey key = phasmid::DeriveNoiseKey(
++        phasmid_profile->media_device_id_key(),
++        frame_host->GetStorageKey().Serialize());
++    profile_salt = base::StringPrintf("%016" PRIx64 "%016" PRIx64, key.k0,
++                                      key.k1);
++  }
+ 
+   GetContentClient()->browser()->GetMediaDeviceIDSalt(
+       frame_host, site_for_cookies, frame_host->GetStorageKey(),
+-      base::BindOnce(&GotSalt, std::move(frame_salt), std::move(origin),
+-                     has_focus, is_background, std::move(source_id),
+-                     std::move(callback)));
++      base::BindOnce(&GotSalt, std::move(frame_salt), std::move(profile_salt),
++                     std::move(origin), has_focus, is_background,
++                     std::move(source_id), std::move(callback)));
+ }
+ 
+ blink::WebMediaDeviceInfo TranslateMediaDeviceInfo(
+--- a/content/browser/renderer_host/media/media_devices_manager.cc
++++ b/content/browser/renderer_host/media/media_devices_manager.cc
+@@ -28,6 +28,7 @@
+ #include "base/threading/thread_checker.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/media/media_devices_permission_checker.h"
+ #include "content/browser/renderer_host/media/media_stream_manager.h"
+ #include "content/browser/renderer_host/media/video_capture_manager.h"
+@@ -152,6 +153,104 @@
+   return result;
+ }
+ 
++// Phasmid: the Windows endpoint name's adapter, "Realtek(R) Audio" in
++// "Speakers (Realtek(R) Audio)", or empty.
++std::string PhasmidEndpointAdapter(const std::string& label) {
++  const size_t open = label.rfind(" (");
++  if (open == std::string::npos || label.back() != ')') {
++    return std::string();
++  }
++  return label.substr(open + 2, label.size() - open - 3);
++}
++
++// Phasmid: the profile's devices, listed as the claimed OS's audio manager
++// lists them. Linux: a "Default" entry first, groups "input" and "default";
++// an input shares the group of the output with the same label. Windows:
++// "Default - <first>" and "Communications - <first>" first, in that
++// device's group; an input shares the group of the output on the same
++// adapter. "Communications" exists only in Windows resources; this is its
++// en-US text. Video groups are left to GuessVideoGroupID. No host device has
++// these raw IDs, so capture on one fails to start.
++blink::WebMediaDeviceInfoArray GetProfileDevices(
++    MediaDeviceType type,
++    const phasmid::Profile::MediaDevices& devices,
++    bool windows) {
++  auto raw_id = [](const char* kind, size_t index) {
++    return base::StringPrintf("phasmid-%s-%zu", kind, index);
++  };
++  auto input_group = [&](size_t i) {
++    const std::string& input = devices.audio_inputs[i];
++    const std::string adapter = PhasmidEndpointAdapter(input);
++    for (size_t j = 0; j < devices.audio_outputs.size(); ++j) {
++      const std::string& output = devices.audio_outputs[j];
++      if (windows ? !adapter.empty() &&
++                        PhasmidEndpointAdapter(output) == adapter
++                  : output == input) {
++        return raw_id("audiooutput", j);
++      }
++    }
++    return raw_id("audioinput", i) + "input";
++  };
++  constexpr char kCommunications[] = "Communications";
++  blink::WebMediaDeviceInfoArray result;
++  switch (type) {
++    case MediaDeviceType::kMediaAudioInput:
++      if (!devices.audio_inputs.empty() && windows) {
++        result.emplace_back(
++            media::AudioDeviceDescription::kDefaultDeviceId,
++            media::AudioDeviceDescription::GetDefaultDeviceName(
++                devices.audio_inputs.front()),
++            input_group(0));
++        result.emplace_back(
++            media::AudioDeviceDescription::kCommunicationsDeviceId,
++            base::StringPrintf("%s - %s", kCommunications,
++                               devices.audio_inputs.front().c_str()),
++            input_group(0));
++      } else if (!devices.audio_inputs.empty()) {
++        result.emplace_back(
++            media::AudioDeviceDescription::kDefaultDeviceId,
++            media::AudioDeviceDescription::GetDefaultDeviceName(), "input");
++      }
++      for (size_t i = 0; i < devices.audio_inputs.size(); ++i) {
++        result.emplace_back(raw_id("audioinput", i), devices.audio_inputs[i],
++                            input_group(i));
++      }
++      break;
++    case MediaDeviceType::kMediaAudioOutput:
++      if (!devices.audio_outputs.empty() && windows) {
++        result.emplace_back(
++            media::AudioDeviceDescription::kDefaultDeviceId,
++            media::AudioDeviceDescription::GetDefaultDeviceName(
++                devices.audio_outputs.front()),
++            raw_id("audiooutput", 0));
++        result.emplace_back(
++            media::AudioDeviceDescription::kCommunicationsDeviceId,
++            base::StringPrintf("%s - %s", kCommunications,
++                               devices.audio_outputs.front().c_str()),
++            raw_id("audiooutput", 0));
++      } else if (!devices.audio_outputs.empty()) {
++        result.emplace_back(
++            media::AudioDeviceDescription::kDefaultDeviceId,
++            media::AudioDeviceDescription::GetDefaultDeviceName(),
++            media::AudioDeviceDescription::kDefaultDeviceId);
++      }
++      for (size_t i = 0; i < devices.audio_outputs.size(); ++i) {
++        result.emplace_back(raw_id("audiooutput", i), devices.audio_outputs[i],
++                            raw_id("audiooutput", i));
++      }
++      break;
++    case MediaDeviceType::kMediaVideoInput:
++      for (size_t i = 0; i < devices.video_inputs.size(); ++i) {
++        result.emplace_back(raw_id("videoinput", i), devices.video_inputs[i],
++                            std::string());
++      }
++      break;
++    default:
++      NOTREACHED();
++  }
++  return result;
++}
++
+ std::string VideoLabelWithoutModelID(const std::string& label) {
+   if (label.rfind(")") != label.size() - 1)
+     return label;
+@@ -1525,7 +1624,13 @@
+     const blink::WebMediaDeviceInfoArray& snapshot) {
+   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M155);
+   CHECK(blink::IsValidMediaDeviceType(type), base::NotFatalUntil::M155);
+-  UpdateSnapshot(type, snapshot);
++  // Phasmid: a host hot-plug changes nothing and fires no devicechange.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    UpdateSnapshot(type, GetProfileDevices(type, profile->media_devices(),
++                                           profile->os_family() == "windows"));
++  } else {
++    UpdateSnapshot(type, snapshot);
++  }
+   cache_infos_[static_cast<size_t>(type)].UpdateCompleted();
+   cache_is_populated_[static_cast<size_t>(type)] = true;
+   SendLogMessage(GetDevicesEnumeratedLogString(request_id, type, snapshot));

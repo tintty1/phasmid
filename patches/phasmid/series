@@ -63,3 +63,5 @@ graphics/hardware-decode.patch
 
 # Platform capabilities
 platform/webauthn-hybrid.patch
+
+platform/media-devices.patch
