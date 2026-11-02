@@ -54,3 +54,6 @@ hardware/js-heap-limit.patch
 
 # Speech
 platform/speech-voices.patch
+
+# Display group: media queries
+display/media-queries.patch

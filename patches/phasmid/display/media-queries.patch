@@ -1,0 +1,174 @@
+Phasmid: media queries and touch points
+
+What:     pointer, hover, any-pointer, any-hover, navigator.maxTouchPoints,
+          prefers-color-scheme, prefers-reduced-motion, prefers-contrast,
+          forced-colors, color-gamut, dynamic-range and the
+          Sec-CH-Prefers-Color-Scheme and Sec-CH-Prefers-Reduced-Motion hints
+          come from the profile, headful, headless and under Xvfb. Input
+          device and theme changes recompute the same values; DevTools
+          emulation still applies.
+Why:      Stock headless reports no pointer and no hover, and a headful run
+          reports the host's input devices, theme and color profile.
+Profile:  display.pointer.*, display.color_gamut, display.dynamic_range,
+          display.prefers_color_scheme, display.prefers_reduced_motion,
+          display.prefers_contrast, display.forced_colors,
+          hardware.max_touch_points
+Hooks:    content/browser/web_contents/slow_web_preference_cache.cc
+          SlowWebPreferenceCache::Update;
+          content/browser/web_contents/web_contents_impl.cc
+          ComputeWebPreferences;
+          chrome/browser/chrome_content_browser_client.cc
+          GetPreferredContrast, GetForcedColorsForWebContent,
+          GetPreferredColorScheme;
+          content/browser/renderer_host/render_widget_host_impl.cc
+          GetVisualProperties
+Contexts: main, iframe, headers; workers have no matchMedia or maxTouchPoints
+Guard:    tests/guards/display/media-queries.py
+
+--- a/content/browser/web_contents/slow_web_preference_cache.cc
++++ b/content/browser/web_contents/slow_web_preference_cache.cc
+@@ -11,6 +11,7 @@
+ #include "base/threading/thread_restrictions.h"
+ #include "base/trace_event/optional_trace_event.h"
+ #include "build/blink_buildflags.h"
++#include "components/phasmid/profile.h"
+ #include "content/public/common/content_switches.h"
+ #include "third_party/blink/public/common/web_preferences/web_preferences.h"
+ #include "ui/base/pointer/pointer_device.h"
+@@ -175,6 +176,29 @@
+ 
+   pointer_events_max_touch_points_ = ui::MaxTouchPoints();
+ 
++  // Phasmid: Blink's pointer and hover types are ui's bit values.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    const phasmid::Profile::MediaFeatures& m = profile->media_features();
++    const int pointer_types =
++        (m.any_pointer_fine ? ui::POINTER_TYPE_FINE : 0) |
++        (m.any_pointer_coarse ? ui::POINTER_TYPE_COARSE : 0);
++    available_pointer_types_ =
++        pointer_types ? pointer_types : ui::POINTER_TYPE_NONE;
++    available_hover_types_ =
++        m.any_hover ? ui::HOVER_TYPE_HOVER : ui::HOVER_TYPE_NONE;
++    ui::PointerType primary_pointer = ui::POINTER_TYPE_NONE;
++    if (m.primary_pointer == "fine") {
++      primary_pointer = ui::POINTER_TYPE_FINE;
++    } else if (m.primary_pointer == "coarse") {
++      primary_pointer = ui::POINTER_TYPE_COARSE;
++    }
++    primary_pointer_type_ =
++        static_cast<blink::mojom::PointerType>(primary_pointer);
++    primary_hover_type_ = static_cast<blink::mojom::HoverType>(
++        m.primary_hover ? ui::HOVER_TYPE_HOVER : ui::HOVER_TYPE_NONE);
++    pointer_events_max_touch_points_ = m.max_touch_points;
++  }
++
+   number_of_cpu_cores_ = base::SysInfo::NumberOfProcessors();
+ 
+   AllPointerTypes all_pointer_types = AllPointerTypes::kNone;
+--- a/content/browser/web_contents/web_contents_impl.cc
++++ b/content/browser/web_contents/web_contents_impl.cc
+@@ -61,6 +61,7 @@
+ #include "components/input/render_widget_host_input_event_router.h"
+ #include "components/input/switches.h"
+ #include "components/input/utils.h"
++#include "components/phasmid/profile.h"
+ #include "components/url_formatter/url_formatter.h"
+ #include "components/viz/common/features.h"
+ #include "components/viz/host/host_frame_sink_manager.h"
+@@ -3972,7 +3973,12 @@
+       (!command_line.HasSwitch(switches::kDisableSmoothScrolling) &&
+        gfx::Animation::ScrollAnimationsEnabledBySystem());
+ 
+-  prefs.prefers_reduced_motion = gfx::Animation::PrefersReducedMotion();
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    prefs.prefers_reduced_motion =
++        profile->media_features().prefers_reduced_motion;
++  } else {
++    prefs.prefers_reduced_motion = gfx::Animation::PrefersReducedMotion();
++  }
+ 
+   const auto* const theme = ui::NativeTheme::GetInstanceForWeb();
+   prefers_reduced_transparency_ = theme->prefers_reduced_transparency();
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -3976,11 +3976,24 @@
+                                       {NC::kMore, BC::kMore},
+                                       {NC::kLess, BC::kLess},
+                                       {NC::kCustom, BC::kCustom}});
++  // Phasmid: this and the two functions below also feed the theme-change
++  // check, so a later theme change never replaces the profile's values.
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    const std::string& contrast =
++        phasmid_profile->media_features().prefers_contrast;
++    return contrast == "more"   ? BC::kMore
++           : contrast == "less" ? BC::kLess
++                                : BC::kNoPreference;
++  }
+   return kContrastMap.at(
+       ui::NativeTheme::GetInstanceForWeb()->preferred_contrast());
+ }
+ 
+ std::tuple<bool, bool> GetForcedColorsForWebContent(WebContents* web_contents) {
++  // Phasmid: the per-site opt-out is a browser setting, not the device's.
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    return {phasmid_profile->media_features().forced_colors, false};
++  }
+   const bool in_forced_colors =
+       ui::NativeTheme::GetInstanceForWeb()->forced_colors() !=
+       ui::ColorProviderKey::ForcedColors::kNone;
+@@ -4077,6 +4090,11 @@
+       }
+     }
+   }
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    preferred_color_scheme = phasmid_profile->media_features().prefers_dark
++                                 ? blink::mojom::PreferredColorScheme::kDark
++                                 : blink::mojom::PreferredColorScheme::kLight;
++  }
+   return {preferred_color_scheme, preferred_root_scrollbar_color_scheme};
+ }
+ 
+--- a/content/browser/renderer_host/render_widget_host_impl.cc
++++ b/content/browser/renderer_host/render_widget_host_impl.cc
+@@ -152,10 +152,12 @@
+ #include "ui/display/display_switches.h"
+ #include "ui/display/display_util.h"
+ #include "ui/display/screen.h"
++#include "ui/display/util/display_util.h"
+ #include "ui/events/blink/web_input_event_traits.h"
+ #include "ui/events/event.h"
+ #include "ui/events/keycodes/dom/dom_code.h"
+ #include "ui/gfx/color_space.h"
++#include "ui/gfx/display_color_spaces.h"
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/gfx/geometry/size_conversions.h"
+ #include "ui/gfx/geometry/vector2d_conversions.h"
+@@ -1117,6 +1119,28 @@
+     }
+   }
+ 
++  // Phasmid: Blink derives color-gamut and dynamic-range from these color
++  // spaces only. A claimed HDR display gets Chrome's default HDR headroom
++  // while output stays SDR, so a software renderer never rasterizes in HDR.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    const phasmid::Profile::MediaFeatures& m = profile->media_features();
++    gfx::ColorSpace color_space = gfx::ColorSpace::CreateSRGB();
++    if (m.color_gamut == "p3") {
++      color_space = gfx::ColorSpace::CreateDisplayP3D65();
++    } else if (m.color_gamut == "rec2020") {
++      color_space = gfx::ColorSpace(gfx::ColorSpace::PrimaryID::BT2020,
++                                    gfx::ColorSpace::TransferID::SRGB);
++    }
++    gfx::DisplayColorSpaces color_spaces(color_space);
++    if (m.high_dynamic_range) {
++      color_spaces.SetHDRMaxLuminanceRelative(
++          display::kDefaultHdrMaxLuminanceRelative);
++    }
++    for (auto& screen_info : visual_properties.screen_infos.screen_infos) {
++      screen_info.display_color_spaces = color_spaces;
++    }
++  }
++
+   // For testing, override the raster color profile.
+   // Note: this needs to be done here and not earlier in the pipeline because
+   // Mac uses the display color space to update an NSSurface and this setting
