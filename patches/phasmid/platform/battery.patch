@@ -1,0 +1,76 @@
+Phasmid: Battery Status
+
+What:     navigator.getBattery() resolves with capabilities.battery
+          (charging, level), with the times Chrome reports when the OS gives
+          no estimate. The status is fixed; no battery event fires.
+Why:      ungoogled-chromium's 0019-disable-battery-status-service.patch
+          always reports the no-battery default, which a laptop profile
+          contradicts.
+Profile:  capabilities.battery.charging, capabilities.battery.level
+Hooks:    services/device/battery/battery_status_service.cc
+          BatteryStatusService::AddCallback; services/device/battery/BUILD.gn
+Contexts: main, iframe; getBattery is window-only, as in stock
+Guard:    tests/guards/platform/battery.py
+
+--- a/services/device/battery/BUILD.gn
++++ b/services/device/battery/BUILD.gn
+@@ -27,6 +27,7 @@
+ 
+     deps = [
+       "//base",
++      "//components/phasmid",
+       "//mojo/public/cpp/bindings",
+     ]
+ 
+--- a/services/device/battery/battery_status_service.cc
++++ b/services/device/battery/battery_status_service.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "services/device/battery/battery_status_service.h"
+ 
++#include <limits>
+ #include <utility>
+ 
+ #include "base/functional/bind.h"
+@@ -11,11 +12,32 @@
+ #include "base/no_destructor.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/threading/sequence_local_storage_slot.h"
++#include "components/phasmid/profile.h"
+ #include "services/device/battery/battery_monitor_impl.h"
+ #include "services/device/battery/battery_status_manager.h"
+ 
+ namespace device {
+ 
++namespace {
++
++// Phasmid: the times are what Chrome reports when the OS gives no estimate:
++// a full charging battery charges in 0 s; otherwise both are Infinity.
++mojom::BatteryStatus PhasmidBatteryStatus() {
++  mojom::BatteryStatus status;
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!profile) {
++    return status;
++  }
++  status.charging = profile->capabilities().battery_charging;
++  status.level = profile->capabilities().battery_level;
++  if (!status.charging || status.level < 1.0) {
++    status.charging_time = std::numeric_limits<double>::infinity();
++  }
++  return status;
++}
++
++}  // namespace
++
+ BatteryStatusService::BatteryStatusService()
+     : main_thread_task_runner_(
+           base::SingleThreadTaskRunner::GetCurrentDefault()),
+@@ -38,7 +60,7 @@
+   DCHECK(!is_shutdown_);
+ 
+   // Always pass the default values.
+-  callback.Run(mojom::BatteryStatus());
++  callback.Run(PhasmidBatteryStatus());
+ 
+   return callback_list_.Add(callback);
+ }
