@@ -15,3 +15,6 @@ build/chromium-155-use-system-esbuild.patch
 
 # Core: profile loading and plumbing. Everything below depends on it.
 core/profile.patch
+
+# Hardware group
+hardware/hardware-concurrency.patch

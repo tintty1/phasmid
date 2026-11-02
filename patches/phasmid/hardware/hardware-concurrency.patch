@@ -1,0 +1,39 @@
+Phasmid: hardware concurrency
+
+What:     navigator.hardwareConcurrency returns hardware.concurrency.
+Why:      The host CPU count must not show through a claimed device.
+Profile:  hardware.concurrency
+Hooks:    third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+          NavigatorConcurrentHardware::hardwareConcurrency;
+          third_party/blink/renderer/core/BUILD.gn
+Contexts: main, iframe, worker, shared worker, service worker
+Guard:    tests/guards/hardware/hardware-concurrency.py
+
+--- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+@@ -5,10 +5,15 @@
+ #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
+ 
+ #include "base/system/sys_info.h"
++#include "components/phasmid/profile.h"
+ 
+ namespace blink {
+ 
+ unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
++  // Phasmid: this mixin backs both Navigator and WorkerNavigator.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return static_cast<unsigned>(profile->hardware_concurrency());
++  }
+   return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
+ }
+ 
+--- a/third_party/blink/renderer/core/BUILD.gn
++++ b/third_party/blink/renderer/core/BUILD.gn
+@@ -408,6 +408,7 @@
+     ":make_deprecation_info",
+     ":xml_ffi",
+     "//base",
++    "//components/phasmid",
+     "//components/paint_preview/common",
+     "//components/performance_manager/public/mojom:mojom_blink",
+     "//components/shared_highlighting/core/common",
