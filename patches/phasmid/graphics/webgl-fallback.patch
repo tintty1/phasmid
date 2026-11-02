@@ -1,0 +1,30 @@
+Phasmid: WebGL on hosts without a usable GPU
+
+What:     With a profile, the enable_unsafe_swiftshader local state pref
+          defaults to true, so a host whose GPU is missing, blocklisted or
+          disabled renders WebGL on SwiftShader instead of offering no
+          context. A host with a usable GPU is unchanged. The policy of the
+          same name still overrides the default.
+Why:      Every profile claims a desktop GPU, but stock Chrome with no usable
+          GPU (containers, VMs, Xvfb, --disable-gpu) offers no WebGL context.
+Profile:  none (active whenever a profile is loaded)
+Hooks:    chrome/browser/chrome_content_browser_client.cc
+          (ChromeContentBrowserClient::RegisterLocalStatePrefs)
+Contexts: main, same- and cross-origin iframe; workers' OffscreenCanvas
+          shares the GPU process.
+Guard:    tests/guards/graphics/webgl-fallback.py
+
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -1603,7 +1603,10 @@
+   registry->RegisterIntegerPref(prefs::kSCTAuditingHashdanceReportCount, 0);
+   registry->RegisterBooleanPref(prefs::kDataURLWhitespacePreservationEnabled,
+                                 true);
+-  registry->RegisterBooleanPref(prefs::kEnableUnsafeSwiftShader, false);
++  // Phasmid: the claimed device has a GPU, so WebGL always exists; a host
++  // without a usable one renders it on SwiftShader instead of offering none.
++  registry->RegisterBooleanPref(prefs::kEnableUnsafeSwiftShader,
++                                phasmid::Profile::Get() != nullptr);
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_ANDROID)
+   registry->RegisterBooleanPref(prefs::kOutOfProcessSystemDnsResolutionEnabled,
+                                 true);

@@ -81,3 +81,6 @@ fonts/system-font.patch
 fonts/metrics.patch
 fonts/windows-fallback.patch
 fonts/family-names.patch
+
+# Graphics group: WebGL on hosts without a usable GPU
+graphics/webgl-fallback.patch
