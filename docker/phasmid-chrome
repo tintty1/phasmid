@@ -1,0 +1,8 @@
+#!/bin/bash
+# Run the browser. Without a GPU device in the container, start the GPU
+# process on SwiftShader directly: an attempt at a display it cannot open
+# leaves it without hardware decode support, which a profile may claim.
+if [ ! -e /dev/dri ] && [ ! -e /dev/nvidia0 ]; then
+    set -- --disable-gpu "$@"
+fi
+exec /opt/phasmid/chrome "$@"

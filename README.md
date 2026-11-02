@@ -12,7 +12,7 @@ Phasmid changes each value where Chromium computes it: in the browser process, t
 
 ## Status
 
-Pre-release. There are no binary releases; build from source.
+Pre-release. Linux x64 builds are published on the [releases page](https://github.com/tintty1/phasmid/releases), each with its Chromium version and checksum.
 
 - Builds for **Linux x64** only.
 - Profiles may claim **Windows** or **Linux**. macOS is not supported.
@@ -36,6 +36,26 @@ Phasmid is an ordinary Chromium binary and works with Playwright, Puppeteer, Sel
 | `--phasmid-profile=<path>` | The profile to load. |
 | `--phasmid-windows-fonts=<dir>` | Windows font store for Windows profiles. Default `$XDG_DATA_HOME/phasmid/fonts/windows/<os.build>`. |
 | `--phasmid-widevine-cdm=<dir>` | Installed Widevine CDM, used when the profile claims Widevine. Default `/opt/google/chrome/WidevineCdm`. |
+
+## Docker
+
+[`docker/`](docker/) builds a runtime image from a release: the browser, its system libraries, common Linux fonts, Xvfb, and CDP on port 9222.
+
+```bash
+docker build -t phasmid docker/
+docker run --rm -p 127.0.0.1:9222:9222 --security-opt seccomp=unconfined \
+    -v "$PWD/profiles/examples/linux-arch-rtx3060-1080p.json:/profile.json:ro" \
+    phasmid --phasmid-profile=/profile.json
+```
+
+Then connect a CDP client to `http://127.0.0.1:9222`, e.g. Playwright's `chromium.connect_over_cdp`.
+
+- `--security-opt seccomp=unconfined` lets Chrome's sandbox create its namespaces. Do not use `--no-sandbox` instead: a headful window shows it as a warning infobar.
+- `-e PHASMID_HEADFUL=1` runs headful under Xvfb. `PHASMID_XVFB_SCREEN` (default `3840x2160x24`) must be at least the profile's screen size.
+- Without a GPU device the browser renders WebGL and WebGPU on SwiftShader. Pass one with `--device /dev/dri` (or the NVIDIA container toolkit) to back a hardware GPU claim.
+- The image has no Widevine CDM. Mount Google Chrome's `WidevineCdm` directory and pass `--phasmid-widevine-cdm=<dir>` for a profile that claims Widevine.
+- A Windows profile needs the Windows font store: mount it and pass `--phasmid-windows-fonts=<dir>`.
+- From a local build: `docker build -t phasmid --build-context dist=<dir> --build-arg PHASMID_VERSION=<version> docker/`, where `<dir>` holds `phasmid-<version>-linux-x64.tar.zst`.
 
 ## Profiles
 
@@ -85,7 +105,7 @@ The test pipeline is in [`tests/`](tests/README.md):
 
 ```
 chromium_version.txt     Pinned Chromium version (from ungoogled-chromium)
-revision.txt             Phasmid revision on top of that version
+revision.txt             ungoogled-chromium revision of that version
 patches/series           ungoogled-chromium patch order (upstream, never edited)
 patches/core/, extra/,   ungoogled-chromium patches (upstream, never edited)
   upstream-fixes/
@@ -96,6 +116,7 @@ profiles/                Schema, example and sample profiles, captured data
 tools/                   Profile generator, proxy router
 tests/                   Consistency harness, guards, static tests, masking report, inspector
 scripts/                 Fetch, patch and configure scripts
+docker/                  Runtime image built from a release
 docs/                    Phasmid docs, plus ungoogled-chromium's own
 utils/, devutils/        ungoogled-chromium tooling
 ```
