@@ -1,0 +1,227 @@
+Phasmid: Web Audio
+
+What:     AudioContext sampleRate, baseLatency, outputLatency and
+          destination.maxChannelCount come from the profile's output device;
+          the sink opens at those parameters and the audio service resamples.
+          Windows profiles get WASAPI's buffer sizing. With audio.noise the
+          DynamicsCompressor gain shifts by a few seeded ULPs.
+Why:      The host's sink rate, buffer, channel count and playout delay are
+          visible to every page and differ by OS.
+Profile:  audio.sample_rate, audio.base_latency, audio.output_latency,
+          audio.max_channel_count, audio.noise, seed, os.family
+Hooks:    content/renderer/media/renderer_webaudiodevice_impl.cc
+          GetOutputBufferSize, HandleDeviceStatus, Render;
+          third_party/blink/renderer/platform/audio/dynamics_compressor.cc
+          constructor, Process; third_party/blink/renderer/platform/BUILD.gn
+Contexts: main, iframe, AudioWorklet; workers have no Web Audio
+Guard:    tests/guards/audio/webaudio.py
+
+--- a/content/renderer/media/renderer_webaudiodevice_impl.cc
++++ b/content/renderer/media/renderer_webaudiodevice_impl.cc
+@@ -25,6 +25,7 @@
+ #include "base/task/thread_pool.h"
+ #include "base/time/time.h"
+ #include "base/trace_event/trace_event.h"
++#include "components/phasmid/profile.h"
+ #include "media/audio/audio_features.h"
+ #include "media/audio/null_audio_sink.h"
+ #include "media/base/audio_bus.h"
+@@ -188,6 +189,21 @@
+   scaled_default_buffer_size =
+       std::clamp(scaled_default_buffer_size, min_buffer_size, max_buffer_size);
+ 
++  // Phasmid: Windows profiles get the IS_WIN rules of
++  // media/base/audio_latency.cc, which a Linux build does not compile.
++  const phasmid::Profile* phasmid_profile = phasmid::Profile::Get();
++  const bool phasmid_windows =
++      phasmid_profile && phasmid_profile->os_family() == "windows";
++  // Windows sizes "exact" buffers in multiples of the hardware buffer, never
++  // of the minimum.
++  int phasmid_exact_minimum = min_buffer_size;
++  if (phasmid_windows &&
++      latency_hint.Category() == WebAudioLatencyHint::kCategoryExact &&
++      std::round(base::Seconds(latency_hint.Seconds()).InSecondsF() *
++                 resolved_context_sample_rate) > min_buffer_size) {
++    phasmid_exact_minimum = 0;
++  }
++
+   int output_buffer_size = -1;
+   switch (latency_hint.Category()) {
+     case WebAudioLatencyHint::kCategoryInteractive:
+@@ -195,17 +211,30 @@
+           scaled_default_buffer_size);
+       break;
+     case WebAudioLatencyHint::kCategoryBalanced:
+-      output_buffer_size = media::AudioLatency::GetRtcBufferSize(
+-          resolved_context_sample_rate, scaled_default_buffer_size);
++      // Windows keeps the hardware buffer instead of 10 ms.
++      output_buffer_size =
++          phasmid_windows ? scaled_default_buffer_size
++                          : media::AudioLatency::GetRtcBufferSize(
++                                resolved_context_sample_rate,
++                                scaled_default_buffer_size);
+       break;
+     case WebAudioLatencyHint::kCategoryPlayback:
+-      output_buffer_size = media::AudioLatency::GetHighLatencyBufferSize(
+-          resolved_context_sample_rate, scaled_default_buffer_size);
++      // Windows rounds 20 ms up to a multiple of the hardware buffer instead
++      // of to a power of two.
++      output_buffer_size =
++          phasmid_windows
++              ? std::max(scaled_default_buffer_size,
++                         static_cast<int>(std::ceil(
++                             2.0 * resolved_context_sample_rate / 100 /
++                             scaled_default_buffer_size)) *
++                             scaled_default_buffer_size)
++              : media::AudioLatency::GetHighLatencyBufferSize(
++                    resolved_context_sample_rate, scaled_default_buffer_size);
+       break;
+     case WebAudioLatencyHint::kCategoryExact:
+       output_buffer_size = media::AudioLatency::GetExactBufferSize(
+           base::Seconds(latency_hint.Seconds()), resolved_context_sample_rate,
+-          scaled_default_buffer_size, min_buffer_size, max_buffer_size,
++          scaled_default_buffer_size, phasmid_exact_minimum, max_buffer_size,
+           kMaxWebAudioBufferSize);
+       break;
+     case WebAudioLatencyHint::kLastValue:
+@@ -275,6 +304,19 @@
+   media::OutputDeviceStatus status = device_info.device_status();
+   original_sink_params_ = device_info.output_params();
+ 
++  // Phasmid: the audio service converts these to the hardware stream, as for
++  // a page-chosen sampleRate. The silent sink keeps stock's parameters.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get();
++      profile &&
++      sink_descriptor_.Type() != blink::WebAudioSinkDescriptor::kSilent) {
++    original_sink_params_ = media::AudioParameters(
++        original_sink_params_.IsValid()
++            ? original_sink_params_.format()
++            : media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
++        media::ChannelLayoutConfig::Guess(profile->audio_max_channel_count()),
++        profile->audio_sample_rate(), profile->audio_frames_per_buffer());
++  }
++
+   // On systems without audio hardware the returned parameters may be invalid.
+   // In which case just choose whatever we want for the fake device.
+   if (!original_sink_params_.IsValid()) {
+@@ -473,6 +515,14 @@
+     is_rendering_ = true;
+   }
+ 
++  // Phasmid: the first callback after a start or resume carries no delay,
++  // as in stock Chrome.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get();
++      profile && !delay.is_zero() &&
++      sink_descriptor_.Type() != blink::WebAudioSinkDescriptor::kSilent) {
++    delay = base::Seconds(profile->audio_output_latency());
++  }
++
+   int frames_filled =
+       webaudio_callback_->Render(delay, delay_timestamp, glitch_info, dest);
+   if (speech_recognition_client_) {
+--- a/third_party/blink/renderer/platform/audio/dynamics_compressor.cc
++++ b/third_party/blink/renderer/platform/audio/dynamics_compressor.cc
+@@ -29,12 +29,17 @@
+ #include "third_party/blink/renderer/platform/audio/dynamics_compressor.h"
+ 
+ #include <algorithm>
++#include <array>
+ #include <cmath>
++#include <cstdlib>
++#include <limits>
+ 
+ #include "base/compiler_specific.h"
+ #include "base/containers/span.h"
+ #include "base/logging.h"
+ #include "base/notreached.h"
++#include "components/phasmid/noise.h"
++#include "components/phasmid/profile.h"
+ #include "third_party/blink/renderer/platform/audio/audio_bus.h"
+ #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
+ #include "third_party/blink/renderer/platform/audio/denormal_disabler.h"
+@@ -87,6 +92,45 @@
+   return std::isfinite(x) ? x : default_value;
+ }
+ 
++// Phasmid: audio.noise. Two seeded offsets of 1 to 4 ULPs, on the makeup gain
++// and on the total gain. Both multiply the signal, so silence stays zero and
++// graphs without a compressor are untouched. Changing the message or the
++// mapping changes every profile's output.
++struct PhasmidUlps {
++  int post_gain = 0;
++  int total_gain = 0;
++};
++
++PhasmidUlps PhasmidCompressorUlps() {
++  static const PhasmidUlps ulps = [] {
++    const phasmid::Profile* profile = phasmid::Profile::Get();
++    if (!profile || !profile->audio_noise_key()) {
++      return PhasmidUlps();
++    }
++    constexpr std::array<uint8_t, 3> kMessage = {'d', 'c', '1'};
++    const uint64_t h =
++        phasmid::SipHash24(*profile->audio_noise_key(), kMessage);
++    auto offset = [](uint64_t bits) {
++      const int magnitude = 1 + static_cast<int>(bits & 3);
++      return (bits & 4) ? -magnitude : magnitude;
++    };
++    return PhasmidUlps{offset(h), offset(h >> 3)};
++  }();
++  return ulps;
++}
++
++float ShiftUlps(float value, int ulps) {
++  if (value == 0 || !std::isfinite(value)) {
++    return value;
++  }
++  const float toward = ulps > 0 ? std::numeric_limits<float>::infinity()
++                                : -std::numeric_limits<float>::infinity();
++  for (int i = 0; i < std::abs(ulps); ++i) {
++    value = std::nextafter(value, toward);
++  }
++  return value;
++}
++
+ }  // namespace
+ 
+ DynamicsCompressor::DynamicsCompressor(float sample_rate,
+@@ -105,6 +149,8 @@
+   SetNumberOfChannels(number_of_channels);
+   // Initializes most member variables
+   Reset();
++  // Phasmid: resolve the offsets here rather than on the audio thread.
++  PhasmidCompressorUlps();
+   metering_release_k_ =
+       static_cast<float>(audio_utilities::DiscreteTimeConstantForSampleRate(
+           kMeteringReleaseTimeConstant, sample_rate));
+@@ -143,6 +189,9 @@
+ 
+   // Makeup gain with empirical/perceptual tuning.
+   const float linear_post_gain = fdlibm::powf(1 / Saturate(1, k), 0.6f);
++  const PhasmidUlps phasmid_ulps = PhasmidCompressorUlps();
++  const float phasmid_post_gain =
++      ShiftUlps(linear_post_gain, phasmid_ulps.post_gain);
+ 
+   // Attack parameters.
+   const float attack_frames = std::max(0.001f, attack_time) * sample_rate;
+@@ -331,7 +380,9 @@
+           sin(static_cast<double>(kPiOverTwoFloat * compressor_gain)));
+ 
+       // Calculate total gain using the linear post-gain.
+-      const float total_gain = linear_post_gain * post_warp_compressor_gain;
++      const float total_gain =
++          ShiftUlps(phasmid_post_gain * post_warp_compressor_gain,
++                    phasmid_ulps.total_gain);
+ 
+       // Calculate metering.
+       const float db_real_gain =
+--- a/third_party/blink/renderer/platform/BUILD.gn
++++ b/third_party/blink/renderer/platform/BUILD.gn
+@@ -1842,6 +1842,7 @@
+     "//components/language_detection/content/common:common_blink",
+     "//components/language_detection/content/renderer",
+     "//components/paint_preview/common",
++    "//components/phasmid",
+     "//components/search_engines:search_engine_utils",
+     "//components/translate/core/language_detection",
+     "//components/ungoogled:ungoogled_switches",

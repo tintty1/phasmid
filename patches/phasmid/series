@@ -41,3 +41,6 @@ graphics/gpu-info.patch
 graphics/webgl.patch
 graphics/webgpu.patch
 graphics/canvas-readback.patch
+
+# Audio
+audio/webaudio.patch
