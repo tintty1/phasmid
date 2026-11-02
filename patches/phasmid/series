@@ -60,3 +60,6 @@ display/media-queries.patch
 
 # Graphics group: hardware video decode
 graphics/hardware-decode.patch
+
+# Platform capabilities
+platform/webauthn-hybrid.patch

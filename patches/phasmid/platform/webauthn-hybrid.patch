@@ -1,0 +1,36 @@
+Phasmid: WebAuthn hybrid transport
+
+What:     getClientCapabilities() hybridTransport, and with it
+          passkeyPlatformAuthenticator, follow
+          capabilities.bluetooth_available without asking BlueZ. A claimed
+          adapter on a host without one is reported, and a hybrid passkey
+          flow then fails.
+Why:      hybridTransport exposes whether the host has a Bluetooth LE
+          adapter, which must match the claimed device.
+Profile:  capabilities.bluetooth_available
+Hooks:    content/browser/webauth/authenticator_common_impl.cc
+          AuthenticatorCommonImpl::IsHybridTransportSupported
+Contexts: main, iframe; workers have no PublicKeyCredential
+Guard:    tests/guards/platform/webauthn-hybrid.py
+
+--- a/content/browser/webauth/authenticator_common_impl.cc
++++ b/content/browser/webauth/authenticator_common_impl.cc
+@@ -44,6 +44,7 @@
+ #include "base/timer/timer.h"
+ #include "build/build_config.h"
+ #include "components/device_event_log/device_event_log.h"
++#include "components/phasmid/profile.h"
+ #include "components/webauthn/core/browser/common_utils.h"
+ #include "components/webauthn/core/browser/remote_validation.h"
+ #include "components/webauthn/core/browser/webauthn_security_utils.h"
+@@ -2220,6 +2221,10 @@
+ 
+ void AuthenticatorCommonImpl::IsHybridTransportSupported(
+     base::OnceCallback<void(bool)> callback) {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    std::move(callback).Run(profile->bluetooth_available());
++    return;
++  }
+   if (!device::BluetoothAdapterFactory::Get()->IsLowEnergySupported()) {
+     std::move(callback).Run(false);
+     return;
