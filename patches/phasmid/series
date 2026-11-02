@@ -68,3 +68,6 @@ platform/media-devices.patch
 
 # Network Information
 network/connection.patch
+
+# Display group: OS coherence
+display/system-colors.patch

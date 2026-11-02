@@ -1,0 +1,105 @@
+Phasmid: CSS system colors
+
+What:     Every CSS system color keyword a document resolves for the
+          profile's color scheme comes from system_colors; the other scheme
+          keeps Chromium's set. The GTK or Qt theme and the desktop accent
+          color no longer reach renderers; a light profile's SelectedItem and
+          SelectedItemText also back the OffscreenCanvas selection colors.
+Why:      System colors expose the desktop theme and must agree with the
+          claimed OS and color scheme.
+Profile:  system_colors.*, display.prefers_color_scheme
+Hooks:    third_party/blink/renderer/core/layout/layout_theme.cc
+          LayoutTheme::SystemColorFromColorProvider;
+          chrome/browser/renderer_preferences_util.cc UpdateFromSystemSettings;
+          content/browser/theme_helper.cc MakeUpdateSystemColorInfoParams
+Contexts: main, iframe; OffscreenCanvas fillStyle in pages and workers keeps
+          stock's constant table except the selection colors, as stock does
+Guard:    tests/guards/display/system-colors.py
+
+--- a/third_party/blink/renderer/core/layout/layout_theme.cc
++++ b/third_party/blink/renderer/core/layout/layout_theme.cc
+@@ -22,6 +22,7 @@
+ #include "third_party/blink/renderer/core/layout/layout_theme.h"
+ 
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+ #include "third_party/blink/public/resources/grit/blink_resources.h"
+ #include "third_party/blink/public/strings/grit/blink_strings.h"
+@@ -163,6 +164,19 @@
+          RuntimeEnabledFeatures::CSSAccentColorKeywordEnabled();
+ }
+ 
++// Phasmid: null when no profile is active, the used color scheme is not the
++// profile's, or the keyword is internal.
++const phasmid::Profile::SystemColor* PhasmidSystemColor(
++    CSSValueID css_value_id,
++    mojom::blink::ColorScheme color_scheme) {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!profile || profile->system_colors_dark() !=
++                      (color_scheme == mojom::blink::ColorScheme::kDark)) {
++    return nullptr;
++  }
++  return profile->system_color(GetCSSValueName(css_value_id));
++}
++
+ }  // namespace
+ 
+ LayoutTheme& LayoutTheme::GetTheme() {
+@@ -776,6 +790,12 @@
+     mojom::blink::ColorScheme color_scheme,
+     const ui::ColorProvider* color_provider,
+     bool can_expose_accent_color) const {
++  // Phasmid: contexts without a color provider (OffscreenCanvas fillStyle)
++  // keep DefaultSystemColor(), as in stock.
++  if (const phasmid::Profile::SystemColor* color =
++          PhasmidSystemColor(css_value_id, color_scheme)) {
++    return Color::FromRGBA32(color->argb());
++  }
+   SkColor system_theme_color;
+   switch (css_value_id) {
+     case CSSValueID::kActivetext:
+--- a/chrome/browser/renderer_preferences_util.cc
++++ b/chrome/browser/renderer_preferences_util.cc
+@@ -130,7 +130,17 @@
+ #endif
+ 
+ #if BUILDFLAG(IS_LINUX)
+-  if (auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(profile)) {
++  // Phasmid: the desktop theme never colors pages. Without a color provider
++  // Blink resolves light SelectedItem and SelectedItemText from the active
++  // selection colors; the rest keep Chromium's defaults.
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    if (!phasmid_profile->system_colors_dark()) {
++      prefs->active_selection_bg_color =
++          phasmid_profile->system_color("selecteditem")->argb();
++      prefs->active_selection_fg_color =
++          phasmid_profile->system_color("selecteditemtext")->argb();
++    }
++  } else if (auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(profile)) {
+     if (ThemeServiceFactory::GetForProfile(profile)->UsingSystemTheme()) {
+       linux_ui_theme->GetFocusRingColor(&prefs->focus_ring_color);
+       linux_ui_theme->GetActiveSelectionBgColor(
+--- a/content/browser/theme_helper.cc
++++ b/content/browser/theme_helper.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/no_destructor.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/renderer_host/render_process_host_impl.h"
+ #include "content/common/renderer.mojom.h"
+ 
+@@ -28,7 +29,11 @@
+   mojom::UpdateSystemColorInfoParamsPtr params =
+       mojom::UpdateSystemColorInfoParams::New();
+ #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+-  params->accent_color = native_theme->user_color();
++  // Phasmid: installed web apps would expose the desktop accent color as
++  // AccentColor.
++  if (!phasmid::Profile::Get()) {
++    params->accent_color = native_theme->user_color();
++  }
+ #endif
+ 
+   return params;
