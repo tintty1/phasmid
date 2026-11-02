@@ -1,0 +1,52 @@
+Phasmid: JS heap limit
+
+What:     V8 sizes every isolate's heap for hardware.physical_memory_mb, so
+          performance.memory.jsHeapSizeLimit and the real allocation limit are
+          the claimed device's.
+Why:      Below 8 GB the limit follows physical memory, so the host's value
+          contradicts a smaller claimed device.
+Profile:  hardware.physical_memory_mb
+Hooks:    gin/isolate_holder.cc IsolateHolder::getDefaultIsolateParams;
+          gin/BUILD.gn
+Contexts: main, iframe; workers get the same heap but no performance.memory
+Guard:    tests/guards/hardware/js-heap-limit.py
+
+--- a/gin/isolate_holder.cc
++++ b/gin/isolate_holder.cc
+@@ -18,6 +18,7 @@
+ #include "base/task/current_thread.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "gin/debug_impl.h"
+ #include "gin/function_template.h"
+ #include "gin/per_isolate_data.h"
+@@ -189,9 +190,16 @@
+   std::unique_ptr<v8::Isolate::CreateParams> params =
+       std::make_unique<v8::Isolate::CreateParams>();
+   params->code_event_handler = DebugImpl::GetJitCodeEventHandler();
++  // Phasmid: change V8's input, not the reported number, so a page that
++  // fills the heap meets the limit it is told.
++  uint64_t physical_memory =
++      base::SysInfo::AmountOfTotalPhysicalMemory().InBytes();
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    physical_memory =
++        static_cast<uint64_t>(profile->physical_memory_mb()) * 1024 * 1024;
++  }
+   params->constraints.ConfigureDefaults(
+-      base::SysInfo::AmountOfTotalPhysicalMemory().InBytes(),
+-      base::SysInfo::AmountOfVirtualMemory().InBytes());
++      physical_memory, base::SysInfo::AmountOfVirtualMemory().InBytes());
+   params->array_buffer_allocator = g_array_buffer_allocator;
+   params->allow_atomics_wait = true;
+   params->external_references = g_reference_table;
+--- a/gin/BUILD.gn
++++ b/gin/BUILD.gn
+@@ -107,6 +107,7 @@
+     "//v8",
+   ]
+   deps = [
++    "//components/phasmid",
+     "//third_party/abseil-cpp:absl",
+     "//tools/v8_context_snapshot:buildflags",
+   ]
