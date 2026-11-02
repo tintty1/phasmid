@@ -22,3 +22,6 @@ hardware/device-memory.patch
 
 # Identity group
 identity/user-agent.patch
+
+# Display group
+display/screen-window.patch
