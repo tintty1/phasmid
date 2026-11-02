@@ -1,0 +1,85 @@
+Phasmid: WebAuthn platform authenticator
+
+What:     isUserVerifyingPlatformAuthenticatorAvailable() and
+          getClientCapabilities() userVerifyingPlatformAuthenticator report
+          the profile's claim through the override Chrome uses for Google
+          Password Manager passkeys; a ceremony finds no passkey. Guest
+          sessions and the testing API behave as stock, and a Linux profile
+          reports false on google.com, as Linux Chrome does. A Windows
+          profile enables Secure Payment Confirmation in every process.
+Why:      Windows Chrome reports Windows Hello and enables Secure Payment
+          Confirmation by default; this build answers false on Linux.
+Profile:  webauthn.user_verifying_platform_authenticator, os.family
+Hooks:    chrome/browser/webauthn/chrome_web_authentication_delegate.cc
+          ChromeWebAuthenticationDelegate::
+          IsUserVerifyingPlatformAuthenticatorAvailableOverride;
+          chrome/browser/chrome_browser_field_trials.cc
+          RegisterFeatureOverrides; chrome/browser/webauthn/BUILD.gn
+Contexts: main, iframe; workers have no PublicKeyCredential
+Guard:    tests/guards/core/profile-loading.py
+
+--- a/chrome/browser/webauthn/BUILD.gn
++++ b/chrome/browser/webauthn/BUILD.gn
+@@ -261,6 +261,7 @@
+     ":webauthn",
+     "//chrome/browser/profiles:profile",
+     "//chrome/common:constants",
++    "//components/phasmid",
+     "//components/prefs",
+     "//device/fido",
+   ]
+--- a/chrome/browser/webauthn/chrome_web_authentication_delegate.cc
++++ b/chrome/browser/webauthn/chrome_web_authentication_delegate.cc
+@@ -40,6 +40,7 @@
+ #include "chrome/common/chrome_version.h"
+ #include "chrome/common/pref_names.h"
+ #include "components/device_event_log/device_event_log.h"
++#include "components/phasmid/profile.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/signin/public/base/consent_level.h"
+ #include "components/signin/public/identity_manager/identity_manager.h"
+@@ -289,6 +290,18 @@
+                   return;
+                 }
+ 
++                // Phasmid: Linux Chrome never counts GPM on google.com
++                // (below); Windows Hello counts everywhere.
++                if (const phasmid::Profile* claim = phasmid::Profile::Get()) {
++                  const bool available =
++                      claim->capabilities()
++                          .user_verifying_platform_authenticator &&
++                      !(is_google && claim->os_family() == "linux");
++                  std::move(callback).Run(
++                      available ? std::optional<bool>(true) : std::nullopt);
++                  return;
++                }
++
+                 // The enclave won't allow credentials for an account to be
+                 // stored in GPM _in_ that account. So we don't want to tell
+                 // accounts.google.com that there is a platform authenticator
+--- a/chrome/browser/chrome_browser_field_trials.cc
++++ b/chrome/browser/chrome_browser_field_trials.cc
+@@ -26,9 +26,11 @@
+ #include "components/metrics/metrics_features.h"
+ #include "components/metrics/metrics_pref_names.h"
+ #include "components/metrics/persistent_histograms.h"
++#include "components/phasmid/profile.h"
+ #include "components/site_isolation/features.h"
+ #include "components/variations/feature_overrides.h"
+ #include "components/version_info/version_info.h"
++#include "content/public/common/content_features.h"
+ #include "third_party/blink/public/common/features.h"
+ 
+ #if BUILDFLAG(IS_ANDROID)
+@@ -127,6 +129,11 @@
+     base::FeatureList* feature_list) {
+   variations::FeatureOverrides feature_overrides(*feature_list);
+ 
++  // Phasmid: Windows Chrome enables Secure Payment Confirmation by default.
++  if (phasmid::ClaimsWindows()) {
++    feature_overrides.EnableFeature(features::kSecurePaymentConfirmation);
++  }
++
+   // TODO(crbug.com/552456654): Remove when rollout is complete to stable.
+   if (chrome::GetChannel() != version_info::Channel::STABLE) {
+     feature_overrides.EnableFeature(

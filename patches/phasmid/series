@@ -85,3 +85,6 @@ fonts/family-names.patch
 # Graphics group: WebGL on hosts without a usable GPU
 graphics/webgl-fallback.patch
 graphics/webgl-caveat.patch
+
+# Platform capabilities: Windows claims
+platform/webauthn.patch
