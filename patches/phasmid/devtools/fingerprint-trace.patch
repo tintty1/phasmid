@@ -1,0 +1,1007 @@
+Phasmid: fingerprint inspector
+
+What:     Members listed in bindings/phasmid_fingerprint_allowlist.txt get a
+          PhasmidFingerprintTraceScope in their generated callback. With the
+          category disabled-by-default-phasmid.fingerprint in a tracing
+          session, each call emits an event with the raw arguments, the
+          return value, the caller's location, the world and the identity of
+          a returned promise, whose settlement emits a matching event. CSS
+          media feature evaluations and font family lookups are traced too.
+          Off, the cost is one relaxed atomic load per listed call; no page
+          script ever runs.
+Why:      Shows which surfaces a site reads, in every context, from outside
+          the page (CDP Tracing on the browser target).
+Profile:  none
+Hooks:    third_party/blink/renderer/bindings/scripts/bind_gen/interface.py
+          make_phasmid_fingerprint_trace, check_phasmid_fingerprint_allowlist;
+          third_party/blink/renderer/bindings/BUILD.gn;
+          platform/bindings/phasmid_fingerprint_trace.{h,cc} (new);
+          bindings/core/v8/script_promise_resolver.cc
+          ResolveOrRejectImmediately; core/css/media_query_evaluator.cc
+          MediaQueryEvaluator::EvalFeature; core/css/css_font_selector.cc and
+          offscreen_font_selector.cc GetFontData; platform/BUILD.gn
+Contexts: main, iframe, worker, shared worker, service worker, offscreen
+Guard:    tests/guards/devtools/fingerprint-trace.py
+
+--- a/third_party/blink/renderer/bindings/BUILD.gn
++++ b/third_party/blink/renderer/bindings/BUILD.gn
+@@ -150,6 +150,7 @@
+ 
+     inputs = [
+       web_idl_database,
++      "phasmid_fingerprint_allowlist.txt",
+       "union_name_map.conf",
+     ]
+     outputs = invoker.outputs
+--- a/third_party/blink/renderer/bindings/core/v8/script_promise_resolver.cc
++++ b/third_party/blink/renderer/bindings/core/v8/script_promise_resolver.cc
+@@ -12,6 +12,7 @@
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+ #include "third_party/blink/renderer/core/probe/core_probes.h"
+ #include "third_party/blink/renderer/platform/bindings/lazy_source_location.h"
++#include "third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.h"
+ #include "third_party/blink/renderer/platform/bindings/source_location.h"
+ #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+@@ -182,6 +183,13 @@
+ 
+   V8DoNotRunMicrotasksScope microtasks_scope(script_state_);
+   auto resolver = resolver_.Get(script_state_->GetIsolate());
++  if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++    PhasmidFingerprintTrace::PromiseSettled(
++        script_state_->GetIsolate(), resolver->GetPromise(),
++        state_ == kResolving, value_.Get(script_state_->GetIsolate()),
++        exception_context_.GetClassName(),
++        exception_context_.GetPropertyName());
++  }
+   if (state_ == kResolving) {
+     // TODO(462010740): clean up call sites with pending exceptions.
+     ExceptionState::AssertNoPendingException(script_state_->GetIsolate());
+--- a/third_party/blink/renderer/bindings/phasmid_fingerprint_allowlist.txt
++++ b/third_party/blink/renderer/bindings/phasmid_fingerprint_allowlist.txt
+@@ -0,0 +1,99 @@
++# Members traced by the Phasmid fingerprint inspector, one per line:
++# "Interface.member" (an attribute covers its getter and setter,
++# "Interface.constructor" the constructor) or "Interface.*". Mixin and partial
++# members carry the including interface's name. "*" alone traces every Web
++# API and is for local runs only. The generator fails on an entry that
++# matches nothing and on a [NoAllocDirectCall] member, whose fast path skips
++# the trace.
++
++# Navigator and workers
++Navigator.*
++WorkerNavigator.*
++NavigatorUAData.*
++
++# Screen and window geometry
++Screen.*
++Window.devicePixelRatio
++Window.innerHeight
++Window.innerWidth
++Window.matchMedia
++Window.outerHeight
++Window.outerWidth
++Window.screen
++Window.screenLeft
++Window.screenTop
++Window.screenX
++Window.screenY
++Window.speechSynthesis
++
++# Canvas 2D readback and text metrics
++CanvasRenderingContext2D.getContextAttributes
++CanvasRenderingContext2D.getImageData
++CanvasRenderingContext2D.measureText
++HTMLCanvasElement.getContext
++HTMLCanvasElement.toBlob
++HTMLCanvasElement.toDataURL
++ImageData.data
++OffscreenCanvas.convertToBlob
++OffscreenCanvas.getContext
++OffscreenCanvasRenderingContext2D.getContextAttributes
++OffscreenCanvasRenderingContext2D.getImageData
++OffscreenCanvasRenderingContext2D.measureText
++TextMetrics.*
++
++# WebGL
++WebGL2RenderingContext.*
++WebGLDebugShaders.*
++WebGLRenderingContext.*
++
++# WebGPU
++GPU.*
++GPUAdapter.*
++GPUAdapterInfo.*
++GPUSupportedFeatures.*
++GPUSupportedLimits.*
++
++# Web Audio
++AnalyserNode.*
++AudioBuffer.*
++AudioContext.*
++AudioDestinationNode.*
++BaseAudioContext.*
++OfflineAudioContext.*
++
++# Fonts
++Document.fonts
++FontFace.*
++FontFaceSet.*
++WorkerGlobalScope.fonts
++
++# Client rects
++Element.getBoundingClientRect
++Element.getClientRects
++Range.getBoundingClientRect
++Range.getClientRects
++
++# Platform capabilities
++BatteryManager.*
++HTMLMediaElement.canPlayType
++Keyboard.*
++KeyboardLayoutMap.*
++MediaCapabilities.*
++MediaDevices.*
++MediaSource.isTypeSupported
++MimeTypeArray.*
++Notification.permission
++Permissions.*
++Plugin.*
++PluginArray.*
++PublicKeyCredential.getClientCapabilities
++PublicKeyCredential.isConditionalMediationAvailable
++PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable
++SpeechSynthesis.*
++SpeechSynthesisVoice.*
++
++# Hardware, memory, storage, network
++MemoryInfo.*
++NetworkInformation.*
++Performance.memory
++StorageManager.*
+--- a/third_party/blink/renderer/bindings/scripts/bind_gen/interface.py
++++ b/third_party/blink/renderer/bindings/scripts/bind_gen/interface.py
+@@ -843,6 +843,103 @@
+         _make_bindings_logging_id(cg_context)))
+ 
+ 
++# Phasmid fingerprint inspector: members listed in this file get a
++# PhasmidFingerprintTraceScope in their callback.
++_PHASMID_FINGERPRINT_ALLOWLIST = (
++    "third_party/blink/renderer/bindings/phasmid_fingerprint_allowlist.txt")
++_phasmid_fingerprint_entries = None
++
++
++def _phasmid_fingerprint_allowlist():
++    global _phasmid_fingerprint_entries
++    if _phasmid_fingerprint_entries is None:
++        entries = set()
++        with open(PathManager.src_path_to(_PHASMID_FINGERPRINT_ALLOWLIST)) as f:
++            for line in f:
++                line = line.split("#", 1)[0].strip()
++                if line:
++                    entries.add(line)
++        _phasmid_fingerprint_entries = frozenset(entries)
++    return _phasmid_fingerprint_entries
++
++
++def _phasmid_is_no_alloc_direct_call(member, operation_group):
++    if operation_group is not None:
++        return "NoAllocDirectCall" in operation_group.extended_attributes
++    return member is not None and (
++        "NoAllocDirectCall" in member.extended_attributes)
++
++
++def check_phasmid_fingerprint_allowlist(web_idl_database):
++    """Fails on an entry that names no member, or a [NoAllocDirectCall]
++    member: its fast path skips the slow callback that carries the trace."""
++    class_likes = {}
++    for class_like in itertools.chain(web_idl_database.interfaces,
++                                      web_idl_database.namespaces):
++        class_likes[class_like.identifier] = class_like
++    errors = []
++    for entry in sorted(_phasmid_fingerprint_allowlist()):
++        if entry == "*":
++            continue
++        class_name, _, member_name = entry.partition(".")
++        class_like = class_likes.get(class_name)
++        if class_like is None or not member_name:
++            errors.append("{}: no such interface or namespace".format(entry))
++            continue
++        if member_name == "*":
++            continue
++        found = False
++        if member_name == "constructor":
++            found = bool(getattr(class_like, "constructor_groups", None))
++        for attribute in class_like.attributes:
++            if attribute.identifier == member_name:
++                found = True
++                if _phasmid_is_no_alloc_direct_call(attribute, None):
++                    errors.append("{}: [NoAllocDirectCall]".format(entry))
++        for operation_group in class_like.operation_groups:
++            if operation_group.identifier == member_name:
++                found = True
++                if _phasmid_is_no_alloc_direct_call(None, operation_group):
++                    errors.append("{}: [NoAllocDirectCall]".format(entry))
++        if not found:
++            errors.append("{}: matches no member".format(entry))
++    if errors:
++        raise ValueError("{}: {}".format(_PHASMID_FINGERPRINT_ALLOWLIST,
++                                         "; ".join(errors)))
++
++
++def make_phasmid_fingerprint_trace(cg_context):
++    assert isinstance(cg_context, CodeGenContext)
++
++    if cg_context.v8_callback_type != CodeGenContext.V8_FUNCTION_CALLBACK:
++        return None
++    if cg_context.constructor_group:
++        if cg_context.is_legacy_factory_function:
++            return None
++        member_name = "constructor"
++    else:
++        member_name = cg_context.property_.identifier
++    class_name = cg_context.class_like.identifier
++    entries = _phasmid_fingerprint_allowlist()
++    if not ("*" in entries or "{}.*".format(class_name) in entries
++            or "{}.{}".format(class_name, member_name) in entries):
++        return None
++    # Wildcards skip [NoAllocDirectCall] members; a named entry for one is
++    # refused by check_phasmid_fingerprint_allowlist.
++    if _phasmid_is_no_alloc_direct_call(cg_context.attribute,
++                                        cg_context.operation_group):
++        return None
++    node = TextNode("PhasmidFingerprintTraceScope phasmid_fingerprint_trace("
++                    "${{info}}, \"{}\");".format(
++                        _make_bindings_logging_id(cg_context)))
++    node.accumulate(
++        CodeGenAccumulator.require_include_headers([
++            "third_party/blink/renderer/platform/bindings/"
++            "phasmid_fingerprint_trace.h"
++        ]))
++    return node
++
++
+ def make_check_argument_length(cg_context):
+     assert isinstance(cg_context, CodeGenContext)
+ 
+@@ -1890,6 +1987,7 @@
+         EmptyNode(),
+         make_runtime_call_timer_scope(cg_context),
+         make_bindings_trace_event(cg_context),
++        make_phasmid_fingerprint_trace(cg_context),
+         make_report_coop_access(cg_context),
+         make_report_deprecate_as(cg_context),
+         make_report_measure_as(cg_context),
+@@ -2024,6 +2122,7 @@
+         EmptyNode(),
+         make_runtime_call_timer_scope(cg_context),
+         make_bindings_trace_event(cg_context),
++        make_phasmid_fingerprint_trace(cg_context),
+         make_report_deprecate_as(cg_context),
+         make_report_measure_as(cg_context),
+         make_log_activity(cg_context),
+@@ -2185,6 +2284,7 @@
+     return SequenceNode([
+         make_runtime_call_timer_scope(cg_context),
+         make_bindings_trace_event(cg_context),
++        make_phasmid_fingerprint_trace(cg_context),
+         EmptyNode(),
+         make_check_constructor_call(cg_context),
+     ])
+@@ -2587,6 +2687,7 @@
+     return SequenceNode([
+         make_runtime_call_timer_scope(cg_context),
+         make_bindings_trace_event(cg_context),
++        make_phasmid_fingerprint_trace(cg_context),
+     ])
+ 
+ 
+@@ -7681,6 +7782,7 @@
+     assert isinstance(task_queue, TaskQueue)
+ 
+     web_idl_database = package_initializer().web_idl_database()
++    check_phasmid_fingerprint_allowlist(web_idl_database)
+ 
+     for interface in web_idl_database.interfaces:
+         # Use the number of attributes + constants + operations as a very rough
+--- a/third_party/blink/renderer/core/css/css_font_selector.cc
++++ b/third_party/blink/renderer/core/css/css_font_selector.cc
+@@ -39,6 +39,7 @@
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
++#include "third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.h"
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
+ #include "third_party/blink/renderer/platform/fonts/font_selector_client.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+@@ -240,6 +241,10 @@
+   if (!font_family.FamilyIsGeneric()) {
+     if (CSSSegmentedFontFace* face =
+             font_face_cache_->Get(request_description, family_name)) {
++      if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++        PhasmidFingerprintTrace::FontLookup("document", family_name,
++                                            family_name, "webfont");
++      }
+       return face->GetFontData(request_description);
+     }
+   }
+@@ -249,6 +254,10 @@
+   AtomicString settings_family_name =
+       FamilyNameFromSettings(request_description, font_family);
+   if (settings_family_name.empty()) {
++    if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++      PhasmidFingerprintTrace::FontLookup("document", family_name,
++                                          settings_family_name, "miss");
++    }
+     return nullptr;
+   }
+ 
+@@ -266,6 +275,11 @@
+     }
+   }
+ 
++  if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++    PhasmidFingerprintTrace::FontLookup("document", family_name,
++                                        settings_family_name,
++                                        font_data ? "platform" : "miss");
++  }
+   return font_data;
+ }
+ 
+--- a/third_party/blink/renderer/core/css/media_query_evaluator.cc
++++ b/third_party/blink/renderer/core/css/media_query_evaluator.cc
+@@ -68,6 +68,7 @@
+ #include "third_party/blink/renderer/core/media_type_names.h"
+ #include "third_party/blink/renderer/core/probe/core_probes.h"
+ #include "third_party/blink/renderer/core/style/computed_style.h"
++#include "third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.h"
+ #include "third_party/blink/renderer/platform/graphics/color_space_gamut.h"
+ #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+ #include "third_party/blink/renderer/platform/wtf/hash_map.h"
+@@ -1687,6 +1688,9 @@
+   EvalFunc func = g_function_map->at(feature.Name().Impl());
+ 
+   if (!func) {
++    if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++      PhasmidFingerprintTrace::MediaFeature(feature.Serialize(), "unknown");
++    }
+     return KleeneValue::kFalse;
+   }
+ 
+@@ -1713,6 +1717,10 @@
+     result_flags->unit_flags |= feature.GetUnitFlags();
+   }
+ 
++  if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++    PhasmidFingerprintTrace::MediaFeature(feature.Serialize(),
++                                          result ? "true" : "false");
++  }
+   return result ? KleeneValue::kTrue : KleeneValue::kFalse;
+ }
+ 
+--- a/third_party/blink/renderer/core/css/offscreen_font_selector.cc
++++ b/third_party/blink/renderer/core/css/offscreen_font_selector.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "build/build_config.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
++#include "third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.h"
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
+ #include "third_party/blink/renderer/platform/fonts/font_selector_client.h"
+ 
+@@ -41,6 +42,10 @@
+   const auto& family_name = font_family.FamilyName();
+   if (CSSSegmentedFontFace* face =
+           font_face_cache_->Get(font_description, family_name)) {
++    if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++      PhasmidFingerprintTrace::FontLookup("worker", family_name, family_name,
++                                          "webfont");
++    }
+     return face->GetFontData(font_description);
+   }
+ 
+@@ -49,10 +54,21 @@
+   AtomicString settings_family_name =
+       FamilyNameFromSettings(font_description, font_family);
+   if (settings_family_name.empty()) {
++    if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++      PhasmidFingerprintTrace::FontLookup("worker", family_name,
++                                          settings_family_name, "miss");
++    }
+     return nullptr;
+   }
+ 
+-  return FontCache::Get().GetFontData(font_description, settings_family_name);
++  const SimpleFontData* font_data =
++      FontCache::Get().GetFontData(font_description, settings_family_name);
++  if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++    PhasmidFingerprintTrace::FontLookup("worker", family_name,
++                                        settings_family_name,
++                                        font_data ? "platform" : "miss");
++  }
++  return font_data;
+ }
+ 
+ void OffscreenFontSelector::Trace(Visitor* visitor) const {
+--- a/third_party/blink/renderer/platform/BUILD.gn
++++ b/third_party/blink/renderer/platform/BUILD.gn
+@@ -517,6 +517,8 @@
+     "bindings/parkable_string.h",
+     "bindings/parkable_string_manager.cc",
+     "bindings/parkable_string_manager.h",
++    "bindings/phasmid_fingerprint_trace.cc",
++    "bindings/phasmid_fingerprint_trace.h",
+     "bindings/runtime_call_stats.cc",
+     "bindings/runtime_call_stats.h",
+     "bindings/scoped_persistent.h",
+--- a/third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.cc
++++ b/third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.cc
+@@ -0,0 +1,469 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <string>
++
++#include "base/containers/span.h"
++#include "base/no_destructor.h"
++#include "base/strings/stringprintf.h"
++#include "base/trace_event/typed_macros.h"
++#include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
++#include "third_party/blink/renderer/platform/bindings/script_state.h"
++#include "third_party/blink/renderer/platform/bindings/v8_dom_wrapper.h"
++#include "third_party/blink/renderer/platform/bindings/wrapper_type_info.h"
++#include "third_party/blink/renderer/platform/wtf/vector.h"
++#include "v8/include/v8-array-buffer.h"
++#include "v8/include/v8-container.h"
++#include "v8/include/v8-context.h"
++#include "v8/include/v8-debug.h"
++#include "v8/include/v8-isolate.h"
++#include "v8/include/v8-object.h"
++#include "v8/include/v8-primitive.h"
++#include "v8/include/v8-promise.h"
++#include "v8/include/v8-typed-array.h"
++#include "v8/include/v8-value.h"
++
++namespace blink {
++
++namespace {
++
++constexpr char kCategory[] = "disabled-by-default-phasmid.fingerprint";
++// UTF-8 bytes of a string kept verbatim; the whole string is hashed.
++constexpr size_t kStringPrefixBytes = 1024;
++// Elements of an array, typed array or object kept per value.
++constexpr uint32_t kMaxItems = 64;
++// Levels of Blink-created arrays and objects walked in a return value.
++constexpr int kMaxDepth = 2;
++// JavaScript frames recorded for the caller.
++constexpr int kCallerFrames = 3;
++
++// FNV-1a, 64 bit: stable across builds and easy to recompute from a capture
++// (strings are hashed as UTF-16LE code units, buffers as their bytes).
++uint64_t Fnv1a64(base::span<const uint8_t> bytes) {
++  uint64_t hash = 0xcbf29ce484222325ull;
++  for (uint8_t byte : bytes) {
++    hash ^= byte;
++    hash *= 0x100000001b3ull;
++  }
++  return hash;
++}
++
++std::string Hex(uint64_t hash) {
++  return base::StringPrintf("%016llx", static_cast<unsigned long long>(hash));
++}
++
++std::string Utf8Prefix(v8::Isolate* isolate, v8::Local<v8::String> string) {
++  std::string prefix(kStringPrefixBytes, '\0');
++  size_t written =
++      string->WriteUtf8(isolate, prefix.data(), prefix.size(),
++                        v8::String::WriteFlags::kReplaceInvalidUtf8);
++  prefix.resize(written);
++  return prefix;
++}
++
++void WriteNumber(perfetto::TracedValue out, double number) {
++  if (std::isnan(number)) {
++    std::move(out).WriteString("NaN");
++  } else if (std::isinf(number)) {
++    std::move(out).WriteString(number > 0 ? "Infinity" : "-Infinity");
++  } else if (number == 0 && std::signbit(number)) {
++    std::move(out).WriteString("-0");
++  } else {
++    std::move(out).WriteDouble(number);
++  }
++}
++
++void WriteString(perfetto::TracedDictionary& dict,
++                 v8::Isolate* isolate,
++                 v8::Local<v8::String> string) {
++  const int length = string->Length();
++  Vector<uint16_t> units(static_cast<wtf_size_t>(length));
++  string->Write(isolate, 0, static_cast<uint32_t>(length), units.data());
++  dict.Add("type", "string");
++  dict.Add("length", length);
++  dict.Add("hash", Hex(Fnv1a64(base::as_byte_span(units))));
++  dict.Add("value", Utf8Prefix(isolate, string));
++}
++
++template <typename T>
++void WriteElements(perfetto::TracedArray& array,
++                   v8::Local<v8::ArrayBufferView> view,
++                   size_t count) {
++  Vector<T> items(static_cast<wtf_size_t>(count));
++  view->CopyContents(items.data(), count * sizeof(T));
++  for (T item : items) {
++    WriteNumber(array.AppendItem(), static_cast<double>(item));
++  }
++}
++
++// A protozero parent must not be written while a child is open, so every
++// field of `dict` is added before the "items" array.
++void WriteView(perfetto::TracedDictionary& dict,
++               v8::Local<v8::ArrayBufferView> view) {
++  Vector<uint8_t> bytes(static_cast<wtf_size_t>(view->ByteLength()));
++  view->CopyContents(bytes.data(), bytes.size());
++  if (!view->IsTypedArray()) {
++    dict.Add("type", "DataView");
++  } else if (view->IsUint8Array()) {
++    dict.Add("type", "Uint8Array");
++  } else if (view->IsUint8ClampedArray()) {
++    dict.Add("type", "Uint8ClampedArray");
++  } else if (view->IsInt8Array()) {
++    dict.Add("type", "Int8Array");
++  } else if (view->IsUint16Array()) {
++    dict.Add("type", "Uint16Array");
++  } else if (view->IsInt16Array()) {
++    dict.Add("type", "Int16Array");
++  } else if (view->IsUint32Array()) {
++    dict.Add("type", "Uint32Array");
++  } else if (view->IsInt32Array()) {
++    dict.Add("type", "Int32Array");
++  } else if (view->IsFloat32Array()) {
++    dict.Add("type", "Float32Array");
++  } else if (view->IsFloat64Array()) {
++    dict.Add("type", "Float64Array");
++  } else {
++    // Float16Array and the BigInt arrays: length and hash only.
++    dict.Add("type", "TypedArray");
++  }
++  dict.Add("byteLength", bytes.size());
++  dict.Add("hash", Hex(Fnv1a64(base::span(bytes))));
++  if (!view->IsTypedArray()) {
++    return;
++  }
++  const size_t length = view.As<v8::TypedArray>()->Length();
++  dict.Add("length", length);
++  const size_t count = std::min<size_t>(length, kMaxItems);
++  perfetto::TracedArray items = dict.AddArray("items");
++  if (view->IsUint8Array() || view->IsUint8ClampedArray()) {
++    WriteElements<uint8_t>(items, view, count);
++  } else if (view->IsInt8Array()) {
++    WriteElements<int8_t>(items, view, count);
++  } else if (view->IsUint16Array()) {
++    WriteElements<uint16_t>(items, view, count);
++  } else if (view->IsInt16Array()) {
++    WriteElements<int16_t>(items, view, count);
++  } else if (view->IsUint32Array()) {
++    WriteElements<uint32_t>(items, view, count);
++  } else if (view->IsInt32Array()) {
++    WriteElements<int32_t>(items, view, count);
++  } else if (view->IsFloat32Array()) {
++    WriteElements<float>(items, view, count);
++  } else if (view->IsFloat64Array()) {
++    WriteElements<double>(items, view, count);
++  }
++}
++
++void WriteValue(perfetto::TracedValue out,
++                v8::Isolate* isolate,
++                v8::Local<v8::Value> value,
++                int depth);
++
++// Own enumerable data properties of a Blink-created object or array, read
++// through property descriptors so that no getter, prototype lookup or
++// interceptor can run.
++void WriteOwnData(perfetto::TracedDictionary& dict,
++                  v8::Isolate* isolate,
++                  v8::Local<v8::Object> object,
++                  int depth) {
++  v8::Local<v8::Context> context = isolate->GetCurrentContext();
++  v8::Local<v8::Array> keys;
++  if (!object
++           ->GetOwnPropertyNames(context,
++                                 static_cast<v8::PropertyFilter>(
++                                     v8::ONLY_ENUMERABLE | v8::SKIP_SYMBOLS),
++                                 v8::KeyConversionMode::kConvertToString)
++           .ToLocal(&keys)) {
++    return;
++  }
++  dict.Add("size", keys->Length());
++  v8::Local<v8::String> value_key =
++      v8::String::NewFromUtf8Literal(isolate, "value");
++  perfetto::TracedDictionary entries = dict.AddDictionary("entries");
++  const uint32_t count = std::min(keys->Length(), kMaxItems);
++  for (uint32_t i = 0; i < count; ++i) {
++    v8::Local<v8::Value> key;
++    v8::Local<v8::Value> descriptor;
++    if (!keys->Get(context, i).ToLocal(&key) || !key->IsString() ||
++        !object->GetOwnPropertyDescriptor(context, key.As<v8::Name>())
++             .ToLocal(&descriptor) ||
++        !descriptor->IsObject()) {
++      continue;
++    }
++    std::string name = Utf8Prefix(isolate, key.As<v8::String>());
++    v8::Local<v8::Object> fields = descriptor.As<v8::Object>();
++    v8::Local<v8::Value> field;
++    if (fields->HasOwnProperty(context, value_key).FromMaybe(false) &&
++        fields->Get(context, value_key).ToLocal(&field)) {
++      WriteValue(entries.AddItem(perfetto::DynamicString(name)), isolate, field,
++                 depth - 1);
++    } else {
++      perfetto::TracedDictionary accessor =
++          entries.AddDictionary(perfetto::DynamicString(name));
++      accessor.Add("type", "accessor");
++    }
++  }
++}
++
++void WriteValue(perfetto::TracedValue out,
++                v8::Isolate* isolate,
++                v8::Local<v8::Value> value,
++                int depth) {
++  perfetto::TracedDictionary dict = std::move(out).WriteDictionary();
++  if (value.IsEmpty() || value->IsUndefined()) {
++    dict.Add("type", "undefined");
++    return;
++  }
++  if (value->IsNull()) {
++    dict.Add("type", "null");
++    return;
++  }
++  if (value->IsBoolean()) {
++    dict.Add("type", "boolean");
++    dict.Add("value", value.As<v8::Boolean>()->Value());
++    return;
++  }
++  if (value->IsNumber()) {
++    dict.Add("type", "number");
++    WriteNumber(dict.AddItem("value"), value.As<v8::Number>()->Value());
++    return;
++  }
++  if (value->IsBigInt()) {
++    bool lossless = false;
++    int64_t number = value.As<v8::BigInt>()->Int64Value(&lossless);
++    dict.Add("type", "bigint");
++    dict.Add("value",
++             base::StringPrintf("%lld", static_cast<long long>(number)));
++    dict.Add("lossless", lossless);
++    return;
++  }
++  if (value->IsString()) {
++    WriteString(dict, isolate, value.As<v8::String>());
++    return;
++  }
++  if (value->IsSymbol()) {
++    dict.Add("type", "symbol");
++    v8::Local<v8::Value> description =
++        value.As<v8::Symbol>()->Description(isolate);
++    if (description->IsString()) {
++      dict.Add("description",
++               Utf8Prefix(isolate, description.As<v8::String>()));
++    }
++    return;
++  }
++  if (!value->IsObject()) {
++    dict.Add("type", "other");
++    return;
++  }
++  // Any access to a Proxy could run its traps.
++  if (value->IsProxy()) {
++    dict.Add("type", "Proxy");
++    return;
++  }
++  v8::Local<v8::Object> object = value.As<v8::Object>();
++  if (value->IsPromise()) {
++    v8::Local<v8::Promise> promise = value.As<v8::Promise>();
++    dict.Add("type", "Promise");
++    dict.Add("id", promise->GetIdentityHash());
++    switch (promise->State()) {
++      case v8::Promise::kPending:
++        dict.Add("state", "pending");
++        break;
++      case v8::Promise::kFulfilled:
++        dict.Add("state", "fulfilled");
++        WriteValue(dict.AddItem("value"), isolate, promise->Result(),
++                   kMaxDepth);
++        break;
++      case v8::Promise::kRejected:
++        dict.Add("state", "rejected");
++        WriteValue(dict.AddItem("value"), isolate, promise->Result(),
++                   kMaxDepth);
++        break;
++    }
++    return;
++  }
++  if (value->IsArrayBufferView()) {
++    WriteView(dict, value.As<v8::ArrayBufferView>());
++    return;
++  }
++  if (value->IsArrayBuffer()) {
++    dict.Add("type", "ArrayBuffer");
++    dict.Add("byteLength", value.As<v8::ArrayBuffer>()->ByteLength());
++    return;
++  }
++  if (value->IsSharedArrayBuffer()) {
++    dict.Add("type", "SharedArrayBuffer");
++    return;
++  }
++  if (V8DOMWrapper::IsWrapper(isolate, object)) {
++    dict.Add("type", "wrapper");
++    if (const WrapperTypeInfo* info = ToWrapperTypeInfo(object)) {
++      dict.Add("interface", info->interface_name);
++    }
++    return;
++  }
++  if (value->IsFunction()) {
++    dict.Add("type", "function");
++    return;
++  }
++  if (value->IsArray()) {
++    dict.Add("type", "array");
++    dict.Add("length", value.As<v8::Array>()->Length());
++    if (depth > 0) {
++      WriteOwnData(dict, isolate, object, depth);
++    }
++    return;
++  }
++  std::string constructor = Utf8Prefix(isolate, object->GetConstructorName());
++  dict.Add("type", "object");
++  dict.Add("constructor", constructor);
++  if (depth > 0 && constructor == "Object") {
++    WriteOwnData(dict, isolate, object, depth);
++  }
++}
++
++struct ValueTrace {
++  STACK_ALLOCATED();
++
++ public:
++  void WriteIntoTrace(perfetto::TracedValue context) const {
++    WriteValue(std::move(context), isolate, value, depth);
++  }
++
++  v8::Isolate* isolate;
++  v8::Local<v8::Value> value;
++  int depth;
++};
++
++// The arguments as the page passed them: never converted, never walked, so
++// nothing the page defined (getters, valueOf, toString) runs.
++struct ArgumentsTrace {
++  STACK_ALLOCATED();
++
++ public:
++  void WriteIntoTrace(perfetto::TracedValue context) const {
++    perfetto::TracedArray array = std::move(context).WriteArray();
++    for (int i = 0; i < info->Length(); ++i) {
++      WriteValue(array.AppendItem(), info->GetIsolate(), (*info)[i], 0);
++    }
++  }
++
++  const v8::FunctionCallbackInfo<v8::Value>* info;
++};
++
++// The innermost JavaScript frames, without running Error.prepareStackTrace
++// or reading Error.stackTraceLimit.
++struct CallerTrace {
++  STACK_ALLOCATED();
++
++ public:
++  void WriteIntoTrace(perfetto::TracedValue context) const {
++    perfetto::TracedArray frames = std::move(context).WriteArray();
++    v8::Local<v8::StackTrace> trace =
++        v8::StackTrace::CurrentStackTrace(isolate, kCallerFrames);
++    for (int i = 0; i < trace->GetFrameCount(); ++i) {
++      v8::Local<v8::StackFrame> frame =
++          trace->GetFrame(isolate, static_cast<uint32_t>(i));
++      perfetto::TracedDictionary dict = frames.AppendDictionary();
++      v8::Local<v8::String> url = frame->GetScriptNameOrSourceURL();
++      dict.Add("url", url.IsEmpty() ? std::string() : Utf8Prefix(isolate, url));
++      dict.Add("line", frame->GetLineNumber());
++      dict.Add("column", frame->GetColumn());
++      v8::Local<v8::String> function = frame->GetFunctionName();
++      if (!function.IsEmpty()) {
++        dict.Add("function", Utf8Prefix(isolate, function));
++      }
++    }
++  }
++
++  v8::Isolate* isolate;
++};
++
++}  // namespace
++
++bool PhasmidFingerprintTrace::IsCategoryEnabled() {
++  static const base::NoDestructor<perfetto::DynamicCategory> category(
++      kCategory);
++  return base::TrackEvent::IsDynamicCategoryEnabled(*category);
++}
++
++void PhasmidFingerprintTraceScope::Emit() {
++  v8::Isolate* isolate = info_->GetIsolate();
++  v8::HandleScope handle_scope(isolate);
++  // The exception itself is not reachable from here; a promise-returning
++  // member has already turned it into a rejected promise.
++  const bool threw = isolate->HasPendingException();
++  v8::Local<v8::Value> result;
++  if (!threw) {
++    result = info_->GetReturnValue().Get();
++  }
++  const DOMWrapperWorld& world = DOMWrapperWorld::Current(isolate);
++  perfetto::DynamicCategory category(kCategory);
++  TRACE_EVENT_INSTANT(
++      category, perfetto::StaticString(api_), [&](perfetto::EventContext ctx) {
++        ctx.AddDebugAnnotation("args", ArgumentsTrace{info_});
++        ctx.AddDebugAnnotation("threw", threw);
++        if (!threw) {
++          ctx.AddDebugAnnotation("ret", ValueTrace{isolate, result, kMaxDepth});
++          if (result->IsPromise()) {
++            ctx.AddDebugAnnotation("promise",
++                                   result.As<v8::Promise>()->GetIdentityHash());
++          }
++        }
++        ctx.AddDebugAnnotation("caller", CallerTrace{isolate});
++        ctx.AddDebugAnnotation("world", world.GetWorldId());
++        ctx.AddDebugAnnotation("main_world", world.IsMainWorld());
++      });
++}
++
++void PhasmidFingerprintTrace::PromiseSettled(v8::Isolate* isolate,
++                                             v8::Local<v8::Promise> promise,
++                                             bool resolved,
++                                             v8::Local<v8::Value> value,
++                                             const char* class_name,
++                                             const char* property_name) {
++  v8::HandleScope handle_scope(isolate);
++  perfetto::DynamicCategory category(kCategory);
++  TRACE_EVENT_INSTANT(
++      category, "Promise.settle", [&](perfetto::EventContext ctx) {
++        ctx.AddDebugAnnotation("promise", promise->GetIdentityHash());
++        ctx.AddDebugAnnotation("state", resolved ? "fulfilled" : "rejected");
++        ctx.AddDebugAnnotation("value", ValueTrace{isolate, value, kMaxDepth});
++        if (class_name && property_name) {
++          ctx.AddDebugAnnotation(
++              "api", base::StringPrintf("%s.%s", class_name, property_name));
++        }
++      });
++}
++
++void PhasmidFingerprintTrace::MediaFeature(const String& feature,
++                                           const char* result) {
++  perfetto::DynamicCategory category(kCategory);
++  TRACE_EVENT_INSTANT(category, "CSS.mediaFeature",
++                      [&](perfetto::EventContext ctx) {
++                        ctx.AddDebugAnnotation("feature", feature.Utf8());
++                        ctx.AddDebugAnnotation("result", result);
++                      });
++}
++
++void PhasmidFingerprintTrace::FontLookup(const char* selector,
++                                         const AtomicString& family,
++                                         const AtomicString& resolved,
++                                         const char* result) {
++  perfetto::DynamicCategory category(kCategory);
++  TRACE_EVENT_INSTANT(category, "CSS.fontFamily",
++                      [&](perfetto::EventContext ctx) {
++                        ctx.AddDebugAnnotation("selector", selector);
++                        ctx.AddDebugAnnotation("family", family.Utf8());
++                        ctx.AddDebugAnnotation("resolved", resolved.Utf8());
++                        ctx.AddDebugAnnotation("result", result);
++                      });
++}
++
++}  // namespace blink
+--- a/third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.h
++++ b/third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.h
+@@ -0,0 +1,95 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_PHASMID_FINGERPRINT_TRACE_H_
++#define THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_PHASMID_FINGERPRINT_TRACE_H_
++
++#include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
++#include "third_party/blink/renderer/platform/platform_export.h"
++#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
++#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
++#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
++#include "v8/include/v8-function-callback.h"
++#include "v8/include/v8-local-handle.h"
++
++namespace v8 {
++class Isolate;
++class Promise;
++class Value;
++}  // namespace v8
++
++namespace blink {
++
++// Phasmid fingerprint inspector. Events go to the dynamic category
++// "disabled-by-default-phasmid.fingerprint", which only an explicit include
++// in a tracing session enables. Nothing here runs page script: values are
++// described from V8's own slots and Blink-created objects are walked through
++// own data property descriptors only.
++class PLATFORM_EXPORT PhasmidFingerprintTrace {
++  STATIC_ONLY(PhasmidFingerprintTrace);
++
++ public:
++  // One relaxed atomic load while no tracing session runs.
++  static bool IsEnabled() {
++    return base::TrackEvent::IsEnabled() && IsCategoryEnabled();
++  }
++
++  // A promise resolver settles (ScriptPromiseResolverBase). `promise` carries
++  // the identity hash a traced call recorded for the promise it returned.
++  static void PromiseSettled(v8::Isolate* isolate,
++                             v8::Local<v8::Promise> promise,
++                             bool resolved,
++                             v8::Local<v8::Value> value,
++                             const char* class_name,
++                             const char* property_name);
++
++  // A CSS media feature evaluated (MediaQueryEvaluator::EvalFeature).
++  static void MediaFeature(const String& feature, const char* result);
++
++  // A font family looked up for a document or worker (CSSFontSelector,
++  // OffscreenFontSelector): `result` is "webfont", "platform" or "miss".
++  static void FontLookup(const char* selector,
++                         const AtomicString& family,
++                         const AtomicString& resolved,
++                         const char* result);
++
++ private:
++  static bool IsCategoryEnabled();
++};
++
++// Placed by the bindings generator in the callback of every member listed in
++// bindings/phasmid_fingerprint_allowlist.txt. When the category is enabled,
++// the destructor emits one event named after the member with the arguments,
++// the return value (or that it threw), the calling script location and the
++// world.
++class PLATFORM_EXPORT PhasmidFingerprintTraceScope {
++  STACK_ALLOCATED();
++
++ public:
++  PhasmidFingerprintTraceScope(const v8::FunctionCallbackInfo<v8::Value>& info,
++                               const char* api) {
++    if (PhasmidFingerprintTrace::IsEnabled()) [[unlikely]] {
++      info_ = &info;
++      api_ = api;
++    }
++  }
++  PhasmidFingerprintTraceScope(const PhasmidFingerprintTraceScope&) = delete;
++  PhasmidFingerprintTraceScope& operator=(const PhasmidFingerprintTraceScope&) =
++      delete;
++  ~PhasmidFingerprintTraceScope() {
++    if (info_) [[unlikely]] {
++      Emit();
++    }
++  }
++
++ private:
++  void Emit();
++
++  const v8::FunctionCallbackInfo<v8::Value>* info_ = nullptr;
++  const char* api_ = nullptr;
++};
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_BINDINGS_PHASMID_FINGERPRINT_TRACE_H_

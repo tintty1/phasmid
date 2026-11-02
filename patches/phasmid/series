@@ -96,3 +96,6 @@ graphics/headless-gpu.patch
 
 # Location group: geolocation
 locale/geolocation.patch
+
+# DevTools: fingerprint inspector (bindings trace; CSS, fonts and Intl)
+devtools/fingerprint-trace.patch
