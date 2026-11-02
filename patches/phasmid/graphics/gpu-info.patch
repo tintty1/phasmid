@@ -1,0 +1,166 @@
+Phasmid: GPU identity in GPUInfo reports
+
+What:     The GPU identity reported outside WebGL and WebGPU comes from gpu.*:
+          webglcontextcreationerror.statusMessage (VENDOR, DEVICE, GL_VENDOR,
+          GL_RENDERER, GL_VERSION), chrome://gpu (active GPU ids, strings,
+          driver, GL_VENDOR, GL_RENDERER) and CDP SystemInfo.getInfo. Only
+          the reports change: collection, blocklists, workarounds and the
+          stored GPUInfo stay the host's. A field the claim does not
+          determine is reported empty (id 0), never the host's.
+Why:      The status message is page-visible and would name the host GPU next
+          to the profile's WebGL renderer.
+Profile:  gpu.vendor_id, device_id, vendor_name, device_name, driver_vendor,
+          driver_version, gl_vendor, gl_renderer
+Hooks:    content/renderer/renderer_blink_platform_impl.cc
+          (CollectWebGLContextInfo); content/browser/gpu/gpu_internals_ui.cc
+          (GetGpuInfo, GetGpuInfoDict);
+          content/browser/devtools/protocol/system_info_handler.cc
+          (SendGetInfoResponse); new content/browser/gpu/phasmid_gpu_info.{h,cc}
+Contexts: main, cross-origin iframe and dedicated worker OffscreenCanvas
+          (statusMessage); chrome://gpu and CDP (browser).
+Guard:    tests/guards/graphics/gpu-info.py
+
+--- a/content/renderer/renderer_blink_platform_impl.cc
++++ b/content/renderer/renderer_blink_platform_impl.cc
+@@ -37,6 +37,7 @@
+ #include "components/content_settings/core/common/content_settings_pattern.h"
+ #include "components/input/features.h"
+ #include "components/input/input_constants.h"
++#include "components/phasmid/profile.h"
+ #include "components/url_formatter/url_formatter.h"
+ #include "components/viz/common/features.h"
+ #include "content/child/child_process.h"
+@@ -728,6 +729,16 @@
+   gl_info->using_gpu_compositing = !IsGpuCompositingDisabled();
+   gl_info->using_passthrough_command_decoder = gpu_info.passthrough_cmd_decoder;
+   gl_info->angle_implementation = gpu_info.gl_implementation_parts.angle;
++  // Phasmid: the GPU identity webglcontextcreationerror.statusMessage
++  // reports. Fields Blink makes decisions from stay the host's.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    const phasmid::Profile::Gpu& claimed = profile->gpu();
++    gl_info->vendor_id = claimed.vendor_id;
++    gl_info->device_id = claimed.device_id;
++    gl_info->renderer_info = WebString::FromUtf8(claimed.gl_renderer);
++    gl_info->vendor_info = WebString::FromUtf8(claimed.gl_vendor);
++    gl_info->driver_version = WebString::FromUtf8(claimed.driver_version);
++  }
+ }
+ 
+ std::unique_ptr<blink::WebGraphicsContext3DProvider>
+--- a/content/browser/gpu/gpu_internals_ui.cc
++++ b/content/browser/gpu/gpu_internals_ui.cc
+@@ -27,6 +27,7 @@
+ #include "content/browser/gpu/compositor_util.h"
+ #include "content/browser/gpu/gpu_data_manager_impl.h"
+ #include "content/browser/gpu/gpu_process_host.h"
++#include "content/browser/gpu/phasmid_gpu_info.h"
+ #include "content/grit/gpu_resources.h"
+ #include "content/grit/gpu_resources_map.h"
+ #include "content/public/browser/browser_thread.h"
+@@ -280,7 +281,9 @@
+ base::DictValue GetGpuInfo() {
+   base::DictValue info;
+ 
+-  const gpu::GPUInfo gpu_info = GpuDataManagerImpl::GetInstance()->GetGPUInfo();
++  // Phasmid: the profile's GPU identity; diagnostics stay the host's.
++  const gpu::GPUInfo gpu_info = PhasmidReportedGpuInfo(
++      GpuDataManagerImpl::GetInstance()->GetGPUInfo());
+   const gpu::GpuFeatureInfo gpu_feature_info =
+       GpuDataManagerImpl::GetInstance()->GetGpuFeatureInfo();
+   const gfx::GpuExtraInfo gpu_extra_info =
+@@ -806,8 +809,8 @@
+       const gpu::GpuFeatureInfo gpu_feature_info_for_hardware_gpu =
+           GpuDataManagerImpl::GetInstance()->GetGpuFeatureInfoForHardwareGpu();
+       base::ListValue gpu_info_for_hardware_gpu_val = GetBasicGpuInfo(
+-          gpu_info_for_hardware_gpu, gpu_feature_info_for_hardware_gpu,
+-          gfx::GpuExtraInfo{});
++          PhasmidReportedGpuInfo(gpu_info_for_hardware_gpu),
++          gpu_feature_info_for_hardware_gpu, gfx::GpuExtraInfo{});
+       gpu_info_val.Set("basicInfoForHardwareGpu",
+                        std::move(gpu_info_for_hardware_gpu_val));
+     }
+--- a/content/browser/devtools/protocol/system_info_handler.cc
++++ b/content/browser/devtools/protocol/system_info_handler.cc
+@@ -20,6 +20,7 @@
+ #include "content/browser/gpu/compositor_util.h"
+ #include "content/browser/gpu/gpu_data_manager_impl.h"
+ #include "content/browser/gpu/gpu_process_host.h"
++#include "content/browser/gpu/phasmid_gpu_info.h"
+ #include "content/public/browser/browser_child_process_host.h"
+ #include "content/public/browser/browser_child_process_host_iterator.h"
+ #include "content/public/browser/browser_thread.h"
+@@ -174,7 +175,9 @@
+ }
+ 
+ void SendGetInfoResponse(std::unique_ptr<GetInfoCallback> callback) {
+-  gpu::GPUInfo gpu_info = GpuDataManagerImpl::GetInstance()->GetGPUInfo();
++  // Phasmid: the same identity chrome://gpu reports.
++  gpu::GPUInfo gpu_info =
++      PhasmidReportedGpuInfo(GpuDataManagerImpl::GetInstance()->GetGPUInfo());
+   auto devices = std::make_unique<protocol::Array<GPUDevice>>();
+   // The active device should be the 0th device
+   for (size_t i = 0; i < gpu_info.secondary_gpus.size(); ++i) {
+--- a/content/browser/gpu/phasmid_gpu_info.h
++++ b/content/browser/gpu/phasmid_gpu_info.h
+@@ -0,0 +1,18 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_BROWSER_GPU_PHASMID_GPU_INFO_H_
++#define CONTENT_BROWSER_GPU_PHASMID_GPU_INFO_H_
++
++#include "gpu/config/gpu_info.h"
++
++namespace content {
++
++// A reporting copy of `info` with the active GPU's identity and GL strings
++// from the profile's gpu.*. Without a profile, returns `info` unchanged.
++gpu::GPUInfo PhasmidReportedGpuInfo(gpu::GPUInfo info);
++
++}  // namespace content
++
++#endif  // CONTENT_BROWSER_GPU_PHASMID_GPU_INFO_H_
+--- a/content/browser/gpu/phasmid_gpu_info.cc
++++ b/content/browser/gpu/phasmid_gpu_info.cc
+@@ -0,0 +1,29 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "content/browser/gpu/phasmid_gpu_info.h"
++
++#include "components/phasmid/profile.h"
++
++namespace content {
++
++gpu::GPUInfo PhasmidReportedGpuInfo(gpu::GPUInfo info) {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!profile) {
++    return info;
++  }
++  const phasmid::Profile::Gpu& claimed = profile->gpu();
++  gpu::GPUInfo::GPUDevice& active = info.active_gpu();
++  active.vendor_id = claimed.vendor_id;
++  active.device_id = claimed.device_id;
++  active.vendor_string = claimed.vendor_name;
++  active.device_string = claimed.device_name;
++  active.driver_vendor = claimed.driver_vendor;
++  active.driver_version = claimed.driver_version;
++  info.gl_vendor = claimed.gl_vendor;
++  info.gl_renderer = claimed.gl_renderer;
++  return info;
++}
++
++}  // namespace content
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -1101,6 +1101,8 @@
+     "gpu/gpu_process_host_receiver_bindings.cc",
+     "gpu/peak_gpu_memory_tracker_impl.cc",
+     "gpu/peak_gpu_memory_tracker_impl.h",
++    "gpu/phasmid_gpu_info.cc",
++    "gpu/phasmid_gpu_info.h",
+     "guest_page_holder_impl.cc",
+     "guest_page_holder_impl.h",
+     "handwriting/handwriting_recognition_service_factory.cc",
