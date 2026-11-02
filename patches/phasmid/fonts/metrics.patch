@@ -1,0 +1,686 @@
+Phasmid: Windows text metrics (Windows profiles)
+
+What:     A windows profile measures text as Windows Chrome does through
+          DirectWrite: OS/2 win (or typo, with USE_TYPO_METRICS) ascent and
+          descent without VDMX or descent borrow, the GDI line gap, the
+          advance of 'x' as the average character width, linear advances
+          with subpixel positioning at every scale factor, integer
+          GDI-classic advances (hdmx, else the bitmap strike's, else
+          rounded) for faces with an EBLC strike at the GDI ppem, and
+          synthetic bold from weight 600. Linux profiles are unchanged.
+Why:      The Linux scaler gives the same Windows font files Linux vertical
+          metrics, line heights and widths.
+Profile:  os.family
+Hooks:    third_party/blink/renderer/platform/fonts/font_metrics.cc
+          AscentDescentWithHacks; simple_font_data.cc PlatformInit,
+          WidthForGlyph; font_platform_data.cc CreateSkFont;
+          shaping/harfbuzz_font_data.h UpdateFallbackMetricsAndScale;
+          shaping/harfbuzz_face.cc HarfBuzzGetGlyphHorizontalAdvance(s);
+          skia/font_cache_skia.cc CreateFontPlatformData; new
+          fonts/windows_text_metrics.{h,cc}; platform BUILD.gn
+Contexts: main, iframes, dedicated, shared and service workers,
+          OffscreenCanvas; headless and headful.
+Guard:    tests/guards/fonts/windows_metrics.py
+
+--- a/third_party/blink/renderer/platform/fonts/font_metrics.cc
++++ b/third_party/blink/renderer/platform/fonts/font_metrics.cc
+@@ -34,6 +34,7 @@
+ #include "build/build_config.h"
+ #include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
+ #include "third_party/blink/renderer/platform/fonts/vdmx_parser.h"
++#include "third_party/blink/renderer/platform/fonts/windows_text_metrics.h"
+ #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+ #include "third_party/skia/include/core/SkFont.h"
+ #include "third_party/skia/include/core/SkFontMetrics.h"
+@@ -66,6 +67,29 @@
+   if (descent_override)
+     metrics.fDescent = platform_data.size() * descent_override.value();
+ 
++  // Phasmid: DirectWrite's ascent and descent for a windows profile, from
++  // the OS/2 table, without VDMX or the descent borrow below.
++  if (windows_text_metrics::Enabled()) [[unlikely]] {
++    if (std::optional<windows_text_metrics::VerticalMetrics> windows =
++            windows_text_metrics::DirectWriteVerticalMetrics(font)) {
++      const float windows_ascent =
++          ascent_override ? platform_data.size() * ascent_override.value()
++                          : windows->ascent;
++      const float windows_descent =
++          descent_override ? platform_data.size() * descent_override.value()
++                           : windows->descent;
++      if (subpixel_ascent_descent &&
++          (windows_ascent < 3 || windows_ascent + windows_descent < 2)) {
++        ascent = windows_ascent;
++        descent = windows_descent;
++      } else {
++        ascent = SkScalarRoundToScalar(windows_ascent);
++        descent = SkScalarRoundToScalar(windows_descent);
++      }
++      return;
++    }
++  }
++
+   int vdmx_ascent = 0, vdmx_descent = 0;
+   bool is_vdmx_valid = false;
+ 
+--- a/third_party/blink/renderer/platform/fonts/simple_font_data.cc
++++ b/third_party/blink/renderer/platform/fonts/simple_font_data.cc
+@@ -34,6 +34,7 @@
+ #include <algorithm>
+ #include <bit>
+ #include <memory>
++#include <optional>
+ #include <utility>
+ 
+ #include "base/compiler_specific.h"
+@@ -48,6 +49,7 @@
+ #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.h"
+ #include "third_party/blink/renderer/platform/fonts/shaping/ng_shape_cache.h"
+ #include "third_party/blink/renderer/platform/fonts/skia/skia_text_metrics.h"
++#include "third_party/blink/renderer/platform/fonts/windows_text_metrics.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
+ #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+@@ -167,9 +169,19 @@
+     font_metrics_.SetHasXHeight(false);
+   }
+ 
++  // Phasmid: DirectWrite's line gap and average character width (the
++  // advance of 'x'; DirectWrite reports no average) for a windows profile.
++  const bool windows_metrics = windows_text_metrics::Enabled();
++  std::optional<windows_text_metrics::VerticalMetrics> windows_vertical;
++  if (windows_metrics) [[unlikely]] {
++    windows_vertical = windows_text_metrics::DirectWriteVerticalMetrics(font_);
++  }
++
+   float line_gap;
+   if (metrics_override.line_gap_override) {
+     line_gap = *metrics_override.line_gap_override * platform_data_->size();
++  } else if (windows_vertical) [[unlikely]] {
++    line_gap = windows_vertical->line_gap;
+   } else {
+     line_gap = metrics.fLeading;
+   }
+@@ -202,7 +214,7 @@
+ #endif
+ 
+ #if !BUILDFLAG(IS_APPLE)
+-  if (metrics.fAvgCharWidth) {
++  if (metrics.fAvgCharWidth && !windows_metrics) {
+     avg_char_width_ = metrics.fAvgCharWidth;
+   } else {
+ #endif
+@@ -555,6 +567,10 @@
+ 
+   static_assert(sizeof(glyph) == 2, "Glyph id should not be truncated.");
+ 
++  // Phasmid: DirectWrite's advance for a windows profile.
++  if (windows_text_metrics::Enabled()) [[unlikely]] {
++    return windows_text_metrics::GlyphAdvance(font_, glyph);
++  }
+   return SkFontGetWidthForGlyph(font_, glyph);
+ }
+ 
+--- a/third_party/blink/renderer/platform/fonts/font_platform_data.cc
++++ b/third_party/blink/renderer/platform/fonts/font_platform_data.cc
+@@ -33,6 +33,7 @@
+ #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_face.h"
+ #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_font_cache.h"
+ #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_font_data.h"
++#include "third_party/blink/renderer/platform/fonts/windows_text_metrics.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/text/character.h"
+ #include "third_party/blink/renderer/platform/web_test_support.h"
+@@ -274,6 +275,13 @@
+     font.setEdging(SkFont::Edging::kAlias);
+   }
+ 
++  // Phasmid: Windows Chrome positions glyphs at subpixel offsets whenever
++  // text is antialiased (font_platform_data_win.cc), at every device scale
++  // factor, so neither advances nor GPOS offsets are rounded.
++  if (windows_text_metrics::Enabled()) [[unlikely]] {
++    font.setSubpixel(font.getEdging() != SkFont::Edging::kAlias);
++  }
++
+   return font;
+ }
+ #endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_IOS)
+--- a/third_party/blink/renderer/platform/fonts/skia/font_cache_skia.cc
++++ b/third_party/blink/renderer/platform/fonts/skia/font_cache_skia.cc
+@@ -53,6 +53,7 @@
+ #include "third_party/blink/renderer/platform/fonts/font_global_context.h"
+ #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
+ #include "third_party/blink/renderer/platform/fonts/skia/sktypeface_factory.h"
++#include "third_party/blink/renderer/platform/fonts/windows_text_metrics.h"
+ #include "third_party/blink/renderer/platform/language.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+@@ -351,6 +352,15 @@
+        font_description.IsSyntheticBold()) &&
+       font_description.GetFontSynthesisWeight() ==
+           FontDescription::kAutoFontSynthesisWeight;
++  // Phasmid: Windows Chrome emboldens from semi-bold up whenever the face
++  // is not bold (font_cache_skia_win.cc).
++  if (windows_text_metrics::Enabled()) [[unlikely]] {
++    synthetic_bold =
++        ((font_description.Weight() >= kBoldThreshold &&
++          !typeface->isBold()) ||
++         font_description.IsSyntheticBold()) &&
++        font_description.SyntheticBoldAllowed();
++  }
+ 
+   bool synthetic_italic = (((font_description.Style() == kItalicSlopeValue) &&
+                             !typeface->isItalic()) ||
+--- a/third_party/blink/renderer/platform/fonts/shaping/harfbuzz_font_data.h
++++ b/third_party/blink/renderer/platform/fonts/shaping/harfbuzz_font_data.h
+@@ -13,6 +13,7 @@
+ #include "third_party/blink/renderer/platform/fonts/opentype/open_type_vertical_data.h"
+ #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_face.h"
+ #include "third_party/blink/renderer/platform/fonts/shaping/variation_selector_mode.h"
++#include "third_party/blink/renderer/platform/wtf/vector.h"
+ #include "third_party/skia/include/core/SkFont.h"
+ #include "third_party/skia/include/core/SkStrikeRef.h"
+ 
+@@ -53,10 +54,14 @@
+ 
+     // Strikes are based on font data, so if the font changes, we need to reset
+     // the strike data.
+-    if (strike_ref_ && font_ != new_font) {
++    const bool font_changed = font_ != new_font;
++    if (strike_ref_ && font_changed) {
+       strike_ref_ = SkStrikeRef();
+     }
+     font_ = std::move(new_font);
++    if (font_changed) {
++      UpdateWindowsAdvances();
++    }
+ 
+     if (vertical_layout == HarfBuzzFace::kPrepareForVerticalLayout)
+         [[unlikely]] {
+@@ -88,6 +93,18 @@
+     return strike_ref_;
+   }
+ 
++  // Phasmid: for a windows profile the advance callbacks return
++  // DirectWrite's advances: natural advances from `windows_advance_font_`,
++  // rounded or taken from hdmx in GDI-classic mode. Recomputed whenever
++  // `font_` changes.
++  void UpdateWindowsAdvances();
++  SkStrikeRef& EnsureWindowsAdvanceStrikeRef() {
++    if (!windows_advance_strike_ref_) {
++      windows_advance_strike_ref_ = windows_advance_font_.makeStrikeRef();
++    }
++    return windows_advance_strike_ref_;
++  }
++
+   OpenTypeVerticalData* VerticalData() {
+     if (!vertical_data_) {
+       DCHECK_NE(ascent_fallback_, kInvalidFallbackMetricsValue);
+@@ -115,6 +132,14 @@
+   // when `font_` changes. See `UpdateFallbackMetricsAndScale`.
+   SkStrikeRef strike_ref_;
+ 
++  bool windows_advances_ = false;
++  bool gdi_classic_ = false;
++  SkFont windows_advance_font_;
++  SkStrikeRef windows_advance_strike_ref_;
++  // GDI's device widths at the GDI-classic ppem, by glyph; empty without an
++  // hdmx record.
++  Vector<uint8_t> hdmx_widths_;
++
+   // Capture these scaled fallback metrics from FontPlatformData so that a
+   // OpenTypeVerticalData object can be constructed from them when needed.
+   float size_per_unit_;
+--- a/third_party/blink/renderer/platform/fonts/shaping/harfbuzz_face.cc
++++ b/third_party/blink/renderer/platform/fonts/shaping/harfbuzz_face.cc
+@@ -38,6 +38,7 @@
+ 
+ #include <memory>
+ 
++#include "base/compiler_specific.h"
+ #include "base/containers/span.h"
+ #include "base/memory/ptr_util.h"
+ #include "build/build_config.h"
+@@ -53,6 +54,7 @@
+ #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
+ #include "third_party/blink/renderer/platform/fonts/skia/skia_text_metrics.h"
+ #include "third_party/blink/renderer/platform/fonts/unicode_range_set.h"
++#include "third_party/blink/renderer/platform/fonts/windows_text_metrics.h"
+ #include "third_party/blink/renderer/platform/resolution_units.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/text/character.h"
+@@ -238,6 +240,23 @@
+   return HarfBuzzGetGlyph(hb_font, font_data, unicode, 0, glyph, user_data);
+ }
+ 
++void HarfBuzzFontData::UpdateWindowsAdvances() {
++  windows_advance_strike_ref_ = SkStrikeRef();
++  windows_advances_ = windows_text_metrics::Enabled();
++  if (!windows_advances_) [[likely]] {
++    return;
++  }
++  gdi_classic_ = windows_text_metrics::IsGdiClassic(font_);
++  windows_advance_font_ =
++      gdi_classic_ ? windows_text_metrics::GdiClassicAdvanceFont(font_)
++                   : windows_text_metrics::NaturalAdvanceFont(font_);
++  hdmx_widths_.clear();
++  if (gdi_classic_ && font_.getTypeface()) {
++    hdmx_widths_ = windows_text_metrics::HdmxWidths(
++        *font_.getTypeface(), windows_text_metrics::GdiPpem(font_));
++  }
++}
++
+ static hb_position_t HarfBuzzGetGlyphHorizontalAdvance(hb_font_t* hb_font,
+                                                        void* font_data,
+                                                        hb_codepoint_t glyph,
+@@ -245,6 +264,16 @@
+   HarfBuzzFontData* hb_font_data =
+       reinterpret_cast<HarfBuzzFontData*>(font_data);
+   hb_position_t advance = 0;
++  if (hb_font_data->windows_advances_) [[unlikely]] {
++    SkFontGetGlyphWidthForHarfBuzz(
++        hb_font_data->EnsureWindowsAdvanceStrikeRef(),
++        !hb_font_data->gdi_classic_, glyph, &advance);
++    if (glyph < hb_font_data->hdmx_widths_.size()) {
++      advance =
++          SkiaScalarToHarfBuzzPosition(hb_font_data->hdmx_widths_[glyph]);
++    }
++    return advance;
++  }
+   SkFontGetGlyphWidthForHarfBuzz(hb_font_data->EnsureStrikeRef(),
+                                  hb_font_data->font_.isSubpixel(), glyph,
+                                  &advance);
+@@ -264,6 +293,26 @@
+       reinterpret_cast<HarfBuzzFontData*>(font_data);
+   CHECK_EQ(glyph_stride % 4, 0u);
+   CHECK_EQ(advance_stride % 4, 0u);
++  if (hb_font_data->windows_advances_) [[unlikely]] {
++    SkFontGetGlyphWidthForHarfBuzz(
++        hb_font_data->EnsureWindowsAdvanceStrikeRef(),
++        !hb_font_data->gdi_classic_, count, first_glyph, glyph_stride / 4,
++        first_advance, advance_stride / 4);
++    const Vector<uint8_t>& hdmx = hb_font_data->hdmx_widths_;
++    if (!hdmx.empty()) {
++      // SAFETY: as in SkFontGetGlyphWidthForHarfBuzz, HarfBuzz provides
++      // `count` glyphs and advances at these strides.
++      for (unsigned i = 0; i < count; ++i) {
++        const hb_codepoint_t glyph =
++            UNSAFE_BUFFERS(first_glyph[i * (glyph_stride / 4)]);
++        if (glyph < hdmx.size()) {
++          UNSAFE_BUFFERS(first_advance[i * (advance_stride / 4)]) =
++              SkiaScalarToHarfBuzzPosition(hdmx[glyph]);
++        }
++      }
++    }
++    return;
++  }
+   SkFontGetGlyphWidthForHarfBuzz(
+       hb_font_data->EnsureStrikeRef(), hb_font_data->font_.isSubpixel(), count,
+       first_glyph, glyph_stride / 4, first_advance, advance_stride / 4);
+--- a/third_party/blink/renderer/platform/fonts/windows_text_metrics.h
++++ b/third_party/blink/renderer/platform/fonts/windows_text_metrics.h
+@@ -0,0 +1,77 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_WINDOWS_TEXT_METRICS_H_
++#define THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_WINDOWS_TEXT_METRICS_H_
++
++#include <stdint.h>
++
++#include <optional>
++
++#include "third_party/blink/renderer/platform/wtf/vector.h"
++
++class SkFont;
++class SkTypeface;
++
++namespace blink {
++
++// For a profile that claims Windows, text is measured as Windows Chrome
++// measures it through DirectWrite
++// (SkScalerContext_win_dw.cpp at the Skia pin): OS/2 vertical metrics, the
++// GDI line gap, natural (unhinted, linear) advances, and integer advances in
++// DirectWrite's GDI-classic mode. The same font files give the same values.
++namespace windows_text_metrics {
++
++// Whether the profile claims Windows. Without a profile, or for a Linux
++// profile, every caller keeps Chromium's own path.
++bool Enabled();
++
++// DirectWrite's vertical metrics for `font`, in pixels and unrounded: the
++// OS/2 win metrics, or the typo metrics when USE_TYPO_METRICS is set, and
++// the line gap DirectWrite derives from them. nullopt when the font has no
++// usable OS/2 and hhea tables.
++struct VerticalMetrics {
++  float ascent = 0;
++  float descent = 0;
++  float line_gap = 0;
++};
++std::optional<VerticalMetrics> DirectWriteVerticalMetrics(const SkFont& font);
++
++// Whether DirectWrite measures `font` in GDI-classic mode: embedded bitmaps
++// requested and an EBLC strike (or EBSC entry) at the GDI ppem, widened to
++// the gasp range when that range is gridfit-only.
++bool IsGdiClassic(const SkFont& font);
++
++// The font size DirectWrite renders and measures with in GDI modes:
++// round(size * 64) / 64, at least 1.
++float GdiTextSize(float size);
++
++// The ppem DirectWrite picks bitmap strikes and GDI widths at:
++// trunc(GdiTextSize(size)).
++int GdiPpem(const SkFont& font);
++
++// `font` set up so that Skia returns DirectWrite's natural advances, the
++// linear design advances: no embedded bitmaps, no hinting, linear metrics,
++// subpixel.
++SkFont NaturalAdvanceFont(const SkFont& font);
++
++// The advance font for GDI-classic mode, before rounding: NaturalAdvanceFont
++// with the embedded bitmaps kept, so a glyph that has a bitmap in the strike
++// measures with the bitmap's advance (EBDT), as GDI does, and every other
++// glyph with its linear advance.
++SkFont GdiClassicAdvanceFont(const SkFont& font);
++
++// The hdmx device widths of `typeface` at `ppem`, indexed by glyph, or an
++// empty vector when the font has no record for that size. GDI measures with
++// these widths in GDI-classic mode.
++Vector<uint8_t> HdmxWidths(const SkTypeface& typeface, int ppem);
++
++// The advance of one glyph as DirectWrite measures it with `font`.
++float GlyphAdvance(const SkFont& font, uint16_t glyph);
++
++}  // namespace windows_text_metrics
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_WINDOWS_TEXT_METRICS_H_
+--- a/third_party/blink/renderer/platform/fonts/windows_text_metrics.cc
++++ b/third_party/blink/renderer/platform/fonts/windows_text_metrics.cc
+@@ -0,0 +1,274 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "third_party/blink/renderer/platform/fonts/windows_text_metrics.h"
++
++#include <stddef.h>
++
++#include <algorithm>
++
++#include "components/phasmid/profile.h"
++#include "third_party/skia/include/core/SkFont.h"
++#include "third_party/skia/include/core/SkFontTypes.h"
++#include "third_party/skia/include/core/SkScalar.h"
++#include "third_party/skia/include/core/SkTypeface.h"
++#include "third_party/skia/include/core/SkTypes.h"
++
++namespace blink::windows_text_metrics {
++
++namespace {
++
++constexpr SkFontTableTag kOs2Tag = SkSetFourByteTag('O', 'S', '/', '2');
++constexpr SkFontTableTag kHheaTag = SkSetFourByteTag('h', 'h', 'e', 'a');
++constexpr SkFontTableTag kEblcTag = SkSetFourByteTag('E', 'B', 'L', 'C');
++constexpr SkFontTableTag kEbscTag = SkSetFourByteTag('E', 'B', 'S', 'C');
++constexpr SkFontTableTag kGaspTag = SkSetFourByteTag('g', 'a', 's', 'p');
++constexpr SkFontTableTag kHdmxTag = SkSetFourByteTag('h', 'd', 'm', 'x');
++
++// OS/2 fsSelection bit 7.
++constexpr uint16_t kUseTypoMetrics = 1 << 7;
++// EBLC and EBSC version 2.0 (SkOTTable_EBLC.h, SkOTTable_EBSC.h
++// version_initial).
++constexpr uint32_t kBitmapTableVersion = 0x00020000;
++// SkScalerContext_win_dw.cpp has_bitmap_strike and get_gasp_range limits.
++constexpr uint32_t kMaxBitmapSizes = 1024;
++constexpr uint16_t kMaxGaspRanges = 1024;
++// gasp behaviour GASP_GRIDFIT alone (is_gridfit_only).
++constexpr uint16_t kGaspGridfitOnly = 0x0001;
++
++// The first `length` bytes of `tag`, or an empty vector when the table is
++// shorter.
++Vector<uint8_t> ReadTable(const SkTypeface& typeface,
++                          SkFontTableTag tag,
++                          wtf_size_t length) {
++  Vector<uint8_t> data(length);
++  if (!length || typeface.getTableData(tag, 0, length, data.data()) != length) {
++    return {};
++  }
++  return data;
++}
++
++Vector<uint8_t> ReadWholeTable(const SkTypeface& typeface,
++                               SkFontTableTag tag) {
++  const size_t size = typeface.getTableSize(tag);
++  // No table this code reads comes near 16 MB.
++  if (size > (1u << 24)) {
++    return {};
++  }
++  return ReadTable(typeface, tag, static_cast<wtf_size_t>(size));
++}
++
++uint16_t U16(const Vector<uint8_t>& data, wtf_size_t offset) {
++  return static_cast<uint16_t>((data[offset] << 8) | data[offset + 1]);
++}
++
++int16_t S16(const Vector<uint8_t>& data, wtf_size_t offset) {
++  return static_cast<int16_t>(U16(data, offset));
++}
++
++uint32_t U32(const Vector<uint8_t>& data, wtf_size_t offset) {
++  return (static_cast<uint32_t>(U16(data, offset)) << 16) |
++         U16(data, offset + 2);
++}
++
++// get_gasp_range: the gasp range holding `ppem`, as [min, max], and whether
++// its behaviour is gridfit only.
++bool GaspRange(const SkTypeface& typeface,
++               int ppem,
++               int* min,
++               int* max,
++               bool* gridfit_only) {
++  const Vector<uint8_t> gasp = ReadWholeTable(typeface, kGaspTag);
++  if (gasp.size() < 4) {
++    return false;
++  }
++  const uint16_t version = U16(gasp, 0);
++  const uint16_t ranges = U16(gasp, 2);
++  if ((version != 0 && version != 1) || ranges > kMaxGaspRanges ||
++      gasp.size() < 4u + 4u * ranges) {
++    return false;
++  }
++  int min_ppem = -1;
++  for (uint16_t i = 0; i < ranges; ++i) {
++    const int max_ppem = U16(gasp, 4 + 4 * i);
++    if (min_ppem < ppem && ppem <= max_ppem) {
++      *min = min_ppem + 1;
++      *max = max_ppem;
++      *gridfit_only = U16(gasp, 6 + 4 * i) == kGaspGridfitOnly;
++      return true;
++    }
++    min_ppem = max_ppem;
++  }
++  return false;
++}
++
++// has_bitmap_strike: an EBLC strike of at least 4 glyphs with square ppem in
++// [min, max], or, when EBLC has none, an EBSC entry there.
++bool HasBitmapStrike(const SkTypeface& typeface, int min, int max) {
++  // Only the headers and the size tables are read: EBLC's index subtables
++  // can be large.
++  const Vector<uint8_t> eblc_header = ReadTable(typeface, kEblcTag, 8);
++  if (eblc_header.empty() || U32(eblc_header, 0) != kBitmapTableVersion ||
++      U32(eblc_header, 4) > kMaxBitmapSizes) {
++    return false;
++  }
++  // BitmapSizeTable: 48 bytes; startGlyphIndex at 40, endGlyphIndex at 42,
++  // ppemX at 44, ppemY at 45.
++  const uint32_t sizes = U32(eblc_header, 4);
++  const Vector<uint8_t> eblc = ReadTable(typeface, kEblcTag, 8 + 48 * sizes);
++  if (eblc.empty()) {
++    return false;
++  }
++  for (uint32_t i = 0; i < sizes; ++i) {
++    const wtf_size_t table = 8 + 48 * i;
++    const int ppem_x = eblc[table + 44];
++    if (ppem_x == eblc[table + 45] && min <= ppem_x && ppem_x <= max &&
++        U16(eblc, table + 42) >= U16(eblc, table + 40) + 3) {
++      return true;
++    }
++  }
++  const Vector<uint8_t> ebsc_header = ReadTable(typeface, kEbscTag, 8);
++  if (ebsc_header.empty() || U32(ebsc_header, 0) != kBitmapTableVersion ||
++      U32(ebsc_header, 4) > kMaxBitmapSizes) {
++    return false;
++  }
++  // BitmapScaleTable: 28 bytes; ppemX at 24, ppemY at 25.
++  const uint32_t scales = U32(ebsc_header, 4);
++  const Vector<uint8_t> ebsc = ReadTable(typeface, kEbscTag, 8 + 28 * scales);
++  if (ebsc.empty()) {
++    return false;
++  }
++  for (uint32_t i = 0; i < scales; ++i) {
++    const wtf_size_t table = 8 + 28 * i;
++    const int ppem_x = ebsc[table + 24];
++    if (ppem_x == ebsc[table + 25] && min <= ppem_x && ppem_x <= max) {
++      return true;
++    }
++  }
++  return false;
++}
++
++}  // namespace
++
++bool Enabled() {
++  return phasmid::ClaimsWindows();
++}
++
++float GdiTextSize(float size) {
++  const float gdi = SkScalarRoundToScalar(size * 64.0f) / 64.0f;
++  return gdi == 0 ? SK_Scalar1 : gdi;
++}
++
++int GdiPpem(const SkFont& font) {
++  return SkScalarTruncToInt(GdiTextSize(font.getSize()));
++}
++
++bool IsGdiClassic(const SkFont& font) {
++  const SkTypeface* typeface = font.getTypeface();
++  if (!typeface || !font.isEmbeddedBitmaps()) {
++    return false;
++  }
++  const int ppem = GdiPpem(font);
++  int min = ppem;
++  int max = ppem;
++  bool gridfit_only = false;
++  if (!GaspRange(*typeface, ppem, &min, &max, &gridfit_only) ||
++      !gridfit_only) {
++    min = max = ppem;
++  }
++  return HasBitmapStrike(*typeface, min, max);
++}
++
++std::optional<VerticalMetrics> DirectWriteVerticalMetrics(const SkFont& font) {
++  const SkTypeface* typeface = font.getTypeface();
++  if (!typeface) {
++    return std::nullopt;
++  }
++  const int upem = typeface->getUnitsPerEm();
++  // OS/2 up to usWinDescent (offset 76), hhea up to lineGap (offset 8).
++  const Vector<uint8_t> os2 = ReadTable(*typeface, kOs2Tag, 78);
++  const Vector<uint8_t> hhea = ReadTable(*typeface, kHheaTag, 10);
++  if (upem <= 0 || os2.empty() || hhea.empty()) {
++    return std::nullopt;
++  }
++  int ascent;
++  int descent;
++  int line_gap;
++  if (U16(os2, 62) & kUseTypoMetrics) {
++    ascent = S16(os2, 68);
++    descent = -S16(os2, 70);
++    line_gap = S16(os2, 72);
++  } else {
++    // GDI's external leading: what hhea spaces lines by beyond the win
++    // ascent and descent.
++    ascent = U16(os2, 74);
++    descent = U16(os2, 76);
++    line_gap = std::max(0, S16(hhea, 4) - S16(hhea, 6) + S16(hhea, 8) -
++                               ascent - descent);
++  }
++  const float size =
++      IsGdiClassic(font) ? GdiTextSize(font.getSize()) : font.getSize();
++  return VerticalMetrics{size * ascent / upem, size * descent / upem,
++                         size * line_gap / upem};
++}
++
++SkFont NaturalAdvanceFont(const SkFont& font) {
++  SkFont natural(font);
++  natural.setEmbeddedBitmaps(false);
++  natural.setHinting(SkFontHinting::kNone);
++  natural.setLinearMetrics(true);
++  natural.setSubpixel(true);
++  return natural;
++}
++
++SkFont GdiClassicAdvanceFont(const SkFont& font) {
++  SkFont gdi_classic = NaturalAdvanceFont(font);
++  gdi_classic.setEmbeddedBitmaps(true);
++  return gdi_classic;
++}
++
++Vector<uint8_t> HdmxWidths(const SkTypeface& typeface, int ppem) {
++  const Vector<uint8_t> hdmx = ReadWholeTable(typeface, kHdmxTag);
++  const int glyphs = typeface.countGlyphs();
++  if (hdmx.size() < 8 || U16(hdmx, 0) != 0 || glyphs <= 0) {
++    return {};
++  }
++  const int records = S16(hdmx, 2);
++  const uint32_t record_size = U32(hdmx, 4);
++  const wtf_size_t glyph_count = static_cast<wtf_size_t>(glyphs);
++  if (records <= 0 || record_size < 2 + glyph_count) {
++    return {};
++  }
++  const uint64_t records_end =
++      8 + uint64_t{record_size} * static_cast<uint32_t>(records);
++  if (hdmx.size() < records_end) {
++    return {};
++  }
++  for (int i = 0; i < records; ++i) {
++    const wtf_size_t record = 8 + record_size * static_cast<uint32_t>(i);
++    if (hdmx[record] == ppem) {
++      Vector<uint8_t> widths;
++      widths.reserve(glyph_count);
++      for (wtf_size_t glyph = 0; glyph < glyph_count; ++glyph) {
++        widths.push_back(hdmx[record + 2 + glyph]);
++      }
++      return widths;
++    }
++  }
++  return {};
++}
++
++float GlyphAdvance(const SkFont& font, uint16_t glyph) {
++  if (!IsGdiClassic(font)) {
++    return NaturalAdvanceFont(font).getWidth(glyph);
++  }
++  const SkTypeface* typeface = font.getTypeface();
++  const Vector<uint8_t> hdmx = HdmxWidths(*typeface, GdiPpem(font));
++  return wtf_size_t{glyph} < hdmx.size()
++             ? hdmx[glyph]
++             : SkScalarRoundToScalar(
++                   GdiClassicAdvanceFont(font).getWidth(glyph));
++}
++
++}  // namespace blink::windows_text_metrics
+--- a/third_party/blink/renderer/platform/BUILD.gn
++++ b/third_party/blink/renderer/platform/BUILD.gn
+@@ -841,6 +841,8 @@
+     "fonts/web_font_render_style.cc",
+     "fonts/web_font_typeface_factory.cc",
+     "fonts/web_font_typeface_factory.h",
++    "fonts/windows_text_metrics.cc",
++    "fonts/windows_text_metrics.h",
+     "geometry/blend.h",
+     "geometry/calculation_expression_node.cc",
+     "geometry/calculation_expression_node.h",
