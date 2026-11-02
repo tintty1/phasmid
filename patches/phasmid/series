@@ -90,3 +90,6 @@ graphics/webgl-caveat.patch
 platform/webauthn.patch
 platform/bluetooth-share.patch
 platform/battery.patch
+
+# Graphics group: headless renders on the host GPU
+graphics/headless-gpu.patch

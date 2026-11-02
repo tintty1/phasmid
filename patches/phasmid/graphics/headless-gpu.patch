@@ -1,0 +1,63 @@
+Phasmid: headless renders on the host GPU
+
+What:     With a profile, headless mode does not append
+          --use-angle=swiftshader-webgl, so the GPU process renders on the
+          host's hardware ANGLE backend as headful does (as stock headless
+          does with --enable-gpu). A host without a usable GPU falls back to
+          SwiftShader as stock does. An explicit --use-gl, --use-angle or
+          --enable-gpu still wins.
+Why:      Stock headless forces SwiftShader WebGL, so WebGL extensions,
+          readPixels and GPU-rastered canvas output differ from headful.
+Profile:  none (active whenever --phasmid-profile is given; the profile is
+          loaded later)
+Hooks:    chrome/browser/headless/headless_mode_init.cc
+          (HeadlessModeHandleImpl::SetUpCommandLine);
+          chrome/browser/headless/BUILD.gn, DEPS
+Contexts: main, iframe, worker, shared worker, service worker, offscreen
+          (one GPU process serves them all)
+Guard:    tests/guards/graphics/webgl-fallback.py
+
+--- a/chrome/browser/headless/headless_mode_init.cc
++++ b/chrome/browser/headless/headless_mode_init.cc
+@@ -22,6 +22,7 @@
+ #include "chrome/browser/headless/headless_mode_switches.h"
+ #include "chrome/common/chrome_paths_internal.h"
+ #include "chrome/common/chrome_switches.h"
++#include "components/phasmid/switches.h"
+ #include "content/public/common/content_switches.h"
+ 
+ #if BUILDFLAG(IS_LINUX)
+@@ -105,9 +106,12 @@
+ 
+     // If Ozone/Headless is enabled, Vulkan initialization crashes unless
+     // Angle implementation is specified explicitly.
++    // Phasmid: with a profile, headless renders on the host GPU as headful
++    // does, as if --enable-gpu were given.
+     if (!command_line.HasSwitch(switches::kUseGL) &&
+         !command_line.HasSwitch(switches::kUseANGLE) &&
+-        !command_line.HasSwitch(switches::kEnableGPU)) {
++        !command_line.HasSwitch(switches::kEnableGPU) &&
++        !command_line.HasSwitch(phasmid::switches::kPhasmidProfile)) {
+       command_line.AppendSwitchASCII(
+           switches::kUseANGLE, gl::kANGLEImplementationSwiftShaderForWebGLName);
+     }
+--- a/chrome/browser/headless/BUILD.gn
++++ b/chrome/browser/headless/BUILD.gn
+@@ -39,6 +39,7 @@
+     "//base",
+     "//chrome/common:constants",
+     "//chrome/common:non_code_constants",
++    "//components/phasmid",
+     "//content/public/common",
+     "//ui/gfx",
+   ]
+--- a/chrome/browser/headless/DEPS
++++ b/chrome/browser/headless/DEPS
+@@ -2,6 +2,7 @@
+   "-chrome/browser",
+   "+chrome/browser/headless",
+   "+components/headless",
++  "+components/phasmid",
+ ]
+ 
+ specific_include_rules = {
