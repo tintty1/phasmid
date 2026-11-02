@@ -1,0 +1,57 @@
+Phasmid: automation signals
+
+What:     With a profile, navigator.webdriver is false under
+          --enable-automation, --headless, --remote-debugging-pipe and
+          --remote-debugging-port=0, and the automation infobar is not shown.
+          Other startup infobars stay suppressed, as in stock.
+Why:      navigator.webdriver and the infobar's viewport shrink reveal how
+          the browser was launched.
+Profile:  none (applies whenever a profile is active)
+Hooks:    content/child/runtime_features.cc SetRuntimeFeaturesFromCommandLine;
+          chrome/browser/ui/startup/infobar_utils.cc AddInfoBarsIfNecessary
+Contexts: main, iframe; workers have no navigator.webdriver
+Guard:    tests/guards/automation/signals.py
+
+--- a/content/child/runtime_features.cc
++++ b/content/child/runtime_features.cc
+@@ -20,6 +20,7 @@
+ #include "cc/base/features.h"
+ #include "components/attribution_reporting/features.h"
+ #include "components/content_settings/core/common/features.h"
++#include "components/phasmid/profile.h"
+ #include "content/common/content_navigation_policy.h"
+ #include "content/common/content_switches_internal.h"
+ #include "content/common/features.h"
+@@ -402,6 +403,12 @@
+       WebRuntimeFeatures::EnableAutomationControlled(true);
+     }
+   }
++
++  // Phasmid: the switches above describe how the browser was launched, not
++  // the device.
++  if (phasmid::Profile::Get()) {
++    WebRuntimeFeatures::EnableAutomationControlled(false);
++  }
+ }
+ 
+ // Sets blink runtime features that depend on a combination
+--- a/chrome/browser/ui/startup/infobar_utils.cc
++++ b/chrome/browser/ui/startup/infobar_utils.cc
+@@ -37,6 +37,7 @@
+ #include "components/infobars/content/content_infobar_manager.h"
+ #include "components/os_crypt/async/browser/os_crypt_async.h"
+ #include "components/os_crypt/async/common/encryptor.h"
++#include "components/phasmid/profile.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "content/public/common/content_switches.h"
+@@ -195,7 +196,8 @@
+     }
+ #endif
+ 
+-    if (IsAutomationEnabled()) {
++    // Phasmid: the automation infobar shrinks the viewport.
++    if (IsAutomationEnabled() && !phasmid::Profile::Get()) {
+       if (infobars::IsInfoBarMigrated(
+               infobars::InfoBarDelegate::AUTOMATION_INFOBAR_DELEGATE)) {
+         infobars::BrowserInfoBarManager::From(g_browser_process)

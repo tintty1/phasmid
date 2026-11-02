@@ -25,3 +25,6 @@ identity/user-agent.patch
 
 # Display group
 display/screen-window.patch
+
+# Automation
+automation/signals.patch
