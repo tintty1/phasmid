@@ -1,0 +1,137 @@
+Phasmid: fingerprint inspector, Intl
+
+What:     With the category disabled-by-default-phasmid.fingerprint in a
+          tracing session, resolvedOptions() of Intl.DateTimeFormat,
+          NumberFormat, Collator, PluralRules, RelativeTimeFormat and
+          ListFormat emits an event with the resolved locale, calendar,
+          numberingSystem, timeZone and other string fields, read with
+          GetDataProperty so no getter or trap runs. Off, the cost is one
+          relaxed atomic load per call.
+Why:      Intl is a V8 builtin, not a Web API binding, so the bindings trace
+          cannot see the locale and time zone probes that go through it.
+Profile:  none
+Hooks:    v8/src/builtins/builtins-intl.cc *PrototypeResolvedOptions
+Contexts: main, iframe, worker, shared worker, service worker
+Guard:    tests/guards/devtools/fingerprint-trace.py
+
+--- a/v8/src/builtins/builtins-intl.cc
++++ b/v8/src/builtins/builtins-intl.cc
+@@ -35,11 +35,39 @@
+ #include "src/objects/option-utils.h"
+ #include "src/objects/property-descriptor.h"
+ #include "src/objects/smi.h"
++#include "src/tracing/trace-event.h"
+ #include "unicode/brkiter.h"
+ 
+ namespace v8 {
+ namespace internal {
+ 
++namespace {
++
++// Phasmid fingerprint inspector: one event per resolvedOptions() call. Read
++// with GetDataProperty, so no getter or proxy trap can run.
++void PhasmidTraceResolvedOptions(Isolate* isolate, const char* api,
++                                 DirectHandle<JSObject> options) {
++#if defined(V8_USE_PERFETTO)
++  if (!TrackEvent::IsEnabled()) return;
++  perfetto::DynamicCategory category{"disabled-by-default-phasmid.fingerprint"};
++  if (!TRACE_EVENT_CATEGORY_ENABLED(category)) return;
++  TRACE_EVENT_INSTANT(
++      category, perfetto::StaticString(api), [&](perfetto::EventContext ctx) {
++        for (const char* key :
++             {"locale", "calendar", "numberingSystem", "timeZone", "hourCycle",
++              "collation", "usage", "sensitivity", "type", "style"}) {
++          DirectHandle<Object> value = JSReceiver::GetDataProperty(
++              isolate, options, isolate->factory()->InternalizeUtf8String(key));
++          if (IsString(*value)) {
++            ctx.AddDebugAnnotation(key, Cast<String>(*value)->ToStdString());
++          }
++        }
++      });
++#endif  // defined(V8_USE_PERFETTO)
++}
++
++}  // namespace
++
+ // https://tc39.es/ecma262/#sec-string.prototype.touppercase
+ BUILTIN(StringPrototypeToUpperCaseIntl) {
+   HandleScope scope(isolate);
+@@ -141,8 +169,12 @@
+       isolate, date_time_format,
+       JSDateTimeFormat::UnwrapDateTimeFormat(isolate, format_holder));
+ 
+-  RETURN_RESULT_OR_FAILURE(
+-      isolate, JSDateTimeFormat::ResolvedOptions(isolate, date_time_format));
++  DirectHandle<JSObject> options;
++  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
++      isolate, options,
++      JSDateTimeFormat::ResolvedOptions(isolate, date_time_format));
++  PhasmidTraceResolvedOptions(isolate, method_name, options);
++  return *options;
+ }
+ 
+ // https://tc39.es/ecma402/#sec-intl.datetimeformat.supportedlocalesof
+@@ -507,7 +539,10 @@
+       isolate, number_format,
+       JSNumberFormat::UnwrapNumberFormat(isolate, number_format_holder));
+ 
+-  return *JSNumberFormat::ResolvedOptions(isolate, number_format);
++  DirectHandle<JSObject> options =
++      JSNumberFormat::ResolvedOptions(isolate, number_format);
++  PhasmidTraceResolvedOptions(isolate, method_name, options);
++  return *options;
+ }
+ 
+ // https://tc39.es/ecma402/#sec-intl.numberformat.prototype.format
+@@ -707,7 +742,11 @@
+   HandleScope scope(isolate);
+   CHECK_RECEIVER(JSListFormat, format_holder,
+                  "Intl.ListFormat.prototype.resolvedOptions");
+-  return *JSListFormat::ResolvedOptions(isolate, format_holder);
++  DirectHandle<JSObject> options =
++      JSListFormat::ResolvedOptions(isolate, format_holder);
++  PhasmidTraceResolvedOptions(
++      isolate, "Intl.ListFormat.prototype.resolvedOptions", options);
++  return *options;
+ }
+ 
+ // https://tc39.es/ecma402/#sec-intl.ListFormat.supportedlocalesof
+@@ -1016,7 +1055,11 @@
+   HandleScope scope(isolate);
+   CHECK_RECEIVER(JSRelativeTimeFormat, format_holder,
+                  "Intl.RelativeTimeFormat.prototype.resolvedOptions");
+-  return *JSRelativeTimeFormat::ResolvedOptions(isolate, format_holder);
++  DirectHandle<JSObject> options =
++      JSRelativeTimeFormat::ResolvedOptions(isolate, format_holder);
++  PhasmidTraceResolvedOptions(
++      isolate, "Intl.RelativeTimeFormat.prototype.resolvedOptions", options);
++  return *options;
+ }
+ 
+ bool IsFastLocale(Tagged<Object> maybe_locale) {
+@@ -1069,7 +1112,11 @@
+   HandleScope scope(isolate);
+   CHECK_RECEIVER(JSPluralRules, plural_rules_holder,
+                  "Intl.PluralRules.prototype.resolvedOptions");
+-  return *JSPluralRules::ResolvedOptions(isolate, plural_rules_holder);
++  DirectHandle<JSObject> options =
++      JSPluralRules::ResolvedOptions(isolate, plural_rules_holder);
++  PhasmidTraceResolvedOptions(
++      isolate, "Intl.PluralRules.prototype.resolvedOptions", options);
++  return *options;
+ }
+ 
+ // https://tc39.es/ecma402/#sec-intl.pluralrules.prototype.select
+@@ -1169,7 +1216,11 @@
+   HandleScope scope(isolate);
+   CHECK_RECEIVER(JSCollator, collator_holder,
+                  "Intl.Collator.prototype.resolvedOptions");
+-  return *JSCollator::ResolvedOptions(isolate, collator_holder);
++  DirectHandle<JSObject> options =
++      JSCollator::ResolvedOptions(isolate, collator_holder);
++  PhasmidTraceResolvedOptions(
++      isolate, "Intl.Collator.prototype.resolvedOptions", options);
++  return *options;
+ }
+ 
+ // https://tc39.es/ecma402/#sec-intl.collator.supportedlocalesof

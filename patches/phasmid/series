@@ -99,3 +99,4 @@ locale/geolocation.patch
 
 # DevTools: fingerprint inspector (bindings trace; CSS, fonts and Intl)
 devtools/fingerprint-trace.patch
+devtools/fingerprint-trace-intl.patch
