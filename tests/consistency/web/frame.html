@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="/probe.js"></script>
+<script>
+// An iframe (same- or cross-origin) runs the full window probe and posts the
+// result to its parent. The hash names the slot it fills.
+(async () => {
+  const slot = location.hash.slice(1) || "iframe";
+  let result;
+  try {
+    result = await self.__phasmidProbe({ slot });
+  } catch (e) {
+    result = { error: String(e && e.stack || e) };
+  }
+  try { await fetch("/h/fetch-" + slot + location.search, { cache: "no-store" }); } catch (e) { result.fetchError = String(e); }
+  parent.postMessage({ phasmid: true, slot, result }, "*");
+})();
+</script>
+</head>
+<body><span>frame</span></body>
+</html>

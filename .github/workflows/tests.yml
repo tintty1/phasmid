@@ -1,0 +1,111 @@
+# Phasmid test pipeline.
+#
+# Jobs:
+#   static    seconds   patch headers, disabled-upstream reasons, schema, profiles, harness unit tests
+#   harness   minutes   consistency dump of stock Chrome on the runner (the oracle), end-to-end harness test
+#   gate      -         the single required status: "All tests passed"
+#
+# Fork pull requests run under plain `pull_request` with no secrets; nothing
+# here needs any.
+
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # test_schema_fields_are_never_deleted compares against HEAD
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: tests/uv.lock
+      - name: Install
+        working-directory: tests
+        run: uv sync --frozen
+      - name: Static tier and harness unit tests
+        working-directory: tests
+        run: uv run pytest -q static test_consistency_harness.py --junitxml=out/static.xml
+      - name: Upstream validate_config
+        run: python3 devutils/validate_config.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-static
+          path: tests/out/*.xml
+          if-no-files-found: error
+
+  harness:
+    name: harness (stock Chrome)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: tests/uv.lock
+      - name: Install
+        working-directory: tests
+        run: |
+          uv sync --frozen
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
+      - name: Resolve stock Chrome
+        id: chrome
+        run: |
+          echo "binary=$(command -v google-chrome-stable || command -v google-chrome)" >> "$GITHUB_OUTPUT"
+          google-chrome --version
+      - name: Dump stock Chrome, headless and headful
+        working-directory: tests
+        env:
+          PHASMID_BINARY: ${{ steps.chrome.outputs.binary }}
+        run: |
+          mkdir -p out
+          uv run python -m consistency dump --binary "$PHASMID_BINARY" -o out/stock-headless.json
+          xvfb-run -a -s "-screen 0 1920x1080x24" \
+            uv run python -m consistency dump --binary "$PHASMID_BINARY" --headful --baseline out/stock-headless.json -o out/stock-headful.json
+      - name: End-to-end harness test
+        working-directory: tests
+        env:
+          PHASMID_BINARY: ${{ steps.chrome.outputs.binary }}
+        run: uv run pytest -q test_consistency_harness.py -k end_to_end --junitxml=out/harness.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-harness
+          path: |
+            tests/out/*.json
+            tests/out/*.xml
+          if-no-files-found: error
+
+  gate:
+    name: All tests passed
+    runs-on: ubuntu-24.04
+    if: always()
+    needs: [static, harness]
+    steps:
+      - name: Every job must have succeeded (skipped counts as failed)
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          echo "$RESULTS" | python3 -c 'import json,sys; r=json.load(sys.stdin); bad=[k for k,v in r.items() if v["result"]!="success"]; sys.exit(f"failed or skipped: {bad}" if bad else 0)'

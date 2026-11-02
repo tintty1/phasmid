@@ -1,0 +1,425 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Phasmid capture</title>
+<script src="/probe.js"></script>
+<script src="/dispatch.js" data-manual></script>
+<style>
+/* Styles stay on #ui: the probe reads the body's computed defaults. */
+#ui { max-width: 860px; margin: 0 auto; padding: 16px; font: 14px/1.45 system-ui, sans-serif; }
+#ui h1 { font-size: 20px; margin: 0 0 4px; }
+#ui h2 { font-size: 15px; margin: 20px 0 6px; }
+#ui p, #ui li { margin: 4px 0; }
+#ui label { display: block; margin: 10px 0 2px; font-weight: 600; }
+#ui input[type=text], #ui input[type=number], #ui textarea { box-sizing: border-box; width: 100%; font: 13px ui-monospace, monospace; padding: 4px 6px; }
+#ui textarea { resize: vertical; }
+#ui code { font: 12px ui-monospace, monospace; background: rgba(127, 127, 127, 0.15); padding: 1px 4px; border-radius: 3px; }
+#ui .hint { font-size: 12px; opacity: 0.8; }
+#ui .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+#ui button { font: inherit; padding: 6px 18px; }
+#ui summary { cursor: pointer; font-weight: 600; margin-top: 16px; }
+#ui .warn { border-left: 3px solid #c80; padding: 2px 8px; margin: 4px 0; }
+#ui .ok { border-left: 3px solid #393; padding: 2px 8px; margin: 4px 0; }
+#ui table { border-collapse: collapse; font-size: 13px; }
+#ui td { padding: 1px 12px 1px 0; vertical-align: top; }
+#ui td:first-child { opacity: 0.75; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h1>Phasmid capture</h1>
+  <p>Records what this browser reports to pages, from the page, same- and cross-origin iframes, and dedicated, shared and service workers. Use a normal window at its usual size, page zoom 100%, DevTools closed. Opened through the link <code>consistency collect</code> prints, it runs and sends the dump by itself; served by any other web server on this machine (<code>http://127.0.0.1</code> or <code>localhost</code>), click Run.</p>
+
+  <div class="row">
+    <button id="run">Run</button>
+    <button id="show" disabled>Show</button>
+    <button id="download" disabled>Download</button>
+    <span id="status"></span>
+  </div>
+
+  <div id="result" hidden>
+    <h2>Checks</h2>
+    <div id="checks"></div>
+    <h2>Summary</h2>
+    <table id="summary"></table>
+  </div>
+
+  <div id="dump" hidden>
+    <h2>Dump</h2>
+    <div class="row"><button id="copy">Copy</button><span id="copied"></span></div>
+    <textarea id="out" rows="16" readonly spellcheck="false"></textarea>
+  </div>
+
+  <details id="facts">
+    <summary>Optional: facts a page cannot read, for turning a Chrome dump into a Phasmid profile</summary>
+    <p class="hint">Fill these before Run and they travel in the dump; <code>consistency capture</code> also takes them as flags later.</p>
+    <label for="gpuFile">chrome://gpu report (<b>Download Report to File</b> there): GPU PCI IDs and driver version</label>
+    <input type="file" id="gpuFile" accept=".txt,text/plain">
+    <textarea id="gpuText" rows="3" placeholder="…or paste the report here"></textarea>
+    <div id="gpuParsed" class="hint"></div>
+    <label for="osVersion">OS marketing version</label>
+    <input type="text" id="osVersion" placeholder="11, 15.1, 24.04, arch">
+    <div class="hint" id="osHint"></div>
+    <label for="memMb">Physical memory (MB)</label>
+    <input type="number" id="memMb" min="1024" step="1">
+    <div class="hint" id="memHint"></div>
+    <label for="diskBytes">Total size of the disk holding the browser profile (bytes)</label>
+    <input type="number" id="diskBytes" min="1073741824" step="1">
+    <div class="hint" id="diskHint"></div>
+    <label for="note">Note</label>
+    <input type="text" id="note" placeholder="e.g. Dell XPS 15 9520, internal display">
+  </details>
+</div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const ua = navigator.userAgent;
+  const uaData = navigator.userAgentData;
+  const brandNames = ((uaData && uaData.brands) || []).map((b) => b.brand);
+
+  // ---------- this browser and OS ----------
+
+  const platform = (uaData && uaData.platform) || navigator.platform || "";
+  const family = /^Win/.test(platform) ? "windows"
+    : /iPhone|iPad/.test(ua) ? "ios"
+    : /Android/.test(ua) ? "android"
+    : /^Mac/i.test(platform) ? "macos"
+    : "linux";
+
+  function browserName() {
+    if (/Firefox\//.test(ua)) return "firefox";
+    if (brandNames.includes("Microsoft Edge")) return "edge";
+    if (brandNames.includes("Opera") || /OPR\//.test(ua)) return "opera";
+    if (navigator.brave) return "brave";
+    if (brandNames.includes("Google Chrome")) return "chrome";
+    if (brandNames.length || /Chrome\//.test(ua)) return "chromium";
+    if (/Safari\//.test(ua)) return "safari";
+    return "unknown";
+  }
+
+  // Full version from the page: fullVersionList on Chromium browsers, the
+  // UA string elsewhere.
+  async function browserVersion() {
+    if (uaData && uaData.getHighEntropyValues) {
+      try {
+        const { fullVersionList } = await uaData.getHighEntropyValues(["fullVersionList"]);
+        const real = (fullVersionList || []).filter((b) => !/Not.?A.?Brand/i.test(b.brand));
+        const pick = real.find((b) => b.brand !== "Chromium") || real[0];
+        if (pick) return `${pick.brand} ${pick.version}`;
+      } catch (e) {
+        // Fall through to the UA string.
+      }
+    }
+    const m = ua.match(/Firefox\/([\d.]+)/) || ua.match(/Version\/([\d.]+).*Safari/) || ua.match(/Chrome\/([\d.]+)/);
+    const name = { firefox: "Firefox", safari: "Safari" }[browserName()] || "Chromium";
+    return m ? `${name} ${m[1]}` : ua;
+  }
+
+  // The second origin for the cross-origin iframe: 127.0.0.1 and localhost are
+  // different sites served by the same server.
+  function crossOrigin() {
+    const given = new URLSearchParams(location.search).get("cross");
+    if (given) return given;
+    const alt = { "127.0.0.1": "localhost", "localhost": "127.0.0.1" }[location.hostname];
+    return alt ? `${location.protocol}//${alt}${location.port ? ":" + location.port : ""}` : null;
+  }
+
+  // ---------- chrome://gpu report ----------
+
+  // "Title\n=====" sections of "Key   : value" lines.
+  function reportSections(text) {
+    const sections = {};
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    let current = null;
+    for (let i = 0; i < lines.length; i++) {
+      if (/^=+$/.test(lines[i + 1] || "") && lines[i].trim()) { current = sections[lines[i].trim()] = []; i++; continue; }
+      if (current) current.push(lines[i]);
+    }
+    return sections;
+  }
+
+  function keyValues(lines) {
+    const out = {};
+    for (const line of lines || []) {
+      const m = line.match(/^([^:*][^:]*?)\s*:\s?(.*)$/);
+      if (m) out[m[1].trim()] = m[2].trim();
+    }
+    return out;
+  }
+
+  function parseGpuLine(line) {
+    const field = (re) => { const m = line.match(re); return m ? m[1].trim() : ""; };
+    const hex = (re) => { const m = line.match(re); return m ? parseInt(m[1], 16) : 0; };
+    return {
+      vendorId: hex(/(?:^|[\s,])VENDOR\s*=\s*0x([0-9a-f]+)/i),
+      deviceId: hex(/(?:^|[\s,])DEVICE\s*=\s*0x([0-9a-f]+)/i),
+      vendorString: field(/(?:^|[\s,])VENDOR\s*=\s*0x[0-9a-f]+\s*\[([^\]]*)\]/i),
+      deviceString: field(/(?:^|[\s,])DEVICE\s*=\s*0x[0-9a-f]+\s*\[([^\]]*)\]/i),
+      driverVendor: field(/DRIVER_VENDOR\s*=\s*([^,*]*)/i),
+      driverVersion: field(/DRIVER_VERSION\s*=\s*([^,*]*)/i),
+      active: /\*ACTIVE\*/.test(line),
+    };
+  }
+
+  // The parts of the report that describe the device, in the shape of CDP
+  // SystemInfo.getInfo, which capture reads. No command line (it holds local
+  // paths), no log messages, no per-feature workaround lists.
+  function parseReport(text) {
+    const s = reportSections(text);
+    const version = keyValues(s["Version Information"]);
+    delete version["Command Line"];
+    const driver = keyValues(s["Driver Information"]);
+    const devices = Object.keys(driver).filter((k) => /^GPU\d+$/.test(k)).map((k) => parseGpuLine(driver[k]));
+    if (!devices.length) return null;
+    devices.sort((a, b) => b.active - a.active);
+    const aux = {};
+    for (const [key, auxKey] of [["GL_VENDOR", "glVendor"], ["GL_RENDERER", "glRenderer"], ["GL_VERSION", "glVersion"], ["GL implementation parts", "glImplementationParts"], ["Display type", "displayType"], ["Optimus", "optimus"], ["AMD switchable", "amdSwitchable"]]) {
+      if (driver[key] !== undefined) aux[auxKey] = driver[key];
+    }
+    const keep = (name) => (s[name] || []).map((l) => l.trimEnd()).filter(Boolean);
+    return {
+      system_info: { gpu: { devices: devices.map(({ active, ...d }) => d), auxAttributes: aux }, source: "chrome://gpu report" },
+      gpu_report: {
+        version_information: version,
+        driver_information: driver,
+        graphics_feature_status: keep("Graphics Feature Status"),
+        video_acceleration_information: keep("Video Acceleration Information"),
+      },
+    };
+  }
+
+  const hex4 = (n) => "0x" + n.toString(16).padStart(4, "0");
+  let report = null;
+  function setReport(text) {
+    report = text.trim() ? parseReport(text) : null;
+    const el = $("gpuParsed");
+    if (!text.trim()) { el.textContent = ""; return; }
+    if (!report) { el.textContent = "No GPU lines found; is this the chrome://gpu report?"; return; }
+    const d = report.system_info.gpu.devices[0];
+    el.textContent = `Active GPU: ${hex4(d.vendorId)}:${hex4(d.deviceId)} ${d.deviceString}, driver ${d.driverVendor} ${d.driverVersion}`;
+  }
+  $("gpuText").addEventListener("input", () => setReport($("gpuText").value));
+  $("gpuFile").addEventListener("change", async () => {
+    const f = $("gpuFile").files[0];
+    if (!f) return;
+    $("gpuText").value = await f.text();
+    setReport($("gpuText").value);
+  });
+
+  // ---------- per-OS hints ----------
+
+  const hints = {
+    windows: {
+      os: "Windows 10 or 11, as winver shows.",
+      mem: "PowerShell: <code>[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1MB)</code>",
+      disk: "PowerShell: <code>(Get-Volume -DriveLetter $env:SystemDrive[0]).Size</code>",
+    },
+    linux: {
+      os: "Distribution version, e.g. <code>. /etc/os-release; echo ${VERSION_ID:-$ID}</code>",
+      mem: "<code>free -m | awk '/^Mem:/ {print $2}'</code>",
+      disk: "<code>df -B1 --output=size ~ | tail -1</code>",
+    },
+  }[family];
+  if (hints) {
+    $("osHint").innerHTML = hints.os;
+    $("memHint").innerHTML = hints.mem;
+    $("diskHint").innerHTML = hints.disk;
+  }
+  if (uaData && uaData.getHighEntropyValues) {
+    uaData.getHighEntropyValues(["platformVersion"]).then(({ platformVersion }) => {
+      if ($("osVersion").value || !platformVersion) return;
+      const major = Number(platformVersion.split(".")[0]);
+      if (family === "windows") $("osVersion").value = major >= 13 ? "11" : "10";
+    }, () => {});
+  }
+
+  // ---------- checks and summary ----------
+
+  function checks(dump) {
+    const out = [];
+    const warn = (t) => out.push(["warn", t]);
+    const main = dump.contexts.main || {};
+    const nav = main.navigator || {};
+    if (location.protocol === "file:") warn("Opened as a file: browsers report some values differently there (Chrome bucketizes performance.memory), and workers cannot load. Serve it over http.");
+    else if (!isSecureContext) warn(`${location.origin} is not a secure context, so userAgentData, deviceMemory, WebGPU and hashing are missing. Open it over https, or on 127.0.0.1 or localhost.`);
+    if (dump.harness.embedded) warn("Embedded in another page: the window size is the iframe's, and a cross-origin embed changes permissions, DRM, WebGL powerPreference and screen.isExtended (Chrome) or noises canvas (Firefox, cross-site). Open it as the top-level page to capture.");
+    if (family !== "windows" && family !== "linux") warn(`Phasmid profiles claim Windows or Linux only, so this ${family} dump cannot become a profile.`);
+    if (nav.webdriver) warn("navigator.webdriver is true: this browser is under automation.");
+    const renderer = (main.webgl && main.webgl.unmaskedRenderer) || "";
+    if (!renderer) warn("No WebGL renderer string.");
+    else if (/SwiftShader|llvmpipe|softpipe|Basic Render|Software Renderer/i.test(renderer)) warn(`WebGL runs on a software renderer (${renderer}): hardware acceleration is off, so this is not the machine's GPU.`);
+    if (report) {
+      const aux = report.system_info.gpu.auxAttributes;
+      // WebGL drops the driver version chrome://gpu keeps; vendor and device must match.
+      const head = (r) => r.split(",").slice(0, 2).join(",");
+      if (aux.glRenderer && renderer && head(aux.glRenderer) !== head(renderer)) warn(`The chrome://gpu report's GL_RENDERER (${aux.glRenderer}) is not WebGL's (${renderer}): was it taken from this browser?`);
+      const reportVersion = (report.gpu_report.version_information["Chrome version"] || "").replace(/^Chrome\//, "");
+      if (reportVersion && !dump.harness.binary_version.endsWith(" " + reportVersion)) warn(`The chrome://gpu report is from Chrome ${reportVersion}, this page runs ${dump.harness.binary_version}.`);
+    }
+    const s = main.screen || {};
+    if (s.innerWidth > s.outerWidth) warn("The viewport is wider than the window: page zoom is below 100%.");
+    if (s.outerHeight - s.innerHeight > 250 || s.outerWidth - s.innerWidth > 40) warn("The window is much larger than the viewport: close DevTools or side panels.");
+    for (const [slot, err] of Object.entries(dump.context_errors)) warn(`Context ${slot} failed: ${err.split("\n")[0]}`);
+    if (!out.length) out.push(["ok", "No problems found."]);
+    const failed = Object.entries(main).filter(([, v]) => v && typeof v === "object" && typeof v.error === "string").map(([k, v]) => `${k} (${v.error})`);
+    if (failed.length) out.push(["warn", `Probe sections that failed in the page (expected where this browser lacks the API): ${failed.join("; ")}`]);
+    return out;
+  }
+
+  function summary(dump) {
+    const main = dump.contexts.main || {};
+    const nav = main.navigator || {};
+    const s = main.screen || {};
+    const he = (nav.userAgentData && nav.userAgentData.highEntropy) || {};
+    const voices = (main.speech && main.speech.voices) || [];
+    const fonts = new Set([...((main.fonts && main.fonts.present) || []), ...((main.fontsLocal && main.fontsLocal.present) || [])]);
+    const d = report && report.system_info.gpu.devices[0];
+    const slots = Object.keys(dump.contexts).filter((k) => !dump.context_errors[k]);
+    return [
+      ["Browser", dump.harness.binary_version],
+      ["Platform", [(nav.userAgentData && nav.userAgentData.platform) || nav.platform, he.platformVersion, he.architecture && `${he.architecture}/${he.bitness}`].filter(Boolean).join(" ")],
+      ["Contexts", `${slots.length} of 6: ${slots.join(", ")}`],
+      ["CPU / memory", `${nav.hardwareConcurrency} threads, deviceMemory ${nav.deviceMemory === undefined || nav.deviceMemory === null ? "n/a" : nav.deviceMemory}`],
+      ["Screen", `${s.width}x${s.height} (avail ${s.availWidth}x${s.availHeight} at ${s.availLeft},${s.availTop}), DPR ${s.devicePixelRatio}, depth ${s.colorDepth}`],
+      ["Window", `outer ${s.outerWidth}x${s.outerHeight} at ${s.screenX},${s.screenY}, inner ${s.innerWidth}x${s.innerHeight}`],
+      ["WebGL", (main.webgl && main.webgl.unmaskedRenderer) || "none"],
+      ["WebGPU", main.webgpu && main.webgpu.adapter ? `${main.webgpu.adapter.vendor} ${main.webgpu.adapter.architecture}` : "no adapter"],
+      ["GPU IDs", d ? `${hex4(d.vendorId)}:${hex4(d.deviceId)}, driver ${d.driverVersion}` : "no chrome://gpu report"],
+      ["Fonts", `${fonts.size} of the probe's list`],
+      ["Voices", `${voices.length}${voices.length ? ` (default ${(voices.find((v) => v.default) || voices[0]).name})` : ""}`],
+      ["Locale", `${(nav.languages || []).join(", ")}; ${main.intl && main.intl.dateTimeFormat && main.intl.dateTimeFormat.timeZone}`],
+      ["Audio", main.audio && main.audio.sampleRate ? `${main.audio.sampleRate} Hz, base latency ${main.audio.baseLatency}` : "n/a"],
+    ];
+  }
+
+  // ---------- run ----------
+
+  // Key order and undefined handling as the harness writes dumps
+  // (json.dumps(sort_keys=True) of what Playwright returns). Non-finite
+  // numbers (a battery's Infinity dischargingTime) are written as Python's
+  // json writes them, Infinity, -Infinity and NaN, which JSON.stringify
+  // would turn into null; the collector's json.loads reads them back.
+  const NONFINITE = "\u0000phasmid-nonfinite:";
+  function normalize(v) {
+    if (v === undefined) return null;
+    if (typeof v === "number" && !Number.isFinite(v)) return NONFINITE + String(v);
+    if (Array.isArray(v)) return v.map(normalize);
+    if (v && typeof v === "object") return Object.fromEntries(Object.keys(v).sort().map((k) => [k, normalize(v[k])]));
+    return v;
+  }
+
+  let dumpText = "";
+  let fileName = "capture.json";
+  // Set when `consistency collect` served the page: it runs on load and posts
+  // the dump back once.
+  const run = new URLSearchParams(location.search).get("run");
+  let submitted = false;
+
+  async function submit() {
+    submitted = true;
+    $("status").textContent += ", sending…";
+    try {
+      const resp = await fetch(`/submit?run=${encodeURIComponent(run)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: dumpText });
+      const body = await resp.json();
+      $("status").textContent = resp.ok ? `saved on the server as ${body.file}` : `the server refused the dump: ${body.error}`;
+    } catch (e) {
+      $("status").textContent = `could not send the dump: ${e}; use Download`;
+    }
+  }
+
+  async function collect() {
+    $("run").disabled = true;
+    const started = new Date();
+    try {
+      for (const f of document.querySelectorAll("body > iframe")) f.remove();
+      $("status").textContent = "probing…";
+      // Run from a click, the realtime AudioContext has the user activation it
+      // needs to run; run on load, it stays suspended, as on an untouched page.
+      const state = await self.__phasmidDispatch({
+        run,
+        cross: crossOrigin(),
+        timeoutMs: 60000,
+        onRecord: (_slot, pending) => { $("status").textContent = pending.length ? `waiting for ${pending.join(", ")}` : "done"; },
+      });
+      const version = await browserVersion();
+      const num = (id) => ($(id).value ? Number($(id).value) : null);
+      const dump = {
+        dump_version: 1,
+        harness: {
+          source: "collect.html",
+          nonfinite_literal: true,
+          browser: browserName(),
+          os_family: family,
+          started: started.toISOString(),
+          binary_version: version,
+          headless: false,
+          embedded: window.top !== window,
+          ancestor_origins: location.ancestorOrigins ? [...location.ancestorOrigins] : null,
+          origins: { a: location.origin, b: crossOrigin() },
+          duration_s: Math.round((Date.now() - started) / 10) / 100,
+        },
+        operator: {
+          os_version: $("osVersion").value.trim(),
+          physical_memory_mb: num("memMb"),
+          disk_total_bytes: num("diskBytes"),
+          note: $("note").value.trim(),
+        },
+        contexts: state.results,
+        context_errors: state.errors,
+        system_info: report ? report.system_info : { error: "no chrome://gpu report" },
+        gpu_report: report ? report.gpu_report : null,
+      };
+      dumpText = JSON.stringify(normalize(dump), null, 1).replace(/"\\u0000phasmid-nonfinite:(-?Infinity|NaN)"/g, "$1") + "\n";
+      const major = (version.match(/ (\d+)/) || [])[1] || "";
+      fileName = `${family}-${browserName()}${major}.json`;
+      $("out").value = dumpText;
+      $("checks").replaceChildren(...checks(dump).map(([cls, t]) => Object.assign(document.createElement("div"), { className: cls, textContent: t })));
+      $("summary").replaceChildren(...summary(dump).map(([k, v]) => {
+        const tr = document.createElement("tr");
+        tr.append(Object.assign(document.createElement("td"), { textContent: k }), Object.assign(document.createElement("td"), { textContent: v }));
+        return tr;
+      }));
+      $("result").hidden = false;
+      $("show").disabled = $("download").disabled = false;
+      $("status").textContent = `done in ${dump.harness.duration_s}s, ${Math.round(dumpText.length / 1024)} KB`;
+      if (run && !submitted) await submit();
+    } catch (e) {
+      $("status").textContent = `failed: ${e && e.stack || e}`;
+    } finally {
+      $("run").disabled = false;
+    }
+  }
+
+  $("run").addEventListener("click", collect);
+  if (run) collect();
+
+  $("show").addEventListener("click", () => {
+    $("dump").hidden = !$("dump").hidden;
+    $("show").textContent = $("dump").hidden ? "Show" : "Hide";
+  });
+
+  $("copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(dumpText);
+    } catch (e) {
+      $("out").select();
+      document.execCommand("copy");
+    }
+    $("copied").textContent = "copied";
+    setTimeout(() => { $("copied").textContent = ""; }, 2000);
+  });
+
+  $("download").addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([dumpText], { type: "application/json" }));
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+})();
+</script>
+</body>
+</html>
