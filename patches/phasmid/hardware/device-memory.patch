@@ -1,0 +1,48 @@
+Phasmid: device memory
+
+What:     navigator.deviceMemory and the Device-Memory and Sec-CH-Device-Memory
+          headers report hardware.device_memory.
+Why:      The renderer (JS) and the browser (headers) each compute the value;
+          the same input in both keeps them equal and inside Chromium's clamp.
+Profile:  hardware.device_memory
+Hooks:    third_party/blink/common/device_memory/approximated_device_memory.cc
+          ApproximatedDeviceMemory::Initialize;
+          third_party/blink/common/BUILD.gn
+Contexts: main, iframe, worker, shared worker, service worker, headers
+Guard:    tests/guards/hardware/device-memory.py
+
+--- a/third_party/blink/common/device_memory/approximated_device_memory.cc
++++ b/third_party/blink/common/device_memory/approximated_device_memory.cc
+@@ -8,6 +8,7 @@
+ #include "base/check_op.h"
+ #include "base/feature_list.h"
+ #include "base/system/sys_info.h"
++#include "components/phasmid/profile.h"
+ #include "third_party/blink/public/common/features.h"
+ 
+ namespace blink {
+@@ -21,7 +22,13 @@
+   if (approximated_device_memory_gb_ > 0.0)
+     return;
+   DCHECK_EQ(0, physical_memory_mb_);
+-  physical_memory_mb_ = ::base::SysInfo::AmountOfTotalPhysicalMemory().InMiB();
++  // Phasmid: an exact power of two passes Chromium's rounding and clamping
++  // unchanged, in the renderer and the browser alike.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    physical_memory_mb_ = static_cast<int64_t>(profile->device_memory_gb()) * 1024;
++  } else {
++    physical_memory_mb_ = ::base::SysInfo::AmountOfTotalPhysicalMemory().InMiB();
++  }
+   CalculateAndSetApproximatedDeviceMemory();
+ }
+ 
+--- a/third_party/blink/common/BUILD.gn
++++ b/third_party/blink/common/BUILD.gn
+@@ -305,6 +305,7 @@
+ 
+   deps = [
+     "//base",
++    "//components/phasmid",
+     "//build:android_buildflags",
+     "//build:chromecast_buildflags",
+     "//media/capture:capture_base",

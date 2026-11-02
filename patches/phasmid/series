@@ -18,3 +18,4 @@ core/profile.patch
 
 # Hardware group
 hardware/hardware-concurrency.patch
+hardware/device-memory.patch
