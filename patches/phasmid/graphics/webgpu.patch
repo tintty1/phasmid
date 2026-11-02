@@ -1,0 +1,658 @@
+Phasmid: WebGPU adapter
+
+What:     requestAdapter() resolves to the profile's adapter: GPUAdapterInfo
+          vendor, architecture, device, description, subgroup sizes, the ids,
+          features and limits come from gpu.webgpu, set where the GPU
+          process's wire server answers the renderer; isFallbackAdapter is
+          false. Without a hardware adapter (headless, Xvfb, no GPU) the
+          SwiftShader Vulkan fallback backs the claim, without
+          --enable-unsafe-webgpu; forceFallbackAdapter still gets null.
+          Requiring a listed feature or limit the backing adapter lacks fails
+          as a disallowed feature or limit. available false resolves null;
+          getPreferredCanvasFormat() reports preferred_canvas_format.
+          backendType and adapterType stay the host's. Unbacked claims are
+          logged.
+Why:      WebGPU must describe the same GPU as WebGL, in every mode.
+Profile:  gpu.webgpu.available, vendor, architecture, device, description,
+          subgroup_min_size, subgroup_max_size, features, limits,
+          preferred_canvas_format; gpu.vendor_id, gpu.device_id
+Hooks:    gpu/command_buffer/service/webgpu_decoder_impl.cc (constructor,
+          IsFeatureExposed, RequestAdapterImpl, AdapterGetFeaturesImpl,
+          RequestDeviceImpl, CreatePreferredAdapter, CanUseAdapter); new
+          phasmid_webgpu.{h,cc}; third_party/blink/renderer/modules/webgpu/
+          gpu.cc (GPU::getPreferredCanvasFormat), gpu_adapter.cc
+          (CreateAdapterInfoForAdapter)
+Contexts: main, iframe, worker, shared worker, service worker; headless and
+          headful
+Guard:    tests/guards/graphics/webgpu.py
+
+--- a/gpu/command_buffer/service/webgpu_decoder_impl.cc
++++ b/gpu/command_buffer/service/webgpu_decoder_impl.cc
+@@ -41,6 +41,7 @@
+ #include "gpu/command_buffer/service/decoder_client.h"
+ #include "gpu/command_buffer/service/graphite_utils.h"
+ #include "gpu/command_buffer/service/isolation_key_provider.h"
++#include "gpu/command_buffer/service/phasmid_webgpu.h"
+ #include "gpu/command_buffer/service/shared_context_state.h"
+ #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
+ #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
+@@ -1165,6 +1166,9 @@
+     // immediately.
+     delete[] supported_features.features;
+   };
++  // Phasmid: the adapter info and limits renderers see.
++  wire_procs.adapterGetInfo = PhasmidAdapterGetInfo;
++  wire_procs.adapterGetLimits = PhasmidAdapterGetLimits;
+   wire_procs.adapterRequestDevice = [](auto... args) {
+     DCHECK(parent_decoder);
+     return parent_decoder->RequestDeviceImpl(
+@@ -1255,6 +1259,11 @@
+ }
+ 
+ bool WebGPUDecoderImpl::IsFeatureExposed(wgpu::FeatureName feature) const {
++  // Phasmid: only the features gpu.webgpu.features lists, for the adapter's
++  // feature list, hasFeature and the required-features check alike.
++  if (!PhasmidFeatureListed(feature)) {
++    return false;
++  }
+   switch (feature) {
+     case wgpu::FeatureName::ChromiumExperimentalTimestampQueryInsidePasses:
+     case wgpu::FeatureName::ChromiumExperimentalSamplingResourceTable:
+@@ -1342,6 +1351,15 @@
+       static_cast<wgpu::PowerPreference>(options->powerPreference),
+       options->forceFallbackAdapter || force_fallback_adapter, feature_level,
+       webgpu_on_vk_gl_interop_);
++  // Phasmid: gpu.webgpu.available false is a device without WebGPU. A page
++  // asking for the fallback adapter gets none, as on the claimed hardware,
++  // even where the fallback backs the claimed adapter.
++  if (!PhasmidWebGPUAvailable() ||
++      (options->forceFallbackAdapter &&
++       safety_level_ != webgpu::SafetyLevel::kUnsafe &&
++       PhasmidAllowsFallbackAdapter())) {
++    adapter = wgpu::Adapter();
++  }
+ 
+   if (adapter == nullptr) {
+     // There are no adapters to return since webgpu is not supported here
+@@ -1408,6 +1426,7 @@
+       exposed_features.push_back(feature);
+     };
+   }
++  PhasmidClaimFeatures(&exposed_features);
+   const size_t count = exposed_features.size();
+   WGPUFeatureName* features = new WGPUFeatureName[count];
+   uint32_t index = 0;
+@@ -1458,7 +1477,9 @@
+     // Check that no disallowed features were requested. They should be hidden
+     // by AdapterGetFeaturesImpl.
+     for (const wgpu::FeatureName& feature : required_features) {
+-      if (!IsFeatureExposed(feature)) {
++      // Phasmid: a claimed feature the backing adapter lacks is refused too.
++      if (!IsFeatureExposed(feature) ||
++          !PhasmidFeatureBacked(adapter_obj, feature)) {
+         callback_info.callback(WGPURequestDeviceStatus_Error, nullptr,
+                                MakeStringView("Disallowed feature requested."),
+                                callback_info.userdata1,
+@@ -1468,6 +1489,19 @@
+     }
+   }
+ 
++  // Phasmid: a required limit beyond the profile's fails as Dawn fails one
++  // beyond the adapter's; one within the claim but beyond the backing
++  // adapter's is refused as a disallowed feature is.
++  const std::string phasmid_limit_error = PhasmidCheckRequiredLimits(
++      adapter, descriptor ? descriptor->requiredLimits : nullptr);
++  if (!phasmid_limit_error.empty()) {
++    callback_info.callback(
++        WGPURequestDeviceStatus_Error, nullptr,
++        {phasmid_limit_error.data(), phasmid_limit_error.size()},
++        callback_info.userdata1, callback_info.userdata2);
++    return {};
++  }
++
+   // We need to request internal usage to be able to do operations with internal
+   // SharedImage / interop methods that would need specific usages.
+   required_features.push_back(wgpu::FeatureName::DawnInternalUsages);
+@@ -1625,8 +1659,10 @@
+     bool webgpu_on_vk_gl_interop) const {
+   // The fallback adapter is SwiftShader, which is only allowed with
+   // --enable-unsafe-webgpu. Don't make Dawn load it otherwise.
++  // Phasmid: or when it backs the profile's adapter on a host without one.
+   const bool allow_fallback_adapter =
+-      safety_level_ == webgpu::SafetyLevel::kUnsafe;
++      safety_level_ == webgpu::SafetyLevel::kUnsafe ||
++      PhasmidAllowsFallbackAdapter();
+   if (force_fallback && !allow_fallback_adapter) {
+     return nullptr;
+   }
+@@ -1774,7 +1810,12 @@
+     wgpu::AdapterInfo adapter_info = {};
+     adapter.GetInfo(&adapter_info);
+ 
+-    if (use_blocklist() && IsWebGPUAdapterBlocklisted(adapter).blocked) {
++    // Phasmid: the CPU-adapter entry would refuse the fallback that backs
++    // the profile's adapter; only searches for the fallback skip the list.
++    if (use_blocklist() &&
++        !(adapter_options.forceFallbackAdapter &&
++          PhasmidAllowsFallbackAdapter()) &&
++        IsWebGPUAdapterBlocklisted(adapter).blocked) {
+       return false;
+     }
+ 
+--- a/gpu/command_buffer/service/phasmid_webgpu.h
++++ b/gpu/command_buffer/service/phasmid_webgpu.h
+@@ -0,0 +1,58 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGPU_H_
++#define GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGPU_H_
++
++#include <dawn/webgpu.h>
++
++#include <string>
++#include <vector>
++
++#include "third_party/dawn/include/dawn/webgpu_cpp.h"
++
++namespace gpu::webgpu {
++
++// The WebGPU adapter a renderer sees, from the profile's gpu.webgpu. Without
++// a profile every function leaves Dawn's answer alone. Only what the wire
++// server sends changes; the decoder's own decisions keep reading Dawn.
++
++// False when gpu.webgpu.available is false: requestAdapter() then resolves
++// to null with "No available adapters.", as on a device without WebGPU.
++bool PhasmidWebGPUAvailable();
++
++// Whether the profile claims an adapter (gpu.webgpu.available), so the
++// SwiftShader fallback may back it when the host has no hardware adapter,
++// without --enable-unsafe-webgpu and its other effects.
++bool PhasmidAllowsFallbackAdapter();
++
++// Whether `feature` may be exposed: gpu.webgpu.features lists it.
++bool PhasmidFeatureListed(wgpu::FeatureName feature);
++
++// Replaces `exposed`, the features the host adapter backs, with every listed
++// feature this build knows, reporting each listed one missing from it
++// through phasmid::ReportUnbackedGpuClaim.
++void PhasmidClaimFeatures(std::vector<wgpu::FeatureName>* exposed);
++
++// Whether a required `feature` can be enabled on `adapter`: always without a
++// claimed adapter (Dawn validates), else whether the backing adapter has it.
++bool PhasmidFeatureBacked(wgpu::Adapter adapter, wgpu::FeatureName feature);
++
++// Wire-server procs: Dawn's answer, then the profile's vendor, architecture,
++// device, description, ids and subgroup sizes, or its limits. backendType and
++// adapterType stay the host's. A subgroup size, limit or CPU adapter the
++// claim does not match is reported.
++WGPUStatus PhasmidAdapterGetInfo(WGPUAdapter adapter, WGPUAdapterInfo* info);
++WGPUStatus PhasmidAdapterGetLimits(WGPUAdapter adapter, WGPULimits* limits);
++
++// The rejection message for the first requiredLimits entry, in Dawn's order,
++// beyond the profile's limit (Dawn's own text) or within it but beyond the
++// backing `adapter`'s ("Disallowed limit requested."), or empty when every
++// required limit is backed.
++std::string PhasmidCheckRequiredLimits(WGPUAdapter adapter,
++                                       const WGPULimits* required);
++
++}  // namespace gpu::webgpu
++
++#endif  // GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGPU_H_
+--- a/gpu/command_buffer/service/phasmid_webgpu.cc
++++ b/gpu/command_buffer/service/phasmid_webgpu.cc
+@@ -0,0 +1,385 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "gpu/command_buffer/service/phasmid_webgpu.h"
++
++#include <stdint.h>
++
++#include <algorithm>
++#include <iterator>
++#include <optional>
++#include <ostream>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++#include "base/check.h"
++#include "base/numerics/safe_conversions.h"
++#include "base/strings/strcat.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
++#include "components/phasmid/profile.h"
++#include "third_party/dawn/include/dawn/native/DawnNative.h"
++
++namespace gpu::webgpu {
++
++namespace {
++
++// Dawn's limit classes (dawn/native/Limits.h): a maximum is better when
++// higher, an alignment when lower.
++enum class LimitClass { kMaximum, kAlignment };
++
++// One GPUSupportedLimits entry and where it lives: a uint32_t or uint64_t
++// member of WGPULimits, or a member of the chained
++// WGPUCompatibilityModeLimits.
++struct LimitRow {
++  const char* name;
++  uint32_t WGPULimits::* u32 = nullptr;
++  uint64_t WGPULimits::* u64 = nullptr;
++  uint32_t WGPUCompatibilityModeLimits::* compat = nullptr;
++  LimitClass limit_class = LimitClass::kMaximum;
++};
++
++// Every limit Blink exposes, in the order Dawn validates required limits
++// (the LIMITS list in dawn/native/Limits.cpp), so the first one rejected is
++// the one Dawn would name.
++constexpr LimitRow kLimits[] = {
++    {.name = "maxComputeWorkgroupStorageSize",
++     .u32 = &WGPULimits::maxComputeWorkgroupStorageSize},
++    {.name = "maxComputeInvocationsPerWorkgroup",
++     .u32 = &WGPULimits::maxComputeInvocationsPerWorkgroup},
++    {.name = "maxComputeWorkgroupSizeX",
++     .u32 = &WGPULimits::maxComputeWorkgroupSizeX},
++    {.name = "maxComputeWorkgroupSizeY",
++     .u32 = &WGPULimits::maxComputeWorkgroupSizeY},
++    {.name = "maxComputeWorkgroupSizeZ",
++     .u32 = &WGPULimits::maxComputeWorkgroupSizeZ},
++    {.name = "maxComputeWorkgroupsPerDimension",
++     .u32 = &WGPULimits::maxComputeWorkgroupsPerDimension},
++    {.name = "maxStorageBufferBindingSize",
++     .u64 = &WGPULimits::maxStorageBufferBindingSize},
++    {.name = "maxBufferSize", .u64 = &WGPULimits::maxBufferSize},
++    {.name = "maxDynamicUniformBuffersPerPipelineLayout",
++     .u32 = &WGPULimits::maxDynamicUniformBuffersPerPipelineLayout},
++    {.name = "maxDynamicStorageBuffersPerPipelineLayout",
++     .u32 = &WGPULimits::maxDynamicStorageBuffersPerPipelineLayout},
++    {.name = "maxSampledTexturesPerShaderStage",
++     .u32 = &WGPULimits::maxSampledTexturesPerShaderStage},
++    {.name = "maxSamplersPerShaderStage",
++     .u32 = &WGPULimits::maxSamplersPerShaderStage},
++    {.name = "maxStorageTexturesPerShaderStage",
++     .u32 = &WGPULimits::maxStorageTexturesPerShaderStage},
++    {.name = "maxStorageTexturesInFragmentStage",
++     .compat = &WGPUCompatibilityModeLimits::maxStorageTexturesInFragmentStage},
++    {.name = "maxStorageTexturesInVertexStage",
++     .compat = &WGPUCompatibilityModeLimits::maxStorageTexturesInVertexStage},
++    {.name = "maxUniformBuffersPerShaderStage",
++     .u32 = &WGPULimits::maxUniformBuffersPerShaderStage},
++    {.name = "maxStorageBuffersPerShaderStage",
++     .u32 = &WGPULimits::maxStorageBuffersPerShaderStage},
++    {.name = "maxStorageBuffersInFragmentStage",
++     .compat = &WGPUCompatibilityModeLimits::maxStorageBuffersInFragmentStage},
++    {.name = "maxStorageBuffersInVertexStage",
++     .compat = &WGPUCompatibilityModeLimits::maxStorageBuffersInVertexStage},
++    {.name = "maxColorAttachmentBytesPerSample",
++     .u32 = &WGPULimits::maxColorAttachmentBytesPerSample},
++    {.name = "maxInterStageShaderVariables",
++     .u32 = &WGPULimits::maxInterStageShaderVariables},
++    {.name = "maxTextureDimension1D", .u32 = &WGPULimits::maxTextureDimension1D},
++    {.name = "maxTextureDimension2D", .u32 = &WGPULimits::maxTextureDimension2D},
++    {.name = "maxTextureDimension3D", .u32 = &WGPULimits::maxTextureDimension3D},
++    {.name = "maxTextureArrayLayers", .u32 = &WGPULimits::maxTextureArrayLayers},
++    {.name = "maxImmediateSize", .u32 = &WGPULimits::maxImmediateSize},
++    {.name = "maxBindGroups", .u32 = &WGPULimits::maxBindGroups},
++    {.name = "maxBindGroupsPlusVertexBuffers",
++     .u32 = &WGPULimits::maxBindGroupsPlusVertexBuffers},
++    {.name = "maxBindingsPerBindGroup",
++     .u32 = &WGPULimits::maxBindingsPerBindGroup},
++    {.name = "maxUniformBufferBindingSize",
++     .u64 = &WGPULimits::maxUniformBufferBindingSize},
++    {.name = "minUniformBufferOffsetAlignment",
++     .u32 = &WGPULimits::minUniformBufferOffsetAlignment,
++     .limit_class = LimitClass::kAlignment},
++    {.name = "minStorageBufferOffsetAlignment",
++     .u32 = &WGPULimits::minStorageBufferOffsetAlignment,
++     .limit_class = LimitClass::kAlignment},
++    {.name = "maxVertexBuffers", .u32 = &WGPULimits::maxVertexBuffers},
++    {.name = "maxVertexAttributes", .u32 = &WGPULimits::maxVertexAttributes},
++    {.name = "maxVertexBufferArrayStride",
++     .u32 = &WGPULimits::maxVertexBufferArrayStride},
++    {.name = "maxColorAttachments", .u32 = &WGPULimits::maxColorAttachments},
++};
++
++// Every feature WebGPUDecoderImpl::IsFeatureExposed can expose, so a listed
++// name maps to Dawn's enum even where the backing adapter lacks it.
++constexpr wgpu::FeatureName kWebFeatures[] = {
++    wgpu::FeatureName::CoreFeaturesAndLimits,
++    wgpu::FeatureName::DepthClipControl,
++    wgpu::FeatureName::Depth32FloatStencil8,
++    wgpu::FeatureName::TextureCompressionBC,
++    wgpu::FeatureName::TextureCompressionBCSliced3D,
++    wgpu::FeatureName::TextureCompressionETC2,
++    wgpu::FeatureName::TextureCompressionASTC,
++    wgpu::FeatureName::TextureCompressionASTCSliced3D,
++    wgpu::FeatureName::TimestampQuery,
++    wgpu::FeatureName::IndirectFirstInstance,
++    wgpu::FeatureName::ShaderF16,
++    wgpu::FeatureName::RG11B10UfloatRenderable,
++    wgpu::FeatureName::BGRA8UnormStorage,
++    wgpu::FeatureName::Float32Filterable,
++    wgpu::FeatureName::Float32Blendable,
++    wgpu::FeatureName::ClipDistances,
++    wgpu::FeatureName::DualSourceBlending,
++    wgpu::FeatureName::Subgroups,
++    wgpu::FeatureName::TextureFormatsTier1,
++    wgpu::FeatureName::TextureFormatsTier2,
++    wgpu::FeatureName::PrimitiveIndex,
++    wgpu::FeatureName::TextureComponentSwizzle,
++    wgpu::FeatureName::SubgroupSizeControl,
++    wgpu::FeatureName::TextureCompressionUnaligned,
++    wgpu::FeatureName::MultiDrawIndirect,
++};
++
++// The active profile's gpu.webgpu when it claims an adapter, else null.
++const phasmid::Profile::WebGPU* ClaimedAdapter() {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!profile || !profile->webgpu().available) {
++    return nullptr;
++  }
++  return &profile->webgpu();
++}
++
++const WGPUCompatibilityModeLimits* FindCompat(const WGPULimits* limits) {
++  for (const WGPUChainedStruct* chain = limits->nextInChain; chain;
++       chain = chain->next) {
++    if (chain->sType == WGPUSType_CompatibilityModeLimits) {
++      return reinterpret_cast<const WGPUCompatibilityModeLimits*>(chain);
++    }
++  }
++  return nullptr;
++}
++
++// The row's value, or nullopt when it is undefined or lives in a chained
++// struct `limits` does not carry.
++std::optional<uint64_t> Read(const LimitRow& row,
++                             const WGPULimits& limits,
++                             const WGPUCompatibilityModeLimits* compat) {
++  if (row.u64) {
++    const uint64_t value = limits.*row.u64;
++    return value == WGPU_LIMIT_U64_UNDEFINED ? std::nullopt
++                                             : std::optional<uint64_t>(value);
++  }
++  if (!row.u32 && !compat) {
++    return std::nullopt;
++  }
++  const uint32_t value = row.u32 ? limits.*row.u32 : compat->*row.compat;
++  return value == WGPU_LIMIT_U32_UNDEFINED ? std::nullopt
++                                           : std::optional<uint64_t>(value);
++}
++
++void Write(const LimitRow& row,
++           uint64_t value,
++           WGPULimits* limits,
++           WGPUCompatibilityModeLimits* compat) {
++  if (row.u64) {
++    limits->*row.u64 = value;
++  } else if (row.u32) {
++    limits->*row.u32 = base::saturated_cast<uint32_t>(value);
++  } else if (compat) {
++    compat->*row.compat = base::saturated_cast<uint32_t>(value);
++  }
++}
++
++// Whether `a` is a better limit than `b` (dawn/native/Limits.h IsBetter).
++bool IsBetter(const LimitRow& row, uint64_t a, uint64_t b) {
++  return row.limit_class == LimitClass::kMaximum ? a > b : a < b;
++}
++
++// Dawn frees adapter info strings with delete[]
++// (APIAdapterInfoFreeMembers), so the replacement is allocated with new[].
++void ReplaceString(WGPUStringView* view, const std::string& value) {
++  delete[] view->data;
++  char* copy = new char[value.size()];
++  std::ranges::copy(value, copy);
++  *view = {copy, value.size()};
++}
++
++// Subgroup sizes are readable from WGSL, so a claim must equal the host's.
++void ClaimSubgroupSize(std::string_view field,
++                       uint32_t claim,
++                       uint32_t* value) {
++  if (*value != claim) {
++    phasmid::ReportUnbackedGpuClaim(
++        field, base::StrCat({"profile ", base::NumberToString(claim),
++                             ", host ", base::NumberToString(*value)}));
++  }
++  *value = claim;
++}
++
++// Whether Dawn's `feature` is the one WebGPU calls `name`. Dawn's FeatureInfo
++// names come from dawn.json and differ from the WebGPU names in hyphens
++// only: "float32filterable" is "float32-filterable".
++bool IsFeatureNamed(wgpu::FeatureName feature, std::string_view name) {
++  const dawn::native::FeatureInfo* info = dawn::native::GetFeatureInfo(feature);
++  if (!info) {
++    return false;
++  }
++  std::string dawn_key;
++  std::string key;
++  base::RemoveChars(info->name, "-", &dawn_key);
++  base::RemoveChars(name, "-", &key);
++  return dawn_key == key;
++}
++
++}  // namespace
++
++bool PhasmidWebGPUAvailable() {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  return !profile || profile->webgpu().available;
++}
++
++bool PhasmidAllowsFallbackAdapter() {
++  return ClaimedAdapter() != nullptr;
++}
++
++bool PhasmidFeatureListed(wgpu::FeatureName feature) {
++  const phasmid::Profile::WebGPU* claimed = ClaimedAdapter();
++  if (!claimed) {
++    return true;
++  }
++  return std::ranges::any_of(claimed->features,
++                             [feature](const std::string& name) {
++                               return IsFeatureNamed(feature, name);
++                             });
++}
++
++void PhasmidClaimFeatures(std::vector<wgpu::FeatureName>* exposed) {
++  const phasmid::Profile::WebGPU* claimed = ClaimedAdapter();
++  if (!claimed) {
++    return;
++  }
++  std::vector<wgpu::FeatureName> features;
++  for (const std::string& name : claimed->features) {
++    const wgpu::FeatureName* known = std::ranges::find_if(
++        kWebFeatures, [&name](wgpu::FeatureName feature) {
++          return IsFeatureNamed(feature, name);
++        });
++    if (known == std::end(kWebFeatures)) {
++      phasmid::ReportUnbackedGpuClaim(
++          base::StrCat({"webgpu.features.", name}),
++          "not a feature this build exposes; left out");
++      continue;
++    }
++    features.push_back(*known);
++    if (!std::ranges::contains(*exposed, *known)) {
++      phasmid::ReportUnbackedGpuClaim(
++          base::StrCat({"webgpu.features.", name}),
++          "not exposed by the host adapter; listed, and requestDevice() "
++          "requiring it fails");
++    }
++  }
++  *exposed = std::move(features);
++}
++
++bool PhasmidFeatureBacked(wgpu::Adapter adapter, wgpu::FeatureName feature) {
++  return !ClaimedAdapter() || adapter.HasFeature(feature);
++}
++
++WGPUStatus PhasmidAdapterGetInfo(WGPUAdapter adapter, WGPUAdapterInfo* info) {
++  const WGPUStatus status =
++      dawn::native::GetProcs().adapterGetInfo(adapter, info);
++  const phasmid::Profile::WebGPU* claimed = ClaimedAdapter();
++  if (!claimed || status != WGPUStatus_Success) {
++    return status;
++  }
++  ReplaceString(&info->vendor, claimed->vendor);
++  ReplaceString(&info->architecture, claimed->architecture);
++  ReplaceString(&info->device, claimed->device);
++  ReplaceString(&info->description, claimed->description);
++  info->vendorID = phasmid::Profile::Get()->gpu().vendor_id;
++  info->deviceID = phasmid::Profile::Get()->gpu().device_id;
++  ClaimSubgroupSize("webgpu.subgroup_min_size", claimed->subgroup_min_size,
++                    &info->subgroupMinSize);
++  ClaimSubgroupSize("webgpu.subgroup_max_size", claimed->subgroup_max_size,
++                    &info->subgroupMaxSize);
++  // The adapter type stays the host's (the renderer's swap buffers need it
++  // for the fallback); Blink reports isFallbackAdapter false for a profile,
++  // which never claims a fallback adapter.
++  if (info->adapterType == WGPUAdapterType_CPU) {
++    phasmid::ReportUnbackedGpuClaim(
++        "webgpu.adapter",
++        "no hardware adapter on this host; the SwiftShader fallback backs "
++        "the claim");
++  }
++  return status;
++}
++
++WGPUStatus PhasmidAdapterGetLimits(WGPUAdapter adapter, WGPULimits* limits) {
++  const WGPUStatus status =
++      dawn::native::GetProcs().adapterGetLimits(adapter, limits);
++  const phasmid::Profile::WebGPU* claimed = ClaimedAdapter();
++  if (!claimed || status != WGPUStatus_Success) {
++    return status;
++  }
++  WGPUCompatibilityModeLimits* compat =
++      const_cast<WGPUCompatibilityModeLimits*>(FindCompat(limits));
++  for (const LimitRow& row : kLimits) {
++    const std::optional<uint64_t> claim = claimed->Limit(row.name);
++    CHECK(claim) << "Phasmid: gpu.webgpu.limits." << row.name
++                 << " is not validated";
++    const std::optional<uint64_t> host = Read(row, *limits, compat);
++    if (host && IsBetter(row, *claim, *host)) {
++      phasmid::ReportUnbackedGpuClaim(
++          base::StrCat({"webgpu.limits.", row.name}),
++          base::StrCat({"profile ", base::NumberToString(*claim), ", host ",
++                        base::NumberToString(*host)}));
++    }
++    Write(row, *claim, limits, compat);
++  }
++  return status;
++}
++
++std::string PhasmidCheckRequiredLimits(WGPUAdapter adapter,
++                                       const WGPULimits* required) {
++  const phasmid::Profile::WebGPU* claimed = ClaimedAdapter();
++  if (!claimed || !required) {
++    return std::string();
++  }
++  // The backing adapter's limits, as Dawn validates a request against them.
++  WGPUCompatibilityModeLimits host_compat = WGPU_COMPATIBILITY_MODE_LIMITS_INIT;
++  WGPULimits host = {};
++  host.nextInChain = &host_compat.chain;
++  const bool have_host = dawn::native::GetProcs().adapterGetLimits(
++                             adapter, &host) == WGPUStatus_Success;
++  const WGPUCompatibilityModeLimits* compat = FindCompat(required);
++  for (const LimitRow& row : kLimits) {
++    const std::optional<uint64_t> value = Read(row, *required, compat);
++    const std::optional<uint64_t> supported = claimed->Limit(row.name);
++    if (!value || !supported) {
++      continue;
++    }
++    if (!IsBetter(row, *value, *supported)) {
++      // Within the claim: a value the backing adapter cannot give is refused
++      // without naming the backing limit, which would contradict the claim.
++      const std::optional<uint64_t> backed =
++          have_host ? Read(row, host, &host_compat) : std::nullopt;
++      if (backed && IsBetter(row, *value, *backed)) {
++        return "Disallowed limit requested.";
++      }
++      continue;
++    }
++    // CheckLimit<>::Validate in dawn/native/Limits.h, then the contexts
++    // ValidateLimits and AdapterBase::CreateDeviceInternal add.
++    return base::StrCat(
++        {"Required limit (", base::NumberToString(*value), ") is ",
++         row.limit_class == LimitClass::kMaximum ? "greater" : "lower",
++         " than the supported limit (", base::NumberToString(*supported),
++         ").\n - While validating ", row.name,
++         "\n - While validating required limits\n"});
++  }
++  return std::string();
++}
++
++}  // namespace gpu::webgpu
+--- a/gpu/command_buffer/service/BUILD.gn
++++ b/gpu/command_buffer/service/BUILD.gn
+@@ -345,6 +345,8 @@
+       "dawn_service_serializer.h",
+       "dawn_wire_server.cc",
+       "dawn_wire_server.h",
++      "phasmid_webgpu.cc",
++      "phasmid_webgpu.h",
+       "shared_image/dawn_copy_strategy.cc",
+       "shared_image/dawn_copy_strategy.h",
+       "shared_image/dawn_fallback_image_representation.cc",
+--- a/third_party/blink/renderer/modules/webgpu/gpu.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu.cc
+@@ -10,6 +10,7 @@
+ #include "base/metrics/histogram_macros.h"
+ #include "base/notreached.h"
+ #include "base/synchronization/waitable_event.h"
++#include "components/phasmid/profile.h"
+ #include "gpu/command_buffer/client/webgpu_interface.h"
+ #include "gpu/config/gpu_finch_features.h"
+ #include "mojo/public/cpp/bindings/remote.h"
+@@ -397,6 +398,14 @@
+ }
+ 
+ V8GPUTextureFormat GPU::getPreferredCanvasFormat() {
++  // Phasmid: only the page-facing answer changes; the swap chain and XR keep
++  // the build's format, and the other format still renders, through a copy.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return FromDawnEnum(profile->webgpu().preferred_canvas_format ==
++                                "bgra8unorm"
++                            ? wgpu::TextureFormat::BGRA8Unorm
++                            : wgpu::TextureFormat::RGBA8Unorm);
++  }
+   return FromDawnEnum(GetPreferredCanvasFormat());
+ }
+ 
+--- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
+ 
++#include "components/phasmid/profile.h"
+ #include "services/metrics/public/cpp/ukm_builders.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
+@@ -124,7 +125,10 @@
+ }
+ 
+ GPUAdapterInfo* GPUAdapter::CreateAdapterInfoForAdapter() {
+-  bool is_fallback_adapter = adapter_type_ == wgpu::AdapterType::CPU;
++  // Phasmid: a profile claims a hardware adapter, which the SwiftShader
++  // fallback may back; adapter_type_ stays the backing adapter's.
++  bool is_fallback_adapter = adapter_type_ == wgpu::AdapterType::CPU &&
++                             !phasmid::Profile::Get();
+ 
+   GPUAdapterInfo* info;
+   if (RuntimeEnabledFeatures::WebGPUDeveloperFeaturesEnabled()) {
+--- a/third_party/blink/renderer/modules/webgpu/BUILD.gn
++++ b/third_party/blink/renderer/modules/webgpu/BUILD.gn
+@@ -111,6 +111,7 @@
+     "wgsl_language_features.h",
+   ]
+   deps = [
++    "//components/phasmid",
+     "//gpu/command_buffer/client:webgpu_interface",
+     "//services/metrics/public/cpp:ukm_builders",
+     "//skia",
