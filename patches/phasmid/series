@@ -40,3 +40,4 @@ locale/accept-language.patch
 graphics/gpu-info.patch
 graphics/webgl.patch
 graphics/webgpu.patch
+graphics/canvas-readback.patch

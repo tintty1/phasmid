@@ -1,0 +1,1366 @@
+Phasmid: canvas readback
+
+What:     getImageData, toDataURL, toBlob and OffscreenCanvas.convertToBlob of
+          2D and bitmaprenderer canvases apply one local, idempotent function
+          keyed from the seed: one least significant bit of a pixel that
+          blends its neighbours, only inside the region last written by
+          anti-aliased or blending rasterization. putImageData, pixel-aligned
+          solid fillRect and clearRect, and 1:1 drawImage of decoded images
+          read back exactly. Nothing on screen changes. Off without
+          canvas.noise.
+Why:      Breaks cross-profile canvas linking without per-call randomness or
+          a readback-relative key, agreeing across exits, sub-rectangles,
+          round trips and contexts.
+Profile:  canvas.noise, seed
+Hooks:    third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
+          (ToDataURLInternal, toBlob); core/offscreencanvas/offscreen_canvas.cc
+          (convertToBlob); new core/html/canvas/phasmid_readback_noise.{h,cc}
+          and test; modules/canvas/canvas2d/base_rendering_context_2d.cc
+          (getImageDataInternal, putImageData);
+          canvas_2d_recorder_context.{h,cc} (fillRect, clearRect, drawImage,
+          ResetInternal); canvas_rendering_context_2d.cc and
+          offscreen_canvas_rendering_context_2d.cc (WillDraw); new
+          canvas2d/phasmid_readback_provenance.{h,cc};
+          modules/modules_initializer.cc (Initialize)
+Contexts: main, iframe, worker, shared worker, service worker, offscreen
+Guard:    tests/guards/graphics/canvas-readback.py
+
+--- a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
++++ b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
+@@ -83,6 +83,7 @@
+ #include "third_party/blink/renderer/core/html/canvas/canvas_resource_tracker.h"
+ #include "third_party/blink/renderer/core/html/canvas/element_image.h"
+ #include "third_party/blink/renderer/core/html/canvas/image_data.h"
++#include "third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.h"
+ #include "third_party/blink/renderer/core/html/canvas/predefined_color_space.h"
+ #include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
+ #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
+@@ -1421,6 +1422,9 @@
+       ImageEncoderUtils::ToEncodingMimeType(mime_type);
+ 
+   scoped_refptr<StaticBitmapImage> image_bitmap = Snapshot(source_buffer);
++  // Phasmid: deterministic readback noise.
++  image_bitmap = phasmid_canvas::NoiseForExport(
++      context_, HasOffscreenCanvasFrame(), std::move(image_bitmap));
+   if (image_bitmap) {
+     std::unique_ptr<ImageDataBuffer> data_buffer =
+         ImageDataBuffer::Create(image_bitmap);
+@@ -1525,6 +1529,9 @@
+ 
+   CanvasAsyncBlobCreator* async_creator = nullptr;
+   scoped_refptr<StaticBitmapImage> image_bitmap = Snapshot(kBackBuffer);
++  // Phasmid: deterministic readback noise.
++  image_bitmap = phasmid_canvas::NoiseForExport(
++      context_, HasOffscreenCanvasFrame(), std::move(image_bitmap));
+   if (image_bitmap) {
+     auto* options = ImageEncodeOptions::Create();
+     options->setType(ImageEncoderUtils::MimeTypeName(encoding_mime_type));
+--- a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
++++ b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
+@@ -39,6 +39,7 @@
+ #include "third_party/blink/renderer/core/html/canvas/element_geometry_update_event.h"
+ #include "third_party/blink/renderer/core/html/canvas/element_image.h"
+ #include "third_party/blink/renderer/core/html/canvas/image_data.h"
++#include "third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.h"
+ #include "third_party/blink/renderer/core/html/canvas/ukm_parameters.h"
+ #include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
+ #include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
+@@ -564,6 +565,9 @@
+ 
+   base::TimeTicks start_time = base::TimeTicks::Now();
+   scoped_refptr<StaticBitmapImage> image_bitmap = context_->GetImage();
++  // Phasmid: deterministic readback noise.
++  image_bitmap = phasmid_canvas::NoiseForExport(
++      context_, /*is_placeholder=*/false, std::move(image_bitmap));
+   if (image_bitmap) {
+     auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<Blob>>(
+         script_state, exception_state.GetContext());
+--- a/third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.h
++++ b/third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.h
+@@ -0,0 +1,84 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_HTML_CANVAS_PHASMID_READBACK_NOISE_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_HTML_CANVAS_PHASMID_READBACK_NOISE_H_
++
++#include "base/memory/scoped_refptr.h"
++#include "third_party/blink/renderer/core/core_export.h"
++#include "third_party/blink/renderer/platform/wtf/vector.h"
++#include "third_party/skia/include/core/SkPoint.h"
++#include "third_party/skia/include/core/SkRect.h"
++
++class SkPixmap;
++class SkRegion;
++
++namespace gfx {
++class Rect;
++}
++
++namespace phasmid {
++struct NoiseKey;
++}
++
++namespace blink {
++
++class CanvasRenderingContext;
++class StaticBitmapImage;
++
++// Deterministic canvas readback noise.
++//
++// The page-visible exits of a 2D or bitmaprenderer canvas (getImageData,
++// toDataURL, toBlob, OffscreenCanvas.convertToBlob) apply one function N to
++// the canvas pixels. N at a pixel depends only on the profile's canvas key,
++// the upper 7 bits of the pixel and of its four neighbours, and whether the
++// pixel lies in the context's provenance region (pixels last written by
++// anti-aliased or blending rasterization, kept by modules/canvas). It never
++// depends on the readback rectangle or on coordinates, and N(N(x)) = N(x),
++// so every exit and every round trip through put, decode or drawImage agrees.
++// Nothing on screen changes: only the exits call into this file.
++namespace phasmid_canvas {
++
++// True when the profile turns canvas noise on (canvas.noise).
++CORE_EXPORT bool IsActive();
++
++// Returns the provenance region of a 2D context, in canvas pixels. Registered
++// once by modules (which own the 2D context classes) before any canvas exists.
++using ProvenanceGetter = const SkRegion* (*)(const CanvasRenderingContext&);
++CORE_EXPORT void SetProvenanceGetter(ProvenanceGetter getter);
++
++// toDataURL, toBlob and convertToBlob: returns `image` itself unless noise
++// is on and changes a pixel. A transferControlToOffscreen placeholder
++// (`is_placeholder`) has no reachable region and uses the content test alone;
++// WebGL and WebGPU canvases are never noised.
++CORE_EXPORT scoped_refptr<StaticBitmapImage> NoiseForExport(
++    const CanvasRenderingContext* context,
++    bool is_placeholder,
++    scoped_refptr<StaticBitmapImage> image);
++
++// getImageData: rewrites the pixels of `dst`, which holds `rect` of
++// `snapshot` as read by getImageData, that N changes. Unchanged pixels keep
++// the bytes the stock conversion produced.
++CORE_EXPORT void NoiseImageData(StaticBitmapImage& snapshot,
++                                const SkRegion& region,
++                                const gfx::Rect& rect,
++                                const SkPixmap& dst);
++
++// The kernel. Applies N in place to the pixels of `target` in `pixels`
++// (premultiplied or opaque RGBA or BGRA 8888; pixels outside `pixels` are
++// absent neighbours). `origin` is the canvas position of pixel (0, 0); a
++// non-null `region` restricts N to the canvas pixels it contains. Returns the
++// number of pixels changed and appends their positions to `changed`.
++CORE_EXPORT int ApplyKernel(const ::phasmid::NoiseKey& key,
++                            const SkRegion* region,
++                            const SkIPoint& origin,
++                            const SkIRect& target,
++                            const SkPixmap& pixels,
++                            Vector<SkIPoint>* changed);
++
++}  // namespace phasmid_canvas
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_HTML_CANVAS_PHASMID_READBACK_NOISE_H_
+--- a/third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.cc
++++ b/third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.cc
+@@ -0,0 +1,481 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.h"
++
++#include <stdint.h>
++
++#include <algorithm>
++#include <array>
++#include <atomic>
++#include <bit>
++#include <cstdlib>
++#include <optional>
++#include <utility>
++
++#include "build/build_config.h"
++#include "components/phasmid/noise.h"
++#include "components/phasmid/profile.h"
++#include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
++#include "third_party/blink/renderer/platform/graphics/paint/paint_image.h"
++#include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
++#include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkImage.h"
++#include "third_party/skia/include/core/SkPixmap.h"
++#include "third_party/skia/include/core/SkRegion.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/gfx/geometry/skia_conversions.h"
++
++#if !defined(ARCH_CPU_LITTLE_ENDIAN)
++#error "Pixels are addressed as little-endian 32-bit words."
++#endif
++
++namespace blink::phasmid_canvas {
++
++namespace {
++
++// Frozen. Every constant and every byte of the hashed messages below decides
++// which pixels a profile changes; changing one re-keys every profile's canvas.
++constexpr std::array<uint8_t, 3> kOpaqueTag = {'o', 'p', '1'};
++constexpr std::array<uint8_t, 3> kAlphaTag = {'a', 'l', '1'};
++
++constexpr size_t kR = 0;
++constexpr size_t kG = 1;
++constexpr size_t kB = 2;
++constexpr size_t kA = 3;
++
++// Channels by name, never by memory order.
++using Rgba = std::array<uint8_t, 4>;
++
++// Bit positions of R, G and B in a 32-bit pixel; alpha is always at 24.
++struct Layout {
++  int r;
++  int g;
++  int b;
++};
++
++std::optional<Layout> LayoutOf(const SkImageInfo& info) {
++  if (info.alphaType() != kPremul_SkAlphaType &&
++      info.alphaType() != kOpaque_SkAlphaType) {
++    return std::nullopt;
++  }
++  switch (info.colorType()) {
++    case kRGBA_8888_SkColorType:
++      return Layout{0, 8, 16};
++    case kBGRA_8888_SkColorType:
++      return Layout{16, 8, 0};
++    default:
++      // Float16 and 10-bit canvases are not noised.
++      return std::nullopt;
++  }
++}
++
++class Pixels {
++ public:
++  Pixels(const SkPixmap& pixmap, const Layout& layout)
++      : pixmap_(pixmap), layout_(layout) {}
++
++  bool Contains(int x, int y) const {
++    return x >= 0 && y >= 0 && x < pixmap_.width() && y < pixmap_.height();
++  }
++
++  Rgba Get(int x, int y) const {
++    const uint32_t v = *pixmap_.addr32(x, y);
++    return {static_cast<uint8_t>(v >> layout_.r),
++            static_cast<uint8_t>(v >> layout_.g),
++            static_cast<uint8_t>(v >> layout_.b),
++            static_cast<uint8_t>(v >> 24)};
++  }
++
++  std::optional<Rgba> Neighbour(int x, int y) const {
++    if (!Contains(x, y)) {
++      return std::nullopt;
++    }
++    return Get(x, y);
++  }
++
++  void Set(int x, int y, const Rgba& p) const {
++    *pixmap_.writable_addr32(x, y) = (uint32_t{p[kR]} << layout_.r) |
++                                     (uint32_t{p[kG]} << layout_.g) |
++                                     (uint32_t{p[kB]} << layout_.b) |
++                                     (uint32_t{p[kA]} << 24);
++  }
++
++ private:
++  const SkPixmap& pixmap_;
++  const Layout layout_;
++};
++
++// The upper 7 bits. N changes only least significant bits, so every value
++// the tests below read is the same before and after N.
++int Q(uint8_t v) {
++  return v >> 1;
++}
++
++// The hashed message: a tag, the pixel's own bits, then the qualifying axes
++// as unordered pairs in sorted order, so that flipping or transposing the
++// neighbourhood hashes the same.
++class Message {
++ public:
++  explicit Message(const std::array<uint8_t, 3>& tag) { Append(tag); }
++
++  template <size_t N>
++  void Append(const std::array<uint8_t, N>& bytes) {
++    for (uint8_t byte : bytes) {
++      bytes_[size_++] = byte;
++    }
++  }
++
++  template <size_t N>
++  void AppendSorted(std::array<uint8_t, N> first,
++                    std::array<uint8_t, N> second) {
++    if (second < first) {
++      std::swap(first, second);
++    }
++    Append(first);
++    Append(second);
++  }
++
++  uint64_t Hash(const ::phasmid::NoiseKey& key) const {
++    return ::phasmid::SipHash24(
++        key, base::span<const uint8_t>(bytes_).first(size_));
++  }
++
++ private:
++  std::array<uint8_t, 18> bytes_ = {};
++  size_t size_ = 0;
++};
++
++// An opaque pixel P qualifies along the axis (A, B) when both neighbours are
++// opaque, P lies between them in every colour channel and on the line from A
++// to B (within rounding), and strictly between them in at least one channel.
++// Returns the strict channels as a bit mask (R = 1, G = 2, B = 4), or 0.
++unsigned OpaqueAxis(const Rgba& p,
++                    const std::optional<Rgba>& a,
++                    const std::optional<Rgba>& b,
++                    std::array<uint8_t, 6>* pair) {
++  if (!a || !b || (*a)[kA] != 255 || (*b)[kA] != 255) {
++    return 0;
++  }
++  std::array<int, 3> qp;
++  std::array<int, 3> qa;
++  std::array<int, 3> qb;
++  unsigned strict = 0;
++  for (size_t c = kR; c <= kB; ++c) {
++    qp[c] = Q(p[c]);
++    qa[c] = Q((*a)[c]);
++    qb[c] = Q((*b)[c]);
++    const int lo = std::min(qa[c], qb[c]);
++    const int hi = std::max(qa[c], qb[c]);
++    if (qp[c] < lo || qp[c] > hi) {
++      return 0;
++    }
++    if (lo < qp[c] && qp[c] < hi) {
++      strict |= 1u << c;
++    }
++  }
++  if (!strict) {
++    return 0;
++  }
++  constexpr std::array<std::pair<size_t, size_t>, 3> kChannelPairs = {
++      {{kR, kG}, {kR, kB}, {kG, kB}}};
++  for (const auto& [c, k] : kChannelPairs) {
++    const int cross = (qp[c] - qa[c]) * (qb[k] - qa[k]) -
++                      (qp[k] - qa[k]) * (qb[c] - qa[c]);
++    if (std::abs(cross) > std::abs(qb[c] - qa[c]) + std::abs(qb[k] - qa[k])) {
++      return 0;
++    }
++  }
++  std::array<uint8_t, 3> ea = {static_cast<uint8_t>(qa[kR]),
++                               static_cast<uint8_t>(qa[kG]),
++                               static_cast<uint8_t>(qa[kB])};
++  std::array<uint8_t, 3> eb = {static_cast<uint8_t>(qb[kR]),
++                               static_cast<uint8_t>(qb[kG]),
++                               static_cast<uint8_t>(qb[kB])};
++  if (eb < ea) {
++    std::swap(ea, eb);
++  }
++  *pair = {ea[0], ea[1], ea[2], eb[0], eb[1], eb[2]};
++  return strict;
++}
++
++// A semi-transparent pixel qualifies along the axis (A, B) when its alpha
++// lies strictly between theirs, in the upper 7 bits.
++bool AlphaAxis(uint8_t alpha,
++               const std::optional<Rgba>& a,
++               const std::optional<Rgba>& b,
++               std::array<uint8_t, 2>* pair) {
++  if (!a || !b) {
++    return false;
++  }
++  const int lo = std::min(Q((*a)[kA]), Q((*b)[kA]));
++  const int hi = std::max(Q((*a)[kA]), Q((*b)[kA]));
++  if (!(lo < Q(alpha) && Q(alpha) < hi)) {
++    return false;
++  }
++  *pair = {static_cast<uint8_t>(lo), static_cast<uint8_t>(hi)};
++  return true;
++}
++
++// Exact integer conversions with round-half-up. Premul(Unpremul(c, a), a) == c
++// for every valid premultiplied c <= a.
++int Unpremul(int c, int a) {
++  return (std::min(c, a) * 510 + a) / (2 * a);
++}
++int Premul(int u, int a) {
++  return (u * a + 127) / 255;
++}
++
++// N at one pixel. Returns true and updates `p` when the pixel changes.
++bool NoisePixel(const ::phasmid::NoiseKey& key,
++                const Pixels& pixels,
++                int x,
++                int y,
++                Rgba* p) {
++  const uint8_t alpha = (*p)[kA];
++  if (alpha == 0) {
++    return false;
++  }
++  const std::optional<Rgba> left = pixels.Neighbour(x - 1, y);
++  const std::optional<Rgba> right = pixels.Neighbour(x + 1, y);
++  const std::optional<Rgba> up = pixels.Neighbour(x, y - 1);
++  const std::optional<Rgba> down = pixels.Neighbour(x, y + 1);
++
++  if (alpha == 255) {
++    std::array<uint8_t, 6> horizontal;
++    std::array<uint8_t, 6> vertical;
++    const unsigned h_strict = OpaqueAxis(*p, left, right, &horizontal);
++    const unsigned v_strict = OpaqueAxis(*p, up, down, &vertical);
++    if (!h_strict && !v_strict) {
++      return false;
++    }
++    Message message(kOpaqueTag);
++    message.Append(std::array<uint8_t, 3>{static_cast<uint8_t>(Q((*p)[kR])),
++                                          static_cast<uint8_t>(Q((*p)[kG])),
++                                          static_cast<uint8_t>(Q((*p)[kB]))});
++    if (h_strict && v_strict) {
++      message.AppendSorted(horizontal, vertical);
++    } else {
++      message.Append(h_strict ? horizontal : vertical);
++    }
++    const uint64_t h = message.Hash(key);
++    if ((h & 3) != 0) {
++      return false;
++    }
++    const unsigned channels = h_strict | v_strict;
++    const int count = std::popcount(channels);
++    int pick = static_cast<int>((h >> 2) % static_cast<uint64_t>(count));
++    size_t channel = kR;
++    for (size_t c = kR; c <= kB; ++c) {
++      if ((channels >> c) & 1u) {
++        if (pick-- == 0) {
++          channel = c;
++          break;
++        }
++      }
++    }
++    const uint8_t value = static_cast<uint8_t>(((*p)[channel] & ~1u) |
++                                               ((h >> 8) & 1u));
++    if (value == (*p)[channel]) {
++      return false;
++    }
++    (*p)[channel] = value;
++    return true;
++  }
++
++  // 0 < alpha < 255: an anti-aliased edge over transparency. The alpha LSB
++  // moves and the colour is re-derived at the new alpha.
++  std::array<uint8_t, 2> horizontal;
++  std::array<uint8_t, 2> vertical;
++  const bool h_axis = AlphaAxis(alpha, left, right, &horizontal);
++  const bool v_axis = AlphaAxis(alpha, up, down, &vertical);
++  if (!h_axis && !v_axis) {
++    return false;
++  }
++  Message message(kAlphaTag);
++  message.Append(std::array<uint8_t, 1>{static_cast<uint8_t>(Q(alpha))});
++  if (h_axis && v_axis) {
++    message.AppendSorted(horizontal, vertical);
++  } else {
++    message.Append(h_axis ? horizontal : vertical);
++  }
++  const uint64_t h = message.Hash(key);
++  if ((h & 3) != 0) {
++    return false;
++  }
++  // Strictly inside (2 * lo + 1, 2 * hi), so 2 <= new_alpha <= 253.
++  const int new_alpha = (alpha & ~1) | static_cast<int>((h >> 8) & 1u);
++  if (new_alpha == alpha) {
++    return false;
++  }
++  for (size_t c = kR; c <= kB; ++c) {
++    (*p)[c] = static_cast<uint8_t>(
++        Premul(Unpremul((*p)[c], alpha), new_alpha));
++  }
++  (*p)[kA] = static_cast<uint8_t>(new_alpha);
++  return true;
++}
++
++const ::phasmid::NoiseKey* Key() {
++  const ::phasmid::Profile* profile = ::phasmid::Profile::Get();
++  if (!profile || !profile->canvas_noise_key()) {
++    return nullptr;
++  }
++  return &*profile->canvas_noise_key();
++}
++
++std::atomic<ProvenanceGetter> g_provenance_getter{nullptr};
++
++}  // namespace
++
++bool IsActive() {
++  return Key() != nullptr;
++}
++
++void SetProvenanceGetter(ProvenanceGetter getter) {
++  g_provenance_getter.store(getter, std::memory_order_release);
++}
++
++int ApplyKernel(const ::phasmid::NoiseKey& key,
++                const SkRegion* region,
++                const SkIPoint& origin,
++                const SkIRect& target,
++                const SkPixmap& pixmap,
++                Vector<SkIPoint>* changed) {
++  const std::optional<Layout> layout = LayoutOf(pixmap.info());
++  SkIRect bounds = target;
++  if (!layout || !bounds.intersect(pixmap.bounds())) {
++    return 0;
++  }
++  const Pixels pixels(pixmap, *layout);
++  int count = 0;
++  // In place: N changes only least significant bits of opaque colour or of
++  // a semi-transparent alpha, never what a neighbour's test reads.
++  auto apply = [&](const SkIRect& rect) {
++    for (int y = rect.top(); y < rect.bottom(); ++y) {
++      for (int x = rect.left(); x < rect.right(); ++x) {
++        Rgba p = pixels.Get(x, y);
++        if (NoisePixel(key, pixels, x, y, &p)) {
++          pixels.Set(x, y, p);
++          ++count;
++          if (changed) {
++            changed->push_back(SkIPoint::Make(x, y));
++          }
++        }
++      }
++    }
++  };
++  if (!region) {
++    apply(bounds);
++    return count;
++  }
++  for (SkRegion::Cliperator it(*region, bounds.makeOffset(origin.x(),
++                                                            origin.y()));
++       !it.done(); it.next()) {
++    apply(it.rect().makeOffset(-origin.x(), -origin.y()));
++  }
++  return count;
++}
++
++scoped_refptr<StaticBitmapImage> NoiseForExport(
++    const CanvasRenderingContext* context,
++    bool is_placeholder,
++    scoped_refptr<StaticBitmapImage> image) {
++  const ::phasmid::NoiseKey* key = Key();
++  if (!image || !key) {
++    return image;
++  }
++  // Null: every pixel is eligible and the content test alone decides.
++  const SkRegion* region = nullptr;
++  if (!is_placeholder) {
++    if (!context) {
++      return image;
++    }
++    if (context->IsRenderingContext2D()) {
++      const ProvenanceGetter getter =
++          g_provenance_getter.load(std::memory_order_acquire);
++      region = getter ? getter(*context) : nullptr;
++      if (!region) {
++        return image;
++      }
++    } else if (!context->IsImageBitmapRenderingContext()) {
++      return image;
++    }
++  }
++  scoped_refptr<StaticBitmapImage> raster = image->MakeUnaccelerated();
++  if (!raster) {
++    return image;
++  }
++  sk_sp<SkImage> source = raster->PaintImageForCurrentFrame().GetSwSkImage();
++  if (!source || !LayoutOf(source->imageInfo())) {
++    return image;
++  }
++  // Same colour type, alpha type and colour space, so the encoders convert
++  // the result exactly as they would have converted `image`.
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(source->imageInfo()) ||
++      !source->readPixels(bitmap.pixmap(), 0, 0)) {
++    return image;
++  }
++  if (!ApplyKernel(*key, region, SkIPoint::Make(0, 0), bitmap.bounds(),
++                   bitmap.pixmap(), nullptr)) {
++    return image;
++  }
++  bitmap.setImmutable();
++  scoped_refptr<StaticBitmapImage> noised =
++      UnacceleratedStaticBitmapImage::Create(
++          bitmap.asImage(), image->Orientation(), image->GetHdrMetadata());
++  noised->SetOriginClean(image->OriginClean());
++  return noised;
++}
++
++void NoiseImageData(StaticBitmapImage& snapshot,
++                    const SkRegion& region,
++                    const gfx::Rect& rect,
++                    const SkPixmap& dst) {
++  const ::phasmid::NoiseKey* key = Key();
++  if (!key || region.isEmpty()) {
++    return;
++  }
++  PaintImage paint_image = snapshot.PaintImageForCurrentFrame();
++  const SkImageInfo info = paint_image.GetSkImageInfo();
++  SkIRect target = gfx::RectToSkIRect(rect);
++  if (!LayoutOf(info) || !target.intersect(info.bounds())) {
++    return;
++  }
++  // Every target pixel's neighbourhood: one more pixel on each side, inside
++  // the canvas, so a sub-rectangle reads exactly the slice of a full read.
++  SkIRect area = target.makeOutset(1, 1);
++  if (!area.intersect(info.bounds())) {
++    return;
++  }
++  SkBitmap pixels;
++  if (!pixels.tryAllocPixels(info.makeWH(area.width(), area.height())) ||
++      !paint_image.readPixels(pixels.info(), pixels.getPixels(),
++                              pixels.rowBytes(), area.x(), area.y())) {
++    return;
++  }
++  Vector<SkIPoint> changed;
++  if (!ApplyKernel(*key, &region, SkIPoint::Make(area.x(), area.y()),
++                   target.makeOffset(-area.x(), -area.y()), pixels.pixmap(),
++                   &changed)) {
++    return;
++  }
++  // Each changed pixel goes through the same conversion getImageData used,
++  // one pixel at a time.
++  for (const SkIPoint& point : changed) {
++    SkPixmap from;
++    SkPixmap to;
++    if (pixels.pixmap().extractSubset(
++            &from, SkIRect::MakeXYWH(point.x(), point.y(), 1, 1)) &&
++        dst.extractSubset(&to, SkIRect::MakeXYWH(
++                                   point.x() + area.x() - rect.x(),
++                                   point.y() + area.y() - rect.y(), 1, 1))) {
++      from.readPixels(to);
++    }
++  }
++}
++
++}  // namespace blink::phasmid_canvas
+--- a/third_party/blink/renderer/core/html/canvas/phasmid_readback_noise_test.cc
++++ b/third_party/blink/renderer/core/html/canvas/phasmid_readback_noise_test.cc
+@@ -0,0 +1,197 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.h"
++
++#include <stdint.h>
++
++#include "components/phasmid/noise.h"
++#include "testing/gtest/include/gtest/gtest.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkCanvas.h"
++#include "third_party/skia/include/core/SkColorSpace.h"
++#include "third_party/skia/include/core/SkPaint.h"
++#include "third_party/skia/include/core/SkPixmap.h"
++#include "third_party/skia/include/core/SkRegion.h"
++
++namespace blink {
++namespace {
++
++// The key the example profile derives for canvas noise (noise_unittest.cc).
++constexpr ::phasmid::NoiseKey kKey = {0x76f2fb5423fa0ba9ULL,
++                                      0x312d93be81a91a51ULL};
++constexpr ::phasmid::NoiseKey kOtherKey = {0x1111, 0x2222};
++
++SkBitmap Copy(const SkBitmap& source) {
++  SkBitmap copy;
++  copy.allocPixels(source.info());
++  EXPECT_TRUE(source.pixmap().readPixels(copy.pixmap()));
++  return copy;
++}
++
++// Anti-aliased circles over an opaque or a transparent background: edges
++// that blend two colours, and alpha ramps.
++SkBitmap Scene(bool opaque) {
++  SkBitmap bitmap;
++  bitmap.allocPixels(SkImageInfo::MakeN32Premul(97, 61));
++  SkCanvas canvas(bitmap);
++  canvas.clear(opaque ? SK_ColorWHITE : SK_ColorTRANSPARENT);
++  SkPaint paint;
++  paint.setAntiAlias(true);
++  paint.setColor(SkColorSetARGB(255, 255, 102, 0));
++  canvas.drawCircle(30.3f, 28.7f, 20.2f, paint);
++  paint.setColor(SkColorSetARGB(opaque ? 255 : 179, 0, 102, 153));
++  canvas.drawCircle(55.1f, 33.4f, 17.9f, paint);
++  paint.setColor(SkColorSetARGB(179, 102, 204, 0));
++  canvas.drawCircle(70.6f, 20.2f, 12.3f, paint);
++  return bitmap;
++}
++
++int Apply(const ::phasmid::NoiseKey& key,
++          SkBitmap& bitmap,
++          const SkRegion* region = nullptr) {
++  return phasmid_canvas::ApplyKernel(key, region, SkIPoint::Make(0, 0),
++                                     bitmap.bounds(), bitmap.pixmap(),
++                                     nullptr);
++}
++
++bool SamePixels(const SkBitmap& a, const SkBitmap& b) {
++  if (a.dimensions() != b.dimensions()) {
++    return false;
++  }
++  for (int y = 0; y < a.height(); ++y) {
++    for (int x = 0; x < a.width(); ++x) {
++      if (*a.getAddr32(x, y) != *b.getAddr32(x, y)) {
++        return false;
++      }
++    }
++  }
++  return true;
++}
++
++// The alpha branch re-derives colour at a new alpha, and getImageData -> putImageData -> getImageData stays stable only
++// if Skia's 8-bit premultiply undoes its unpremultiply for every valid pixel.
++TEST(PhasmidReadbackNoiseTest, SkiaPremulRoundTripIsIdentity) {
++  for (SkColorType color_type : {kRGBA_8888_SkColorType,
++                                 kBGRA_8888_SkColorType}) {
++    for (int a = 0; a < 256; ++a) {
++      // One row holds every valid c <= a, so the SIMD bodies run too.
++      const int width = a + 1;
++      SkBitmap premul;
++      premul.allocPixels(SkImageInfo::Make(width, 1, color_type,
++                                           kPremul_SkAlphaType,
++                                           SkColorSpace::MakeSRGB()));
++      for (int c = 0; c <= a; ++c) {
++        *premul.getAddr32(c, 0) = static_cast<uint32_t>(a) << 24 |
++                                  static_cast<uint32_t>(c) << 16 |
++                                  static_cast<uint32_t>(a - c) << 8 |
++                                  static_cast<uint32_t>(c / 2);
++      }
++      SkBitmap unpremul;
++      unpremul.allocPixels(premul.info()
++                               .makeColorType(kRGBA_8888_SkColorType)
++                               .makeAlphaType(kUnpremul_SkAlphaType));
++      ASSERT_TRUE(premul.pixmap().readPixels(unpremul.pixmap()));
++      SkBitmap again;
++      again.allocPixels(premul.info());
++      ASSERT_TRUE(unpremul.pixmap().readPixels(again.pixmap()));
++      for (int c = 0; c <= a; ++c) {
++        ASSERT_EQ(*premul.getAddr32(c, 0), *again.getAddr32(c, 0))
++            << "alpha " << a << " colour " << c;
++      }
++    }
++  }
++}
++
++TEST(PhasmidReadbackNoiseTest, KernelIsIdempotent) {
++  for (bool opaque : {true, false}) {
++    SkBitmap noised = Scene(opaque);
++    EXPECT_GT(Apply(kKey, noised), 0) << opaque;
++    SkBitmap twice = Copy(noised);
++    EXPECT_EQ(Apply(kKey, twice), 0) << opaque;
++    EXPECT_TRUE(SamePixels(noised, twice)) << opaque;
++  }
++}
++
++TEST(PhasmidReadbackNoiseTest, SubRectangleMatchesFullRead) {
++  const SkBitmap scene = Scene(true);
++  SkBitmap full = Copy(scene);
++  Apply(kKey, full);
++  for (const SkIRect& target :
++       {SkIRect::MakeXYWH(20, 20, 50, 40), SkIRect::MakeXYWH(0, 0, 1, 1),
++        SkIRect::MakeXYWH(9, 8, 1, 1), SkIRect::MakeXYWH(40, 10, 57, 51)}) {
++    // As NoiseImageData reads: the target plus one pixel, inside the canvas.
++    SkIRect area = target.makeOutset(1, 1);
++    ASSERT_TRUE(area.intersect(scene.bounds()));
++    SkBitmap part;
++    part.allocPixels(scene.info().makeWH(area.width(), area.height()));
++    ASSERT_TRUE(scene.pixmap().readPixels(part.pixmap(), area.x(), area.y()));
++    phasmid_canvas::ApplyKernel(kKey, nullptr,
++                                SkIPoint::Make(area.x(), area.y()),
++                                target.makeOffset(-area.x(), -area.y()),
++                                part.pixmap(), nullptr);
++    for (int y = target.top(); y < target.bottom(); ++y) {
++      for (int x = target.left(); x < target.right(); ++x) {
++        ASSERT_EQ(*full.getAddr32(x, y),
++                  *part.getAddr32(x - area.x(), y - area.y()))
++            << x << "," << y;
++      }
++    }
++  }
++}
++
++TEST(PhasmidReadbackNoiseTest, TranslationAndFlipInvariant) {
++  const SkBitmap scene = Scene(true);
++  SkBitmap noised = Copy(scene);
++  Apply(kKey, noised);
++
++  SkBitmap moved;
++  moved.allocPixels(scene.info().makeWH(scene.width() + 20,
++                                        scene.height() + 15));
++  moved.eraseColor(SK_ColorWHITE);
++  SkBitmap flipped;
++  flipped.allocPixels(scene.info());
++  for (int y = 0; y < scene.height(); ++y) {
++    for (int x = 0; x < scene.width(); ++x) {
++      *moved.getAddr32(x + 7, y + 5) = *scene.getAddr32(x, y);
++      *flipped.getAddr32(scene.width() - 1 - x, y) = *scene.getAddr32(x, y);
++    }
++  }
++  Apply(kKey, moved);
++  Apply(kKey, flipped);
++  for (int y = 0; y < scene.height(); ++y) {
++    for (int x = 0; x < scene.width(); ++x) {
++      ASSERT_EQ(*flipped.getAddr32(scene.width() - 1 - x, y),
++                *noised.getAddr32(x, y));
++      // The copied rectangle's 1-pixel border sees other neighbours.
++      if (x > 0 && y > 0 && x < scene.width() - 1 && y < scene.height() - 1) {
++        ASSERT_EQ(*moved.getAddr32(x + 7, y + 5), *noised.getAddr32(x, y));
++      }
++    }
++  }
++}
++
++TEST(PhasmidReadbackNoiseTest, ExactPixelsAreNeverChanged) {
++  SkBitmap uniform;
++  uniform.allocPixels(SkImageInfo::MakeN32Premul(40, 30));
++  uniform.eraseColor(SkColorSetARGB(255, 12, 200, 99));
++  EXPECT_EQ(Apply(kKey, uniform), 0);
++  uniform.eraseColor(SK_ColorTRANSPARENT);
++  EXPECT_EQ(Apply(kKey, uniform), 0);
++
++  SkBitmap scene = Scene(true);
++  const SkRegion empty;
++  EXPECT_EQ(Apply(kKey, scene, &empty), 0);
++}
++
++TEST(PhasmidReadbackNoiseTest, KeysSelectDifferentPixels) {
++  SkBitmap first = Scene(false);
++  SkBitmap second = Scene(false);
++  Apply(kKey, first);
++  Apply(kOtherKey, second);
++  EXPECT_FALSE(SamePixels(first, second));
++}
++
++}  // namespace
++}  // namespace blink
+--- a/third_party/blink/renderer/core/html/build.gni
++++ b/third_party/blink/renderer/core/html/build.gni
+@@ -43,6 +43,8 @@
+   "canvas/image_data.h",
+   "canvas/image_element_base.cc",
+   "canvas/image_element_base.h",
++  "canvas/phasmid_readback_noise.cc",
++  "canvas/phasmid_readback_noise.h",
+   "canvas/canvas_paint_event.cc",
+   "canvas/canvas_paint_event.h",
+   "canvas/predefined_color_space.cc",
+@@ -716,6 +718,7 @@
+   "canvas/canvas_resource_tracker_test.cc",
+   "canvas/html_canvas_element_test.cc",
+   "canvas/image_data_test.cc",
++  "canvas/phasmid_readback_noise_test.cc",
+   "canvas/text_metrics_test.cc",
+   "canvas/unique_font_selector_test.cc",
+   "custom/custom_element_definition_test.cc",
+--- a/third_party/blink/renderer/core/BUILD.gn
++++ b/third_party/blink/renderer/core/BUILD.gn
+@@ -1594,6 +1594,7 @@
+     "//components/autofill/core/common:features",
+     "//components/page_load_metrics/browser",
+     "//components/paint_preview/common",
++    "//components/phasmid",
+     "//components/shared_highlighting/core/common",
+     "//components/shared_highlighting/core/common:data_driven_testing",
+     "//components/subresource_filter/content/renderer",
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+@@ -56,6 +56,7 @@
+ #include "third_party/blink/renderer/core/html/canvas/element_image.h"
+ #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
+ #include "third_party/blink/renderer/core/html/canvas/image_data.h"
++#include "third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.h"
+ #include "third_party/blink/renderer/core/html/canvas/text_cluster.h"
+ #include "third_party/blink/renderer/core/html/canvas/text_metrics.h"
+ #include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
+@@ -522,6 +523,12 @@
+     if (read_pixels_successful && RuntimeEnabledFeatures::FingerprintingCanvasImageDataNoiseEnabled()) {
+       StaticBitmapImage::ShuffleSubchannelColorData(image_data_pixmap.addr(), image_data_pixmap.info(), sx, sy);
+     }
++    // Phasmid: deterministic readback noise, the same function as toDataURL,
++    // toBlob and convertToBlob.
++    if (read_pixels_successful) {
++      phasmid_canvas::NoiseImageData(*snapshot, phasmid_provenance_.region(),
++                                     image_data_rect, image_data_pixmap);
++    }
+   }
+ 
+   return image_data;
+@@ -595,6 +602,10 @@
+   gfx::Rect source_rect = dest_rect;
+   source_rect.Offset(-dest_offset);
+ 
++  // Phasmid: readback provenance.
++  PhasmidReadbackProvenance::Scope phasmid_scope(
++      phasmid_provenance_, phasmid_provenance_.ForPutImageData(dest_rect));
++
+   SkPixmap data_pixmap = data->GetSkPixmap();
+ 
+   // WritePixels (called by PutByteArray) requires that the source and
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/canvas_2d_recorder_context.h
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/canvas_2d_recorder_context.h
+@@ -31,6 +31,7 @@
+ #include "third_party/blink/renderer/modules/canvas/canvas2d/cached_color.h"
+ #include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_path.h"
+ #include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d_state.h"
++#include "third_party/blink/renderer/modules/canvas/canvas2d/phasmid_readback_provenance.h"
+ #include "third_party/blink/renderer/modules/modules_export.h"
+ #include "third_party/blink/renderer/platform/graphics/color.h"
+ #include "third_party/blink/renderer/platform/graphics/flush_reason.h"
+@@ -177,6 +178,12 @@
+   // draw the bitmap.
+   void endLayer(ExceptionState& exception_state);
+   int LayerCount() const { return layer_count_; }
++
++  // Phasmid: readback provenance.
++  const PhasmidReadbackProvenance& phasmid_provenance() const {
++    return phasmid_provenance_;
++  }
++
+   virtual void reset();          // Called by the javascript interface
+   virtual void ResetInternal();  // Called from within blink
+ 
+@@ -439,6 +446,8 @@
+   unsigned max_state_stack_depth_ = 1;
+   // Counts how many states have been pushed with BeginLayer.
+   int layer_count_ = 0;
++  // Phasmid: readback provenance.
++  PhasmidReadbackProvenance phasmid_provenance_;
+   AntiAliasingMode clip_antialiasing_ = kNotAntiAliased;
+   // The paint worklet canvas operates on CSS pixels, and that's different than
+   // the HTML canvas which operates on physical pixels. In other words, the
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/canvas_2d_recorder_context.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/canvas_2d_recorder_context.cc
+@@ -846,6 +846,8 @@
+              CanvasPerformanceMonitor::DrawType::kOther);
+     c->drawRect(SkRect::MakeXYWH(0.0f, 0.0f, width, height), GetClearFlags());
+   }
++  // Phasmid: the canvas is clear.
++  phasmid_provenance_.Reset();
+ 
+   ValidateStateStack();
+   origin_tainted_by_content_ = false;
+@@ -1749,6 +1751,9 @@
+   CanvasRenderingContext::AdjustRectForCanvas(x, y, width, height);
+   gfx::RectF rect(ClampTo<float>(x), ClampTo<float>(y), ClampTo<float>(width),
+                   ClampTo<float>(height));
++  // Phasmid: readback provenance.
++  PhasmidReadbackProvenance::Scope phasmid_scope(
++      phasmid_provenance_, phasmid_provenance_.ForFillRect(state, rect));
+   Draw<OverdrawOp::kNone>(
+       /*draw_func=*/
+       [rect](MemoryManagedPaintCanvas* c, const cc::PaintFlags* flags) {
+@@ -1967,6 +1972,9 @@
+   float fheight = ClampTo<float>(height);
+ 
+   gfx::RectF rect(fx, fy, fwidth, fheight);
++  // Phasmid: readback provenance.
++  PhasmidReadbackProvenance::Scope phasmid_scope(
++      phasmid_provenance_, phasmid_provenance_.ForClearRect(GetState(), rect));
+   if (CanvasRenderingContextHost* host = GetCanvasRenderingContextHost();
+       host && host->ShouldCaptureRenderedText()) {
+     // Map the cleared rect from context coordinates to canvas element
+@@ -2323,6 +2331,11 @@
+     SetOriginTaintedByContent();
+   }
+ 
++  // Phasmid: readback provenance.
++  PhasmidReadbackProvenance::Scope phasmid_scope(
++      phasmid_provenance_,
++      phasmid_provenance_.ForDrawImage(GetState(), image_source, image.get(),
++                                       src_rect, dst_rect));
+   Draw<OverdrawOp::kDrawImage>(
+       /*draw_func=*/
+       [this, image_source, image, src_rect, dst_rect, respect_orientation](
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d.cc
+@@ -558,6 +558,8 @@
+     const gfx::Rect& dirty_rect,
+     CanvasPerformanceMonitor::DrawType draw_type) {
+   CHECK(shared_image_provider_ || bitmap_provider_);
++  // Phasmid: readback provenance.
++  phasmid_provenance_.Rasterized(dirty_rect);
+   if (ShouldAntialias()) {
+     gfx::Rect inflated_dirty_rect = dirty_rect;
+     inflated_dirty_rect.Outset(1);
+--- a/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.cc
+@@ -456,6 +456,8 @@
+     const gfx::Rect& dirty_rect,
+     CanvasPerformanceMonitor::DrawType draw_type) {
+   CHECK(shared_image_provider_ || bitmap_provider_);
++  // Phasmid: readback provenance.
++  phasmid_provenance_.Rasterized(dirty_rect);
+   gfx::Rect adjusted_dirty_rect = dirty_rect;
+   if (GetState().ShouldAntialias()) {
+     adjusted_dirty_rect.Outset(1);
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/phasmid_readback_provenance.h
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/phasmid_readback_provenance.h
+@@ -0,0 +1,100 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_CANVAS2D_PHASMID_READBACK_PROVENANCE_H_
++#define THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_CANVAS2D_PHASMID_READBACK_PROVENANCE_H_
++
++#include "base/memory/stack_allocated.h"
++#include "third_party/blink/renderer/modules/modules_export.h"
++#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
++#include "third_party/skia/include/core/SkRegion.h"
++#include "ui/gfx/geometry/rect.h"
++
++namespace gfx {
++class RectF;
++}
++
++namespace blink {
++
++class CanvasImageSource;
++class CanvasRenderingContext;
++class CanvasRenderingContext2DState;
++class Image;
++
++// The pixels of a 2D context last written by anti-aliased or blending
++// rasterization, in canvas pixels. Readback noise
++// (core/html/canvas/phasmid_readback_noise.h) applies only inside this
++// region, so pixels written exactly read back exactly: putImageData, a
++// pixel-aligned solid fillRect or clearRect, a 1:1 drawImage of a decoded
++// image. A 1:1 drawImage of another 2D canvas copies that canvas's region.
++// Without canvas noise in the profile nothing is ever recorded.
++class MODULES_EXPORT PhasmidReadbackProvenance final {
++  DISALLOW_NEW();
++
++ public:
++  // What one draw call does to the region. kRasterized leaves it to
++  // WillDraw, which adds the dirty rectangle.
++  struct Op {
++    enum class Kind { kRasterized, kExact, kRasterizedRect, kCopy };
++    Kind kind = Kind::kRasterized;
++    gfx::Rect rect;
++    gfx::Rect source_rect;
++    const PhasmidReadbackProvenance* source = nullptr;
++  };
++
++  // Records `op` once the draw call it wraps has run. While it lives,
++  // WillDraw adds nothing.
++  class Scope {
++    STACK_ALLOCATED();
++
++   public:
++    Scope(PhasmidReadbackProvenance& provenance, const Op& op);
++    Scope(const Scope&) = delete;
++    Scope& operator=(const Scope&) = delete;
++    ~Scope();
++
++   private:
++    PhasmidReadbackProvenance& provenance_;
++    const Op op_;
++  };
++
++  PhasmidReadbackProvenance();
++
++  const SkRegion& region() const { return region_; }
++
++  // WillDraw: `dirty_rect`, outset by one pixel for anti-aliasing, was
++  // rasterized.
++  void Rasterized(const gfx::Rect& dirty_rect);
++  // reset() and resizing clear the canvas.
++  void Reset();
++
++  Op ForFillRect(const CanvasRenderingContext2DState& state,
++                 const gfx::RectF& rect) const;
++  Op ForClearRect(const CanvasRenderingContext2DState& state,
++                  const gfx::RectF& rect) const;
++  Op ForDrawImage(const CanvasRenderingContext2DState& state,
++                  CanvasImageSource* image_source,
++                  const Image* image,
++                  const gfx::RectF& src_rect,
++                  const gfx::RectF& dst_rect) const;
++  Op ForPutImageData(const gfx::Rect& dest_rect) const;
++
++  // The region of a 2D context, or null for any other context. Registered
++  // with core as phasmid_canvas::ProvenanceGetter.
++  static const SkRegion* RegionOf(const CanvasRenderingContext& context);
++
++ private:
++  static const PhasmidReadbackProvenance* Of(
++      const CanvasRenderingContext* context);
++  void Add(const gfx::Rect& rect);
++  void Apply(const Op& op);
++
++  SkRegion region_;
++  const bool active_;
++  int suppressed_ = 0;
++};
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_CANVAS2D_PHASMID_READBACK_PROVENANCE_H_
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/phasmid_readback_provenance.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/phasmid_readback_provenance.cc
+@@ -0,0 +1,214 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "third_party/blink/renderer/modules/canvas/canvas2d/phasmid_readback_provenance.h"
++
++#include <optional>
++
++#include "third_party/blink/renderer/core/html/canvas/canvas_image_source.h"
++#include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
++#include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context_host.h"
++#include "third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.h"
++#include "third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.h"
++#include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d_state.h"
++#include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_style.h"
++#include "third_party/blink/renderer/platform/graphics/image.h"
++#include "third_party/blink/renderer/platform/transforms/affine_transform.h"
++#include "ui/gfx/geometry/rect_conversions.h"
++#include "ui/gfx/geometry/rect_f.h"
++#include "ui/gfx/geometry/skia_conversions.h"
++
++namespace blink {
++
++namespace {
++
++// Past this many rectangles the region collapses to its bounds. A larger
++// region only makes more pixels eligible, and eligible pixels still have to
++// pass the kernel's content test.
++constexpr int kMaxRegionComplexity = 256;
++
++// The canvas pixels `rect` covers when the transform moves it by whole pixels
++// onto whole pixels and no clip can anti-alias its edges.
++std::optional<gfx::Rect> AlignedDeviceRect(
++    const CanvasRenderingContext2DState& state,
++    const gfx::RectF& rect) {
++  if (!state.IsTransformInvertible() || state.HasClip() ||
++      !state.GetTransform().IsIdentityOrTranslation()) {
++    return std::nullopt;
++  }
++  const gfx::RectF mapped = state.GetTransform().MapRect(rect);
++  const gfx::Rect device = gfx::ToEnclosedRect(mapped);
++  if (device.IsEmpty() || gfx::RectF(device) != mapped) {
++    return std::nullopt;
++  }
++  return device;
++}
++
++bool HasShadowOrFilter(const CanvasRenderingContext2DState& state) {
++  return state.ShouldDrawShadows() || state.IsFilterUnresolved() ||
++         state.IsFilterResolved();
++}
++
++}  // namespace
++
++PhasmidReadbackProvenance::Scope::Scope(PhasmidReadbackProvenance& provenance,
++                                        const Op& op)
++    : provenance_(provenance), op_(op) {
++  if (op_.kind != Op::Kind::kRasterized) {
++    ++provenance_.suppressed_;
++  }
++}
++
++PhasmidReadbackProvenance::Scope::~Scope() {
++  if (op_.kind != Op::Kind::kRasterized) {
++    --provenance_.suppressed_;
++    provenance_.Apply(op_);
++  }
++}
++
++PhasmidReadbackProvenance::PhasmidReadbackProvenance()
++    : active_(phasmid_canvas::IsActive()) {}
++
++void PhasmidReadbackProvenance::Rasterized(const gfx::Rect& dirty_rect) {
++  if (active_ && !suppressed_) {
++    Add(dirty_rect);
++  }
++}
++
++void PhasmidReadbackProvenance::Reset() {
++  region_.setEmpty();
++}
++
++PhasmidReadbackProvenance::Op PhasmidReadbackProvenance::ForFillRect(
++    const CanvasRenderingContext2DState& state,
++    const gfx::RectF& rect) const {
++  if (!active_ || HasShadowOrFilter(state) ||
++      state.FillStyle().GetCanvasGradient() ||
++      state.FillStyle().GetCanvasPattern()) {
++    return Op();
++  }
++  // A solid colour: each pixel is a function of its own old value only.
++  // globalAlpha and the composite operation do not blend neighbours.
++  const std::optional<gfx::Rect> device = AlignedDeviceRect(state, rect);
++  if (!device) {
++    return Op();
++  }
++  return Op{Op::Kind::kExact, *device};
++}
++
++PhasmidReadbackProvenance::Op PhasmidReadbackProvenance::ForClearRect(
++    const CanvasRenderingContext2DState& state,
++    const gfx::RectF& rect) const {
++  if (!active_) {
++    return Op();
++  }
++  // clearRect ignores shadows, filters, globalAlpha and compositing.
++  if (const std::optional<gfx::Rect> device = AlignedDeviceRect(state, rect)) {
++    return Op{Op::Kind::kExact, *device};
++  }
++  // Only the cleared rectangle's edges are anti-aliased, not the whole clip
++  // that WillDraw reports.
++  return Op{Op::Kind::kRasterizedRect,
++            gfx::ToEnclosingRect(state.GetTransform().MapRect(rect))};
++}
++
++PhasmidReadbackProvenance::Op PhasmidReadbackProvenance::ForDrawImage(
++    const CanvasRenderingContext2DState& state,
++    CanvasImageSource* image_source,
++    const Image* image,
++    const gfx::RectF& src_rect,
++    const gfx::RectF& dst_rect) const {
++  if (!active_ || HasShadowOrFilter(state) ||
++      src_rect.size() != dst_rect.size() ||
++      gfx::RectF(gfx::ToEnclosedRect(src_rect)) != src_rect) {
++    return Op();
++  }
++  const std::optional<gfx::Rect> device = AlignedDeviceRect(state, dst_rect);
++  if (!device) {
++    return Op();
++  }
++  if (image_source->IsCanvasElement() || image_source->IsOffscreenCanvas()) {
++    // A 2D canvas copied pixel for pixel keeps its provenance. Any other
++    // canvas (WebGL, WebGPU, bitmaprenderer, a placeholder) is rasterized.
++    const PhasmidReadbackProvenance* source =
++        Of(static_cast<CanvasRenderingContextHost*>(image_source)
++               ->RenderingContext());
++    if (!source) {
++      return Op();
++    }
++    return Op{Op::Kind::kCopy, *device, gfx::ToEnclosedRect(src_rect),
++              source};
++  }
++  // Decoded pixels drawn 1:1. SVG images are rasterized vector content, and
++  // an ImageBitmap's origin is not tracked, so both stay rasterized.
++  if ((image_source->IsImageElement() && image && image->IsBitmapImage()) ||
++      image_source->IsVideoElement() || image_source->IsVideoFrame()) {
++    return Op{Op::Kind::kExact, *device};
++  }
++  return Op();
++}
++
++PhasmidReadbackProvenance::Op PhasmidReadbackProvenance::ForPutImageData(
++    const gfx::Rect& dest_rect) const {
++  if (!active_) {
++    return Op();
++  }
++  return Op{Op::Kind::kExact, dest_rect};
++}
++
++// static
++const SkRegion* PhasmidReadbackProvenance::RegionOf(
++    const CanvasRenderingContext& context) {
++  const PhasmidReadbackProvenance* provenance = Of(&context);
++  return provenance ? &provenance->region_ : nullptr;
++}
++
++// static
++const PhasmidReadbackProvenance* PhasmidReadbackProvenance::Of(
++    const CanvasRenderingContext* context) {
++  // Every 2D context, on a canvas element or an OffscreenCanvas, is a
++  // BaseRenderingContext2D.
++  if (!context || !context->IsRenderingContext2D()) {
++    return nullptr;
++  }
++  return &static_cast<const BaseRenderingContext2D*>(context)
++              ->phasmid_provenance();
++}
++
++void PhasmidReadbackProvenance::Add(const gfx::Rect& rect) {
++  gfx::Rect outset = rect;
++  outset.Outset(1);
++  region_.op(gfx::RectToSkIRect(outset), SkRegion::kUnion_Op);
++  if (region_.computeRegionComplexity() > kMaxRegionComplexity) {
++    region_.setRect(region_.getBounds());
++  }
++}
++
++void PhasmidReadbackProvenance::Apply(const Op& op) {
++  switch (op.kind) {
++    case Op::Kind::kRasterized:
++      return;
++    case Op::Kind::kExact:
++      region_.op(gfx::RectToSkIRect(op.rect), SkRegion::kDifference_Op);
++      return;
++    case Op::Kind::kRasterizedRect:
++      Add(op.rect);
++      return;
++    case Op::Kind::kCopy: {
++      // Read the source first: it may be this canvas.
++      SkRegion copied(op.source->region_);
++      copied.op(gfx::RectToSkIRect(op.source_rect), SkRegion::kIntersect_Op);
++      copied.translate(op.rect.x() - op.source_rect.x(),
++                       op.rect.y() - op.source_rect.y());
++      region_.op(gfx::RectToSkIRect(op.rect), SkRegion::kDifference_Op);
++      region_.op(copied, SkRegion::kUnion_Op);
++      if (region_.computeRegionComplexity() > kMaxRegionComplexity) {
++        region_.setRect(region_.getBounds());
++      }
++      return;
++    }
++  }
++}
++
++}  // namespace blink
+--- a/third_party/blink/renderer/modules/canvas/BUILD.gn
++++ b/third_party/blink/renderer/modules/canvas/BUILD.gn
+@@ -38,6 +38,8 @@
+     "canvas2d/mesh_2d_vertex_buffer.h",
+     "canvas2d/path_2d.cc",
+     "canvas2d/path_2d.h",
++    "canvas2d/phasmid_readback_provenance.cc",
++    "canvas2d/phasmid_readback_provenance.h",
+     "canvas2d/v8_canvas_style.cc",
+     "canvas2d/v8_canvas_style.h",
+     "htmlcanvas/canvas_context_creation_attributes_helpers.cc",
+--- a/third_party/blink/renderer/modules/modules_initializer.cc
++++ b/third_party/blink/renderer/modules/modules_initializer.cc
+@@ -30,6 +30,7 @@
+ #include "third_party/blink/renderer/core/frame/settings.h"
+ #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
+ #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
++#include "third_party/blink/renderer/core/html/canvas/phasmid_readback_noise.h"
+ #include "third_party/blink/renderer/core/html/media/html_media_element.h"
+ #include "third_party/blink/renderer/core/inspector/devtools_session.h"
+ #include "third_party/blink/renderer/core/inspector/inspector_media_context_impl.h"
+@@ -44,6 +45,7 @@
+ #include "third_party/blink/renderer/modules/audio_output_devices/html_media_element_audio_output_device.h"
+ #include "third_party/blink/renderer/modules/cache_storage/inspector_cache_storage_agent.h"
+ #include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d.h"
++#include "third_party/blink/renderer/modules/canvas/canvas2d/phasmid_readback_provenance.h"
+ #include "third_party/blink/renderer/modules/canvas/imagebitmap/image_bitmap_rendering_context.h"
+ #include "third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.h"
+ #include "third_party/blink/renderer/modules/content_extraction/ai_page_content_agent.h"
+@@ -193,6 +195,8 @@
+   // Canvas context types must be registered with the HTMLCanvasElement.
+   HTMLCanvasElement::RegisterRenderingContextFactory(
+       std::make_unique<CanvasRenderingContext2D::Factory>());
++  // Phasmid: core's readback exits read the 2D contexts' provenance.
++  phasmid_canvas::SetProvenanceGetter(&PhasmidReadbackProvenance::RegionOf);
+   HTMLCanvasElement::RegisterRenderingContextFactory(
+       WebGLContextFactory::MakeWebGL1());
+   HTMLCanvasElement::RegisterRenderingContextFactory(
