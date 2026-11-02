@@ -47,3 +47,6 @@ audio/webaudio.patch
 
 # Media
 platform/widevine.patch
+
+# Hardware group: storage and heap
+hardware/storage-quota.patch

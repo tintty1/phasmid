@@ -1,0 +1,81 @@
+Phasmid: storage quota
+
+What:     navigator.storage.estimate(), webkitTemporaryStorage and
+          StorageBucket.estimate() report the quota stock Chrome computes for a
+          disk of hardware.disk_total_bytes; usage stays real. The enforced
+          quota, eviction and the incognito pool follow the same values.
+Why:      The reported quota implies the host's disk size.
+Profile:  hardware.disk_total_bytes, hardware.physical_memory_mb
+Hooks:    storage/browser/quota/quota_device_info_helper.cc
+          QuotaDeviceInfoHelper::AmountOfTotalDiskSpace, AmountOfPhysicalMemory;
+          storage/browser/quota/quota_manager_impl.cc
+          QuotaManagerImpl::CallGetVolumeInfo; storage/browser/BUILD.gn
+Contexts: main, iframe, worker, shared worker, service worker
+Guard:    tests/guards/hardware/storage-quota.py
+
+--- a/storage/browser/quota/quota_device_info_helper.cc
++++ b/storage/browser/quota/quota_device_info_helper.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/byte_size.h"
+ #include "base/metrics/histogram_macros.h"
++#include "components/phasmid/profile.h"
+ 
+ namespace storage {
+ 
+@@ -13,12 +14,18 @@
+ 
+ int64_t QuotaDeviceInfoHelper::AmountOfTotalDiskSpace(
+     const base::FilePath& path) const {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->disk_total_bytes();
++  }
+   int64_t disk_space = base::SysInfo::AmountOfTotalDiskSpace(path).value_or(-1);
+   UMA_HISTOGRAM_BOOLEAN("Quota.TotalDiskSpaceIsZero", disk_space <= 0);
+   return disk_space;
+ }
+ 
+ uint64_t QuotaDeviceInfoHelper::AmountOfPhysicalMemory() const {
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return static_cast<uint64_t>(profile->physical_memory_mb()) * 1024 * 1024;
++  }
+   return base::SysInfo::AmountOfTotalPhysicalMemory().InBytes();
+ }
+ 
+--- a/storage/browser/quota/quota_manager_impl.cc
++++ b/storage/browser/quota/quota_manager_impl.cc
+@@ -50,6 +50,7 @@
+ #include "base/trace_event/trace_event.h"
+ #include "base/types/pass_key.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
+ #include "components/services/storage/public/cpp/buckets/constants.h"
+ #include "components/services/storage/public/mojom/quota_client.mojom.h"
+@@ -2987,6 +2988,16 @@
+     return {};
+   }
+ 
++  // Phasmid: free space stays real, since writes can only use what is
++  // really free, capped at the claimed size.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    disk_space->total =
++        base::ByteSize(static_cast<uint64_t>(profile->disk_total_bytes()));
++    if (disk_space->available > disk_space->total) {
++      disk_space->available = disk_space->total;
++    }
++  }
++
+ #if BUILDFLAG(IS_ANDROID)
+   // On Android, `statvfs()` may return `f_bavail > f_blocks`, producing
+   // `available > total`. The root cause is unknown. See crbug.com/501709109
+--- a/storage/browser/BUILD.gn
++++ b/storage/browser/BUILD.gn
+@@ -227,6 +227,7 @@
+     "//build:chromeos_buildflags",
+     "//components/crash/core/common:crash_key",
+     "//components/file_access",
++    "//components/phasmid",
+     "//components/services/storage/public/cpp",
+     "//components/services/storage/public/cpp/filesystem",
+     "//mojo/public/cpp/bindings",
