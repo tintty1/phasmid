@@ -38,3 +38,4 @@ locale/accept-language.patch
 
 # Graphics group
 graphics/gpu-info.patch
+graphics/webgl.patch

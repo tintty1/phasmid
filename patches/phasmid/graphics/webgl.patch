@@ -1,0 +1,593 @@
+Phasmid: WebGL strings, limits, precision and extensions
+
+What:     Every WebGL1 and WebGL2 context reports gpu.webgl or gpu.webgl2:
+          UNMASKED_VENDOR_WEBGL, UNMASKED_RENDERER_WEBGL, every limit the
+          client caches, the twelve shader precision formats, the line width
+          and point size ranges, SUBPIXEL_BITS,
+          MAX_TEXTURE_MAX_ANISOTROPY_EXT, MAX_DRAW_BUFFERS_WEBGL (WebGL1),
+          and only the listed extensions. Values are set in the GPU process
+          for WebGL contexts only, so Blink's own checks enforce the claim.
+          Framebuffer-dependent values, context attributes, VERSION,
+          SHADING_LANGUAGE_VERSION and readPixels stay live. A claim the host
+          cannot back is logged.
+Why:      Strings, extensions and limits must describe one GPU. A binding
+          hook would leak through the client caches.
+Profile:  gpu.webgl, gpu.webgl2: unmasked_vendor, unmasked_renderer,
+          extensions, params, precision, max_anisotropy, max_draw_buffers
+Hooks:    gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+          (GetCapabilities, GetGLCapabilities, PatchGetNumericResults);
+          gles2_cmd_decoder_passthrough_doers.cc (DoGetString,
+          DoGetShaderPrecisionFormat); new phasmid_webgl.{h,cc};
+          third_party/blink/renderer/modules/webgl/
+          webgl_rendering_context_base.cc (ExtensionSupportedAndAllowed)
+Contexts: main, iframe, worker, shared worker, service worker, offscreen;
+          WebGL1 and WebGL2
+Guard:    tests/guards/graphics/webgl.py
+
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
+@@ -29,6 +29,7 @@
+ #include "gpu/command_buffer/service/gpu_tracer.h"
+ #include "gpu/command_buffer/service/multi_draw_manager.h"
+ #include "gpu/command_buffer/service/passthrough_program_cache.h"
++#include "gpu/command_buffer/service/phasmid_webgl.h"
+ #include "gpu/command_buffer/service/program_cache.h"
+ #include "gpu/command_buffer/service/service_utils.h"
+ #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
+@@ -1451,6 +1452,8 @@
+   PopulateDRMCapabilities(&caps, feature_info_.get());
+ #endif
+ 
++  // Phasmid: WebGL contexts report the profile's MAX_TEXTURE_SIZE here too.
++  PhasmidApplyCapabilities(feature_info_.get(), &caps);
+   return caps;
+ }
+ 
+@@ -1470,6 +1473,9 @@
+   }
+   caps.sync_query = feature_info_->feature_flags().chromium_sync_query;
+ 
++  // Phasmid: every limit and shader precision the client caches for a WebGL
++  // context comes from the profile, applied after the host's workarounds.
++  PhasmidApplyGLCapabilities(feature_info_.get(), &caps);
+   return caps;
+ }
+ 
+@@ -1934,6 +1940,8 @@
+       break;
+ 
+     default:
++      // Phasmid: fixed WebGL limits the client does not cache.
++      PhasmidPatchNumeric(feature_info_.get(), pname, length, params);
+       break;
+   }
+ 
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc
+@@ -26,6 +26,7 @@
+ #include "gpu/command_buffer/service/gpu_fence_manager.h"
+ #include "gpu/command_buffer/service/gpu_tracer.h"
+ #include "gpu/command_buffer/service/multi_draw_manager.h"
++#include "gpu/command_buffer/service/phasmid_webgl.h"
+ #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
+ #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
+ #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+@@ -1767,6 +1768,11 @@
+   api()->glGetShaderPrecisionFormatFn(shadertype, precisiontype, range,
+                                       precision);
+   *success = CheckErrorCallbackState() ? 0 : 1;
++  if (*success) {
++    // Phasmid: the profile's precision, as the client cache reports it.
++    PhasmidPatchShaderPrecision(feature_info_.get(), shadertype, precisiontype,
++                                range, precision);
++  }
+   return error::kNoError;
+ }
+ 
+@@ -1812,6 +1818,10 @@
+     }
+     default:
+       str = reinterpret_cast<const char*>(api()->glGetStringFn(name));
++      // Phasmid: UNMASKED_RENDERER_WEBGL and UNMASKED_VENDOR_WEBGL.
++      if (const char* claimed = PhasmidWebGLString(feature_info_.get(), name)) {
++        str = claimed;
++      }
+       break;
+   }
+ 
+--- a/gpu/command_buffer/service/phasmid_webgl.h
++++ b/gpu/command_buffer/service/phasmid_webgl.h
+@@ -0,0 +1,72 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
++#define GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
++
++#include "ui/gl/gl_bindings.h"
++
++namespace gpu {
++
++struct Capabilities;
++struct GLCapabilities;
++
++namespace gles2 {
++
++class FeatureInfo;
++
++// Phasmid: what a WebGL context reports, from the profile's gpu.webgl or
++// gpu.webgl2. Every function below leaves its output alone unless a profile
++// is active and `feature_info` belongs to a WebGL context, so the
++// compositor, raster and interop contexts keep the host's values.
++// Framebuffer-dependent values (*_BITS, SAMPLES, SAMPLE_BUFFERS,
++// IMPLEMENTATION_COLOR_READ_*) are never touched: they answer for whatever
++// framebuffer the page has bound.
++
++// UNMASKED_RENDERER_WEBGL for GL_RENDERER and UNMASKED_VENDOR_WEBGL for
++// GL_VENDOR, or null for any other name. The string lives as long as the
++// process.
++const char* PhasmidWebGLString(const FeatureInfo* feature_info, GLenum name);
++
++// Overwrites every limit the client caches and the twelve shader
++// precisions. A claim beyond the host's value, after the host's driver
++// workarounds, goes to phasmid::ReportUnbackedGpuClaim.
++void PhasmidApplyGLCapabilities(const FeatureInfo* feature_info,
++                                GLCapabilities* caps);
++
++// Capabilities::max_texture_size, so it agrees with GLCapabilities.
++void PhasmidApplyCapabilities(const FeatureInfo* feature_info,
++                              Capabilities* caps);
++
++// Fixed limits the client does not cache: ALIASED_LINE_WIDTH_RANGE,
++// ALIASED_POINT_SIZE_RANGE, SUBPIXEL_BITS, MAX_VIEWPORT_DIMS,
++// MAX_TEXTURE_MAX_ANISOTROPY_EXT and, in WebGL1, MAX_DRAW_BUFFERS_EXT.
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLint* params);
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLint64* params);
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLfloat* params);
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLboolean* params);
++
++// getShaderPrecisionFormat() when the client cache misses.
++void PhasmidPatchShaderPrecision(const FeatureInfo* feature_info,
++                                 GLenum shader_type,
++                                 GLenum precision_type,
++                                 GLint* range,
++                                 GLint* precision);
++
++}  // namespace gles2
++}  // namespace gpu
++
++#endif  // GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
+--- a/gpu/command_buffer/service/phasmid_webgl.cc
++++ b/gpu/command_buffer/service/phasmid_webgl.cc
+@@ -0,0 +1,362 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "gpu/command_buffer/service/phasmid_webgl.h"
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include <optional>
++#include <string>
++#include <string_view>
++#include <type_traits>
++
++#include "base/check.h"
++#include "base/numerics/safe_conversions.h"
++#include "base/strings/strcat.h"
++#include "base/strings/string_number_conversions.h"
++#include "components/phasmid/profile.h"
++#include "gpu/command_buffer/common/capabilities.h"
++#include "gpu/command_buffer/common/context_creation_attribs.h"
++#include "gpu/command_buffer/service/feature_info.h"
++
++namespace gpu::gles2 {
++
++namespace {
++
++// How a claim must compare with the host's value to be backed. Most limits
++// are maxima. A minimum offset and an alignment are backed at or above the
++// host's value. MAX_ELEMENTS_INDICES and MAX_ELEMENTS_VERTICES are hints
++// that limit nothing.
++enum class Backing { kAtMost, kAtLeast, kHint };
++
++template <typename T>
++struct CapRow {
++  const char* name;
++  T GLCapabilities::* member;
++  Backing backing;
++};
++
++// Limits GLES2Implementation answers from GLCapabilities in WebGL1 and
++// WebGL2. MAX_VIEWPORT_DIMS is applied separately (two members).
++constexpr CapRow<int> kCaps[] = {
++    {"MAX_COMBINED_TEXTURE_IMAGE_UNITS",
++     &GLCapabilities::max_combined_texture_image_units, Backing::kAtMost},
++    {"MAX_CUBE_MAP_TEXTURE_SIZE", &GLCapabilities::max_cube_map_texture_size,
++     Backing::kAtMost},
++    {"MAX_FRAGMENT_UNIFORM_VECTORS",
++     &GLCapabilities::max_fragment_uniform_vectors, Backing::kAtMost},
++    {"MAX_RENDERBUFFER_SIZE", &GLCapabilities::max_renderbuffer_size,
++     Backing::kAtMost},
++    {"MAX_TEXTURE_IMAGE_UNITS", &GLCapabilities::max_texture_image_units,
++     Backing::kAtMost},
++    {"MAX_TEXTURE_SIZE", &GLCapabilities::max_texture_size, Backing::kAtMost},
++    {"MAX_VARYING_VECTORS", &GLCapabilities::max_varying_vectors,
++     Backing::kAtMost},
++    {"MAX_VERTEX_ATTRIBS", &GLCapabilities::max_vertex_attribs,
++     Backing::kAtMost},
++    {"MAX_VERTEX_TEXTURE_IMAGE_UNITS",
++     &GLCapabilities::max_vertex_texture_image_units, Backing::kAtMost},
++    {"MAX_VERTEX_UNIFORM_VECTORS", &GLCapabilities::max_vertex_uniform_vectors,
++     Backing::kAtMost},
++};
++
++// WebGL2 only: the client reads these from GLCapabilities when the context
++// is ES3.
++constexpr CapRow<int> kWebGL2IntCaps[] = {
++    {"MAX_3D_TEXTURE_SIZE", &GLCapabilities::max_3d_texture_size,
++     Backing::kAtMost},
++    {"MAX_ARRAY_TEXTURE_LAYERS", &GLCapabilities::max_array_texture_layers,
++     Backing::kAtMost},
++    {"MAX_COLOR_ATTACHMENTS", &GLCapabilities::max_color_attachments,
++     Backing::kAtMost},
++    {"MAX_COMBINED_UNIFORM_BLOCKS",
++     &GLCapabilities::max_combined_uniform_blocks, Backing::kAtMost},
++    {"MAX_DRAW_BUFFERS", &GLCapabilities::max_draw_buffers, Backing::kAtMost},
++    {"MAX_ELEMENTS_INDICES", &GLCapabilities::max_elements_indices,
++     Backing::kHint},
++    {"MAX_ELEMENTS_VERTICES", &GLCapabilities::max_elements_vertices,
++     Backing::kHint},
++    {"MAX_FRAGMENT_INPUT_COMPONENTS",
++     &GLCapabilities::max_fragment_input_components, Backing::kAtMost},
++    {"MAX_FRAGMENT_UNIFORM_BLOCKS",
++     &GLCapabilities::max_fragment_uniform_blocks, Backing::kAtMost},
++    {"MAX_FRAGMENT_UNIFORM_COMPONENTS",
++     &GLCapabilities::max_fragment_uniform_components, Backing::kAtMost},
++    {"MAX_PROGRAM_TEXEL_OFFSET", &GLCapabilities::max_program_texel_offset,
++     Backing::kAtMost},
++    {"MAX_SAMPLES", &GLCapabilities::max_samples, Backing::kAtMost},
++    {"MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS",
++     &GLCapabilities::max_transform_feedback_interleaved_components,
++     Backing::kAtMost},
++    {"MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS",
++     &GLCapabilities::max_transform_feedback_separate_attribs,
++     Backing::kAtMost},
++    {"MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS",
++     &GLCapabilities::max_transform_feedback_separate_components,
++     Backing::kAtMost},
++    {"MAX_UNIFORM_BUFFER_BINDINGS",
++     &GLCapabilities::max_uniform_buffer_bindings, Backing::kAtMost},
++    {"MAX_VARYING_COMPONENTS", &GLCapabilities::max_varying_components,
++     Backing::kAtMost},
++    {"MAX_VERTEX_OUTPUT_COMPONENTS",
++     &GLCapabilities::max_vertex_output_components, Backing::kAtMost},
++    {"MAX_VERTEX_UNIFORM_BLOCKS", &GLCapabilities::max_vertex_uniform_blocks,
++     Backing::kAtMost},
++    {"MAX_VERTEX_UNIFORM_COMPONENTS",
++     &GLCapabilities::max_vertex_uniform_components, Backing::kAtMost},
++    {"MIN_PROGRAM_TEXEL_OFFSET", &GLCapabilities::min_program_texel_offset,
++     Backing::kAtLeast},
++    {"UNIFORM_BUFFER_OFFSET_ALIGNMENT",
++     &GLCapabilities::uniform_buffer_offset_alignment, Backing::kAtLeast},
++};
++
++constexpr CapRow<int64_t> kWebGL2Int64Caps[] = {
++    {"MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS",
++     &GLCapabilities::max_combined_fragment_uniform_components,
++     Backing::kAtMost},
++    {"MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS",
++     &GLCapabilities::max_combined_vertex_uniform_components,
++     Backing::kAtMost},
++    {"MAX_ELEMENT_INDEX", &GLCapabilities::max_element_index,
++     Backing::kAtMost},
++    {"MAX_SERVER_WAIT_TIMEOUT", &GLCapabilities::max_server_wait_timeout,
++     Backing::kAtMost},
++    {"MAX_UNIFORM_BLOCK_SIZE", &GLCapabilities::max_uniform_block_size,
++     Backing::kAtMost},
++};
++
++constexpr CapRow<float> kWebGL2FloatCaps[] = {
++    {"MAX_TEXTURE_LOD_BIAS", &GLCapabilities::max_texture_lod_bias,
++     Backing::kAtMost},
++};
++
++bool IsWebGL2(const FeatureInfo* feature_info) {
++  return feature_info->context_type() == CONTEXT_TYPE_WEBGL2;
++}
++
++// The profile's capture for this context type, or null when Phasmid is not
++// active or the context is not a WebGL context.
++const phasmid::Profile::WebGL* ProfileWebGL(const FeatureInfo* feature_info) {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!profile || !feature_info || !feature_info->IsWebGLContext()) {
++    return nullptr;
++  }
++  return &profile->webgl(IsWebGL2(feature_info));
++}
++
++// "webgl" or "webgl2", the profile section below gpu.
++std::string_view Section(const FeatureInfo* feature_info) {
++  return IsWebGL2(feature_info) ? "webgl2" : "webgl";
++}
++
++template <typename T>
++T FromDouble(double value) {
++  if constexpr (std::is_integral_v<T>) {
++    return base::saturated_cast<T>(value);
++  } else {
++    return static_cast<T>(value);
++  }
++}
++
++// Replaces the host's `*value` with `claim`, first reporting a claim the
++// host's value cannot back.
++template <typename T>
++void Claim(std::string_view field, double claim, Backing backing, T* value) {
++  const double host = static_cast<double>(*value);
++  const bool backed = backing == Backing::kAtMost    ? claim <= host
++                      : backing == Backing::kAtLeast ? claim >= host
++                                                     : true;
++  if (!backed) {
++    phasmid::ReportUnbackedGpuClaim(
++        field, base::StrCat({"profile ", base::NumberToString(claim),
++                             ", host ", base::NumberToString(host)}));
++  }
++  *value = FromDouble<T>(claim);
++}
++
++// The profile value of a required parameter. Profile::Init refuses a profile
++// without it, so a miss is a mismatch between this table and the validation.
++double RequiredParam(const phasmid::Profile::WebGL& webgl,
++                     const char* name,
++                     size_t index = 0) {
++  std::optional<double> value = webgl.Param(name, index);
++  CHECK(value) << "Phasmid: gpu.webgl params." << name << " is not validated";
++  return *value;
++}
++
++template <typename T, size_t N>
++void ApplyCaps(const phasmid::Profile::WebGL& webgl,
++               std::string_view section,
++               const CapRow<T> (&rows)[N],
++               GLCapabilities* caps) {
++  for (const CapRow<T>& row : rows) {
++    Claim(base::StrCat({section, ".params.", row.name}),
++          RequiredParam(webgl, row.name), row.backing, &(caps->*row.member));
++  }
++}
++
++template <typename T>
++void PatchNumeric(const FeatureInfo* feature_info,
++                  GLenum pname,
++                  GLsizei length,
++                  T* params) {
++  const phasmid::Profile::WebGL* webgl = ProfileWebGL(feature_info);
++  if (!webgl || length < 1) {
++    return;
++  }
++  const std::string_view section = Section(feature_info);
++  const char* range_name = nullptr;
++  switch (pname) {
++    case GL_ALIASED_LINE_WIDTH_RANGE:
++      range_name = "ALIASED_LINE_WIDTH_RANGE";
++      break;
++    case GL_ALIASED_POINT_SIZE_RANGE:
++      range_name = "ALIASED_POINT_SIZE_RANGE";
++      break;
++    case GL_MAX_VIEWPORT_DIMS:
++      range_name = "MAX_VIEWPORT_DIMS";
++      break;
++    case GL_SUBPIXEL_BITS:
++      Claim(base::StrCat({section, ".params.SUBPIXEL_BITS"}),
++            RequiredParam(*webgl, "SUBPIXEL_BITS"), Backing::kAtMost, params);
++      return;
++    case GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT:
++      if (webgl->max_anisotropy) {
++        Claim(base::StrCat({section, ".max_anisotropy"}),
++              *webgl->max_anisotropy, Backing::kAtMost, params);
++      }
++      return;
++    case GL_MAX_DRAW_BUFFERS:
++      // GL_MAX_DRAW_BUFFERS_EXT in WebGL1 (WEBGL_draw_buffers). WebGL2
++      // answers MAX_DRAW_BUFFERS from GLCapabilities.
++      if (!IsWebGL2(feature_info) && webgl->max_draw_buffers) {
++        Claim(base::StrCat({section, ".max_draw_buffers"}),
++              *webgl->max_draw_buffers, Backing::kAtMost, params);
++      }
++      return;
++    default:
++      return;
++  }
++  // A range's low end is backed at or above the host's, its high end at or
++  // below. Both viewport dimensions are maxima.
++  const std::string field = base::StrCat({section, ".params.", range_name});
++  const bool is_range = pname != GL_MAX_VIEWPORT_DIMS;
++  Claim(field, RequiredParam(*webgl, range_name, 0),
++        is_range ? Backing::kAtLeast : Backing::kAtMost, &params[0]);
++  if (length >= 2) {
++    Claim(field, RequiredParam(*webgl, range_name, 1), Backing::kAtMost,
++          &params[1]);
++  }
++}
++
++}  // namespace
++
++const char* PhasmidWebGLString(const FeatureInfo* feature_info, GLenum name) {
++  const phasmid::Profile::WebGL* webgl = ProfileWebGL(feature_info);
++  if (!webgl) {
++    return nullptr;
++  }
++  if (name == GL_RENDERER) {
++    return webgl->unmasked_renderer.c_str();
++  }
++  if (name == GL_VENDOR) {
++    return webgl->unmasked_vendor.c_str();
++  }
++  return nullptr;
++}
++
++void PhasmidApplyGLCapabilities(const FeatureInfo* feature_info,
++                                GLCapabilities* caps) {
++  const phasmid::Profile::WebGL* webgl = ProfileWebGL(feature_info);
++  if (!webgl) {
++    return;
++  }
++  const std::string_view section = Section(feature_info);
++  ApplyCaps(*webgl, section, kCaps, caps);
++  const std::string viewport =
++      base::StrCat({section, ".params.MAX_VIEWPORT_DIMS"});
++  Claim(viewport, RequiredParam(*webgl, "MAX_VIEWPORT_DIMS", 0),
++        Backing::kAtMost, &caps->max_viewport_width);
++  Claim(viewport, RequiredParam(*webgl, "MAX_VIEWPORT_DIMS", 1),
++        Backing::kAtMost, &caps->max_viewport_height);
++  if (IsWebGL2(feature_info)) {
++    ApplyCaps(*webgl, section, kWebGL2IntCaps, caps);
++    ApplyCaps(*webgl, section, kWebGL2Int64Caps, caps);
++    ApplyCaps(*webgl, section, kWebGL2FloatCaps, caps);
++  }
++  // Report-only: the host still computes at its own precision.
++  caps->VisitPrecisions([webgl](GLenum shader, GLenum type,
++                                GLCapabilities::ShaderPrecision* out) {
++    if (type < GL_LOW_FLOAT || type > GL_HIGH_INT) {
++      return;
++    }
++    const phasmid::Profile::WebGL::Precision& claimed =
++        webgl->precision[shader == GL_FRAGMENT_SHADER ? 1 : 0]
++                        [type - GL_LOW_FLOAT];
++    out->min_range = claimed.range_min;
++    out->max_range = claimed.range_max;
++    out->precision = claimed.precision;
++  });
++}
++
++void PhasmidApplyCapabilities(const FeatureInfo* feature_info,
++                              Capabilities* caps) {
++  const phasmid::Profile::WebGL* webgl = ProfileWebGL(feature_info);
++  if (!webgl) {
++    return;
++  }
++  Claim(base::StrCat({Section(feature_info), ".params.MAX_TEXTURE_SIZE"}),
++        RequiredParam(*webgl, "MAX_TEXTURE_SIZE"), Backing::kAtMost,
++        &caps->max_texture_size);
++}
++
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLint* params) {
++  PatchNumeric(feature_info, pname, length, params);
++}
++
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLint64* params) {
++  PatchNumeric(feature_info, pname, length, params);
++}
++
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLfloat* params) {
++  PatchNumeric(feature_info, pname, length, params);
++}
++
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLboolean* params) {
++  PatchNumeric(feature_info, pname, length, params);
++}
++
++void PhasmidPatchShaderPrecision(const FeatureInfo* feature_info,
++                                 GLenum shader_type,
++                                 GLenum precision_type,
++                                 GLint* range,
++                                 GLint* precision) {
++  const phasmid::Profile::WebGL* webgl = ProfileWebGL(feature_info);
++  if (!webgl || precision_type < GL_LOW_FLOAT ||
++      precision_type > GL_HIGH_INT ||
++      (shader_type != GL_VERTEX_SHADER && shader_type != GL_FRAGMENT_SHADER)) {
++    return;
++  }
++  const phasmid::Profile::WebGL::Precision& claimed =
++      webgl->precision[shader_type == GL_FRAGMENT_SHADER ? 1 : 0]
++                      [precision_type - GL_LOW_FLOAT];
++  range[0] = claimed.range_min;
++  range[1] = claimed.range_max;
++  *precision = claimed.precision;
++}
++
++}  // namespace gpu::gles2
+--- a/gpu/command_buffer/service/BUILD.gn
++++ b/gpu/command_buffer/service/BUILD.gn
+@@ -209,6 +209,8 @@
+     "multi_draw_manager.h",
+     "passthrough_program_cache.cc",
+     "passthrough_program_cache.h",
++    "phasmid_webgl.cc",
++    "phasmid_webgl.h",
+     "program_cache.cc",
+     "program_cache.h",
+     "program_manager.cc",
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -45,6 +45,7 @@
+ #include "base/trace_event/memory_dump_manager.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "components/viz/common/gpu/raster_context_provider.h"
+ #include "components/viz/common/resources/shared_image_format_utils.h"
+ #include "device/vr/buildflags/buildflags.h"
+@@ -3850,6 +3851,24 @@
+   if (tracker->Developer() &&
+       !RuntimeEnabledFeatures::WebGLDeveloperExtensionsEnabled())
+     return false;
++  // Phasmid: only the extensions gpu.webgl[2].extensions lists, in every
++  // context type and thread. A hidden extension is never requested from the
++  // GPU process, so it stays disabled there too. A listed one this host
++  // cannot provide is reported and stays hidden.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    if (!profile->webgl(IsWebGL2()).HasExtension(tracker->ExtensionName())) {
++      return false;
++    }
++    if (!tracker->Supported(this) ||
++        disabled_extensions_.Contains(String(tracker->ExtensionName()))) {
++      phasmid::ReportUnbackedGpuClaim(
++          std::string(IsWebGL2() ? "webgl2" : "webgl") + ".extensions." +
++              tracker->ExtensionName(),
++          "listed in the profile but not supported by this host");
++      return false;
++    }
++    return true;
++  }
+   if (!tracker->Supported(this))
+     return false;
+   if (disabled_extensions_.Contains(String(tracker->ExtensionName())))
+--- a/third_party/blink/renderer/modules/webgl/BUILD.gn
++++ b/third_party/blink/renderer/modules/webgl/BUILD.gn
+@@ -195,6 +195,7 @@
+ 
+   public_deps = [ "//device/vr/public/mojom:vr_service_blink" ]
+   deps = [
++    "//components/phasmid",
+     "//device/vr/buildflags",
+     "//gpu/command_buffer/client:gles2_implementation",
+     "//gpu/command_buffer/client:gles2_interface",
