@@ -1,0 +1,202 @@
+Phasmid: WebRTC IP handling and public address
+
+What:     The WebRTC IP handling policy comes from the profile. With
+          network.webrtc.public_ip set, the mapped address in every STUN
+          Binding success response without MESSAGE-INTEGRITY is replaced by
+          it (port kept, FINGERPRINT recomputed), so srflx candidates carry
+          the profile's address; a mapped address of the other family drops
+          the response. Host candidates, ICE checks and TURN stay stock.
+Why:      The srflx candidate exposes the host's public IP, which must match
+          the proxy exit IP while WebRTC keeps working.
+Profile:  network.webrtc.ip_handling_policy, network.webrtc.public_ip
+Hooks:    chrome/browser/renderer_preferences_util.cc UpdateFromSystemSettings;
+          services/network/p2p/socket_udp.cc P2PSocketUdp::HandleReadResult
+Contexts: main, iframe; workers have no RTCPeerConnection
+Guard:    tests/guards/network/webrtc.py
+
+--- a/chrome/browser/renderer_preferences_util.cc
++++ b/chrome/browser/renderer_preferences_util.cc
+@@ -25,6 +25,7 @@
+ #include "components/autofill/core/common/autofill_prefs.h"
+ #include "components/language/core/browser/language_prefs.h"
+ #include "components/language/core/browser/pref_names.h"
++#include "components/phasmid/profile.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/universal_optout/features.h"
+ #include "components/universal_optout/prefs.h"
+@@ -167,8 +168,11 @@
+   prefs->enable_encrypted_media =
+       pref_service->GetBoolean(prefs::kEnableEncryptedMedia);
+ 
++  const phasmid::Profile* phasmid_profile = phasmid::Profile::Get();
+   prefs->webrtc_ip_handling_policy = blink::ToWebRTCIPHandlingPolicy(
+-      pref_service->GetString(prefs::kWebRTCIPHandlingPolicy));
++      phasmid_profile
++          ? phasmid_profile->webrtc_ip_handling_policy()
++          : pref_service->GetString(prefs::kWebRTCIPHandlingPolicy));
+ 
+   for (const base::Value& entry :
+        pref_service->GetList(prefs::kWebRTCIPHandlingUrl)) {
+--- a/services/network/p2p/socket_udp.cc
++++ b/services/network/p2p/socket_udp.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "services/network/p2p/socket_udp.h"
+ 
++#include <optional>
+ #include <tuple>
+ 
+ #include "base/feature_list.h"
+@@ -15,8 +16,10 @@
+ #include "base/time/time.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "net/base/backoff_entry.h"
+ #include "net/base/io_buffer.h"
++#include "net/base/ip_address.h"
+ #include "net/base/net_errors.h"
+ #include "net/base/port_util.h"
+ #include "net/log/net_log_source.h"
+@@ -166,6 +169,130 @@
+   return SetTosArguments::OTHER;
+ }
+ 
++// Phasmid: network.webrtc.public_ip, or null when none is claimed.
++const net::IPAddress* PhasmidPublicIp() {
++  static const std::optional<net::IPAddress> address =
++      []() -> std::optional<net::IPAddress> {
++        const phasmid::Profile* profile = phasmid::Profile::Get();
++        net::IPAddress ip;
++        if (!profile || !ip.AssignFromIPLiteral(profile->webrtc_public_ip())) {
++          return std::nullopt;
++        }
++        return ip;
++      }();
++  return address ? &*address : nullptr;
++}
++
++uint16_t PhasmidReadU16(base::span<const uint8_t> data, size_t offset) {
++  return static_cast<uint16_t>((data[offset] << 8) | data[offset + 1]);
++}
++
++// CRC-32 (ISO 3309, reflected polynomial 0xEDB88320), as STUN FINGERPRINT
++// uses it (RFC 8489 section 14.7).
++uint32_t PhasmidCrc32(base::span<const uint8_t> data) {
++  uint32_t crc = 0xFFFFFFFFu;
++  for (uint8_t byte : data) {
++    crc ^= byte;
++    for (int bit = 0; bit < 8; ++bit) {
++      crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
++    }
++  }
++  return ~crc;
++}
++
++// Phasmid: replaces the mapped address of a STUN Binding success response
++// with the profile's public address, port kept. Messages with
++// MESSAGE-INTEGRITY cannot be re-signed and are left alone. A mapped address
++// of the other family is a network the claimed device lacks: returns false
++// and the datagram is dropped, as if the server were unreachable.
++bool PhasmidRewriteStunMappedAddress(base::span<uint8_t> data) {
++  const net::IPAddress* public_ip = PhasmidPublicIp();
++  if (!public_ip) {
++    return true;
++  }
++  constexpr size_t kHeaderSize = 20;
++  constexpr uint16_t kBindingSuccessResponse = 0x0101;
++  constexpr uint16_t kMappedAddress = 0x0001;
++  constexpr uint16_t kMessageIntegrity = 0x0008;
++  constexpr uint16_t kMessageIntegritySha256 = 0x001C;
++  constexpr uint16_t kXorMappedAddress = 0x0020;
++  constexpr uint16_t kFingerprint = 0x8028;
++  constexpr uint32_t kFingerprintXor = 0x5354554e;
++  if (data.size() < kHeaderSize ||
++      PhasmidReadU16(data, 0) != kBindingSuccessResponse ||
++      size_t{PhasmidReadU16(data, 2)} != data.size() - kHeaderSize ||
++      data.size() % 4 != 0 || data[4] != 0x21 || data[5] != 0x12 ||
++      data[6] != 0xA4 || data[7] != 0x42) {
++    return true;
++  }
++
++  // First pass: validate the attribute layout and decide, before any byte
++  // changes.
++  const uint8_t family = public_ip->IsIPv4() ? 0x01 : 0x02;
++  const size_t address_size = public_ip->size();
++  bool has_mapped = false;
++  std::optional<size_t> fingerprint;
++  for (size_t offset = kHeaderSize; offset < data.size();) {
++    if (fingerprint || data.size() - offset < 4) {
++      return true;
++    }
++    const uint16_t type = PhasmidReadU16(data, offset);
++    const size_t length = PhasmidReadU16(data, offset + 2);
++    if (data.size() - offset - 4 < length) {
++      return true;
++    }
++    if (type == kMessageIntegrity || type == kMessageIntegritySha256) {
++      return true;
++    }
++    if (type == kMappedAddress || type == kXorMappedAddress) {
++      const uint8_t attribute_family = data[offset + 5];
++      if ((attribute_family != 0x01 && attribute_family != 0x02) ||
++          length != (attribute_family == 0x01 ? 8u : 20u)) {
++        return true;
++      }
++      if (attribute_family != family) {
++        return false;
++      }
++      has_mapped = true;
++    } else if (type == kFingerprint) {
++      if (length != 4) {
++        return true;
++      }
++      fingerprint = offset;
++    }
++    offset += 4 + (length + 3) / 4 * 4;
++  }
++  if (!has_mapped) {
++    return true;
++  }
++
++  // Second pass: write the address. XOR-MAPPED-ADDRESS is XORed with the
++  // magic cookie followed by the transaction id, which are header bytes 4..20.
++  base::span<const uint8_t> ip = public_ip->bytes().span();
++  for (size_t offset = kHeaderSize; offset < data.size();) {
++    const uint16_t type = PhasmidReadU16(data, offset);
++    const size_t length = PhasmidReadU16(data, offset + 2);
++    if (type == kMappedAddress || type == kXorMappedAddress) {
++      base::span<uint8_t> address = data.subspan(offset + 8, address_size);
++      for (size_t i = 0; i < address_size; ++i) {
++        address[i] = type == kXorMappedAddress
++                         ? static_cast<uint8_t>(ip[i] ^ data[4 + i])
++                         : ip[i];
++      }
++    }
++    offset += 4 + (length + 3) / 4 * 4;
++  }
++
++  if (fingerprint) {
++    const uint32_t crc =
++        PhasmidCrc32(data.first(*fingerprint)) ^ kFingerprintXor;
++    for (size_t i = 0; i < 4; ++i) {
++      data[*fingerprint + 4 + i] = static_cast<uint8_t>(crc >> (24 - 8 * i));
++    }
++  }
++  return true;
++}
++
+ }  // namespace
+ 
+ namespace network {
+@@ -360,6 +487,10 @@
+   if (result > 0) {
+     auto data = recv_buffer_->first(static_cast<size_t>(result));
+ 
++    if (!PhasmidRewriteStunMappedAddress(data)) {
++      return true;
++    }
++
+     if (!connected_peers_.contains(recv_address_)) {
+       P2PSocket::StunMessageType type;
+       bool stun = GetStunPacketType(data, &type);
