@@ -1,0 +1,180 @@
+Phasmid: Accept-Language, navigator.languages and the Intl locale
+
+What:     Accept-Language is built from locale.languages exactly as stock
+          builds it from the intl.accept_languages pref; navigator.languages
+          is that list; the default Intl locale is locale.intl_locale.
+Why:      The host's language settings show in the header and every JS
+          context and must match the claimed locale.
+Profile:  locale.languages, locale.intl_locale
+Hooks:    chrome/browser/net/profile_network_context_service.cc
+          ProfileNetworkContextService::ComputeAcceptLanguage;
+          chrome/browser/renderer_preferences_util.cc UpdateFromSystemSettings;
+          chrome/browser/chrome_content_browser_client.cc
+          ChromeContentBrowserClient::GetAcceptLangs;
+          chrome/browser/preloading/prefetch/prefetch_service/
+          chrome_prefetch_service_delegate.cc
+          ChromePrefetchServiceDelegate::GetAcceptLanguageHeader;
+          content/browser/renderer_host/render_process_host_impl.cc
+          AppendRendererCommandLine, SetRunRendererInProcess;
+          content/renderer/renderer_main.cc RendererMain; BUILD.gn deps
+Contexts: main, iframe, worker, shared worker, service worker, headers
+Guard:    tests/guards/locale/accept-language.py
+
+--- a/chrome/browser/net/profile_network_context_service.cc
++++ b/chrome/browser/net/profile_network_context_service.cc
+@@ -71,6 +71,7 @@
+ #include "components/metrics/metrics_pref_names.h"
+ #include "components/metrics/metrics_reporting_choice_service.h"
+ #include "components/permissions/features.h"
++#include "components/phasmid/profile.h"
+ #include "components/pref_registry/pref_registry_syncable.h"
+ #include "components/prefs/pref_registry_simple.h"
+ #include "components/prefs/pref_service.h"
+@@ -718,11 +719,17 @@
+ }
+ 
+ std::string ProfileNetworkContextService::ComputeAcceptLanguage() const {
++  // Phasmid: the profile's list stands in for the intl.accept_languages
++  // pref; expansion and q-values stay stock.
++  std::string language_pref = pref_accept_language_.GetValue();
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    language_pref = base::JoinString(phasmid_profile->languages(), ",");
++  }
+   return ComputeAcceptLanguageFromPref(
+       content::ReduceAcceptLanguageUtils::GetLanguagesWithMaxCount(
+-          profile_->IsOffTheRecord() ? language::GetIncognitoLanguageList(
+-                                           pref_accept_language_.GetValue())
+-                                     : pref_accept_language_.GetValue()));
++          profile_->IsOffTheRecord()
++              ? language::GetIncognitoLanguageList(language_pref)
++              : language_pref));
+ }
+ 
+ void ProfileNetworkContextService::UpdateReferrersEnabled() {
+--- a/chrome/browser/renderer_preferences_util.cc
++++ b/chrome/browser/renderer_preferences_util.cc
+@@ -208,8 +208,14 @@
+                  &prefs->webrtc_udp_min_port, &prefs->webrtc_udp_max_port);
+   prefs->webrtc_local_ips_allowed_urls = GetLocalIpsAllowedUrls(
+       pref_service->GetList(prefs::kWebRtcLocalIpsAllowedUrls));
+-  prefs->accept_languages = GetLanguageListForProfile(
+-      profile, pref_service->GetString(language::prefs::kAcceptLanguages));
++  // Phasmid: frames and workers read navigator.languages from these
++  // preferences.
++  std::string language_list =
++      pref_service->GetString(language::prefs::kAcceptLanguages);
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    language_list = base::JoinString(phasmid_profile->languages(), ",");
++  }
++  prefs->accept_languages = GetLanguageListForProfile(profile, language_list);
+ #if !BUILDFLAG(IS_MAC)
+   prefs->plugin_fullscreen_allowed =
+       pref_service->GetBoolean(prefs::kFullscreenAllowed);
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -303,6 +303,7 @@
+ #include "components/performance_manager/public/graph/frame_node.h"
+ #include "components/performance_manager/public/performance_manager.h"
+ #include "components/permissions/content_setting_permission_context_base.h"
++#include "components/phasmid/profile.h"
+ #include "components/policy/core/browser/url_list/policy_blocklist_service.h"
+ #include "components/policy/core/common/features.h"
+ #include "components/policy/core/common/management/management_service.h"
+@@ -3297,6 +3298,9 @@
+ 
+ std::string ChromeContentBrowserClient::GetAcceptLangs(
+     content::BrowserContext* context) {
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    return base::JoinString(phasmid_profile->languages(), ",");
++  }
+   Profile* profile = Profile::FromBrowserContext(context);
+   return profile->GetPrefs()->GetString(language::prefs::kAcceptLanguages);
+ }
+--- a/chrome/browser/preloading/prefetch/prefetch_service/chrome_prefetch_service_delegate.cc
++++ b/chrome/browser/preloading/prefetch/prefetch_service/chrome_prefetch_service_delegate.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/preloading/prefetch/prefetch_service/chrome_prefetch_service_delegate.h"
+ 
++#include "base/strings/string_util.h"
+ #include "chrome/browser/battery/battery_saver.h"
+ #include "chrome/browser/data_saver/data_saver.h"
+ #if BUILDFLAG(IS_ANDROID)
+@@ -16,6 +17,7 @@
+ #include "chrome/browser/search_engines/template_url_service_factory.h"
+ #include "components/google/core/common/google_util.h"
+ #include "components/language/core/browser/pref_names.h"
++#include "components/phasmid/profile.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/search_engines/template_url_service.h"
+ #include "components/unified_consent/url_keyed_data_collection_consent_helper.h"
+@@ -35,6 +37,10 @@
+ ChromePrefetchServiceDelegate::~ChromePrefetchServiceDelegate() = default;
+ 
+ std::string ChromePrefetchServiceDelegate::GetAcceptLanguageHeader() {
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    return net::HttpUtil::GenerateAcceptLanguageHeader(
++        base::JoinString(phasmid_profile->languages(), ","));
++  }
+   return net::HttpUtil::GenerateAcceptLanguageHeader(
+       profile_->GetPrefs()->GetString(language::prefs::kAcceptLanguages));
+ }
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -78,6 +78,7 @@
+ #include "components/input/utils.h"
+ #include "components/metrics/histogram_controller.h"
+ #include "components/metrics/single_sample_metrics.h"
++#include "components/phasmid/profile.h"
+ #include "components/services/storage/privileged/mojom/indexed_db_control.mojom.h"
+ #include "components/services/storage/public/cpp/buckets/bucket_id.h"
+ #include "components/services/storage/public/cpp/buckets/bucket_info.h"
+@@ -3794,8 +3795,10 @@
+   PropagateBrowserCommandLineToRenderer(browser_command_line, command_line);
+ 
+   // Pass on the browser locale.
+-  const std::string locale =
+-      GetContentClient()->browser()->GetApplicationLocale();
++  std::string locale = GetContentClient()->browser()->GetApplicationLocale();
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    locale = profile->intl_locale();
++  }
+   command_line->AppendSwitchASCII(switches::kLang, locale);
+ 
+   // A non-empty RendererCmdPrefix implies that Zygote is disabled.
+@@ -5213,8 +5216,11 @@
+     if (!command_line->HasSwitch(switches::kLang)) {
+       // Modify the current process' command line to include the browser
+       // locale, as the renderer expects this flag to be set.
+-      const std::string locale =
++      std::string locale =
+           GetContentClient()->browser()->GetApplicationLocale();
++      if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++        locale = profile->intl_locale();
++      }
+       command_line->AppendSwitchASCII(switches::kLang, locale);
+     }
+     // TODO(piman): we should really send configuration through bools rather
+--- a/content/renderer/renderer_main.cc
++++ b/content/renderer/renderer_main.cc
+@@ -34,6 +34,7 @@
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
+ #include "components/performance_manager/scenario_api/performance_scenario_memory.h"
++#include "components/phasmid/profile.h"
+ #include "components/startup_metric_utils/renderer/startup_metric_utils.h"
+ #include "content/child/memory_coordinator/child_memory_coordinator.h"
+ #include "content/common/content_constants_internal.h"
+@@ -175,6 +176,12 @@
+   chromeos::system::EnableCoreSchedulingIfAvailable();
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 
++  // Phasmid: zygote-forked renderers inherit an ICU default chosen from the
++  // host environment; reset it before Blink and V8 start.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    base::i18n::SetICUDefaultLocale(profile->intl_locale());
++  }
++
+   InitializeSkia();
+ 
+ #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CHROMEOS)

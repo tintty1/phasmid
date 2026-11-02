@@ -32,3 +32,6 @@ automation/cdp-stealth.patch
 
 # Network
 network/webrtc.patch
+
+# Locale
+locale/accept-language.patch
