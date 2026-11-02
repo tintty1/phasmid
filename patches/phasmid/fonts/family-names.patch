@@ -1,0 +1,144 @@
+Phasmid: CSS family names (Windows profiles)
+
+What:     A windows profile with a Windows font store resolves CSS family
+          names as DirectWrite does. Faces are named by their
+          weight-stretch-style family (name ID 21, else the typographic
+          family plus its subfamily's non-style words, else the legacy family
+          with its style words moved into the style; a variable font's named
+          instance by its STAT-derived family) and chosen as
+          GetFirstMatchingFont chooses them. A name with no such family is
+          retried once as "<family> <weight or stretch word>". Linux profiles
+          and runs without a store are unchanged.
+Why:      fontconfig names faces by their legacy families, so names Windows
+          resolves were missing (Franklin Gothic, Sitka Small), names it
+          rejects resolved (Arial Rounded MT Bold), and some names drew a
+          different face.
+Profile:  os.family, fonts.families
+Hooks:    components/services/font/font_service_app.cc
+          FontServiceApp::MatchFamilyName;
+          third_party/blink/renderer/platform/fonts/skia/font_cache_skia.cc
+          FontCache::CreateFontPlatformData
+Contexts: main, same- and cross-origin iframe, worker, shared worker, service
+          worker, OffscreenCanvas in workers; headless and headful.
+Guard:    tests/guards/fonts/windows_family_names.py
+
+--- a/components/services/font/font_service_app.cc
++++ b/components/services/font/font_service_app.cc
+@@ -107,8 +107,10 @@
+   SkFontConfigInterface::FontIdentity result_identity;
+   SkString result_family;
+   SkFontStyle result_style;
+-  SkFontConfigInterface* fc =
+-      SkFontConfigInterface::GetSingletonDirectInterface();
++  // Phasmid: the global interface, which matches families as DirectWrite
++  // does for a windows profile's font store and is the direct one otherwise.
++  sk_sp<SkFontConfigInterface> fc_ref = SkFontConfigInterface::RefGlobal();
++  SkFontConfigInterface* fc = fc_ref.get();
+   SkFontStyle font_style(
+       requested_style->weight, requested_style->width,
+       static_cast<SkFontStyle::Slant>(requested_style->slant));
+--- a/third_party/blink/renderer/platform/fonts/skia/font_cache_skia.cc
++++ b/third_party/blink/renderer/platform/fonts/skia/font_cache_skia.cc
+@@ -39,6 +39,7 @@
+ #include "base/strings/string_view_util.h"
+ #include "base/timer/elapsed_timer.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "skia/ext/font_utils.h"
+ #include "third_party/blink/public/platform/linux/web_sandbox_support.h"
+ #include "third_party/blink/public/platform/platform.h"
+@@ -96,6 +97,68 @@
+       font_description.TextRendering(), ResolvedFontFeatures(),
+       font_description.Orientation());
+ }
++
++#if BUILDFLAG(IS_LINUX)
++// Phasmid: splits "<family> <weight or stretch word>" into the family and
++// that weight or stretch, with the tables of win/font_cache_skia_win.cc
++// TypefacesHasWeightSuffix and TypefacesHasStretchSuffix.
++bool WindowsFamilySuffix(const AtomicString& family,
++                         AtomicString& adjusted_name,
++                         FontDescription& adjusted_description) {
++  struct FamilyWeightSuffix {
++    const char* suffix;
++    wtf_size_t length;
++    FontSelectionValue weight;
++  };
++  const static FamilyWeightSuffix kWeightForSuffix[] = {
++      {" thin", 5, FontSelectionValue(100)},
++      {" extralight", 11, FontSelectionValue(200)},
++      {" ultralight", 11, FontSelectionValue(200)},
++      {" light", 6, FontSelectionValue(300)},
++      {" regular", 8, FontSelectionValue(400)},
++      {" medium", 7, FontSelectionValue(500)},
++      {" demibold", 9, FontSelectionValue(600)},
++      {" semibold", 9, FontSelectionValue(600)},
++      {" extrabold", 10, FontSelectionValue(800)},
++      {" ultrabold", 10, FontSelectionValue(800)},
++      {" black", 6, FontSelectionValue(900)},
++      {" heavy", 6, FontSelectionValue(900)}};
++  for (const auto& entry : kWeightForSuffix) {
++    if (family.EndsWithIgnoringAsciiCase(entry.suffix)) {
++      StringView family_name(family);
++      family_name.remove_suffix(entry.length);
++      adjusted_name = AtomicString(family_name);
++      adjusted_description.SetWeight(entry.weight);
++      return true;
++    }
++  }
++  struct FamilyStretchSuffix {
++    const char* suffix;
++    wtf_size_t length;
++    FontSelectionValue stretch;
++  };
++  const static FamilyStretchSuffix kStretchForSuffix[] = {
++      {" ultracondensed", 15, kUltraCondensedWidthValue},
++      {" extracondensed", 15, kExtraCondensedWidthValue},
++      {" condensed", 10, kCondensedWidthValue},
++      {" narrow", 7, kCondensedWidthValue},
++      {" semicondensed", 14, kSemiCondensedWidthValue},
++      {" semiexpanded", 13, kSemiExpandedWidthValue},
++      {" expanded", 9, kExpandedWidthValue},
++      {" extraexpanded", 14, kExtraExpandedWidthValue},
++      {" ultraexpanded", 14, kUltraExpandedWidthValue}};
++  for (const auto& entry : kStretchForSuffix) {
++    if (family.EndsWithIgnoringAsciiCase(entry.suffix)) {
++      StringView family_name(family);
++      family_name.remove_suffix(entry.length);
++      adjusted_name = AtomicString(family_name);
++      adjusted_description.SetStretch(entry.stretch);
++      return true;
++    }
++  }
++  return false;
++}
++#endif  // BUILDFLAG(IS_LINUX)
+ }  // namespace
+ 
+ #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)
+@@ -337,6 +400,25 @@
+     typeface = CreateTypefaceFromUniqueName(creation_params);
+   } else {
+     typeface = CreateTypeface(font_description, creation_params, name);
++#if BUILDFLAG(IS_LINUX)
++    // Phasmid: a windows profile retries "<family> <weight or stretch
++    // word>" once as the family at that weight or stretch, as
++    // win/font_cache_skia_win.cc does. Synthesis below still follows the
++    // requested description, as there.
++    if (!typeface && alternate_name != AlternateFontName::kLastResort &&
++        creation_params.CreationType() ==
++            FontFaceCreationType::kCreateFontByFamily &&
++        phasmid::ClaimsWindows()) [[unlikely]] {
++      AtomicString adjusted_name;
++      FontDescription adjusted_description = font_description;
++      if (WindowsFamilySuffix(creation_params.Family(), adjusted_name,
++                              adjusted_description)) {
++        typeface =
++            CreateTypeface(adjusted_description,
++                           FontFaceCreationParams(adjusted_name), name);
++      }
++    }
++#endif  // BUILDFLAG(IS_LINUX)
+   }
+ #else
+   typeface = CreateTypeface(font_description, creation_params, name);
