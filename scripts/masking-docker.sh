@@ -59,11 +59,12 @@ fi
 
 # Default output is tests/out/masking, i.e. the read-write mount.
 # Docker's default seccomp profile refuses the user namespace Chrome's
-# sandbox needs. Lifting the filter keeps the browser sandboxed and stock;
+# sandbox needs; docker/seccomp-chrome.json is that profile plus the two
+# calls (see docker/Dockerfile). The browser stays sandboxed and stock;
 # --no-sandbox instead would show an infobar that shrinks the viewport.
 exec docker run --rm --init \
 	--user "$(id -u):$(id -g)" \
-	--security-opt seccomp=unconfined \
+	--security-opt "seccomp=${root}/docker/seccomp-chrome.json" \
 	--shm-size=2g \
 	-e HOME=/tmp/home \
 	-e UV_PROJECT_ENVIRONMENT=/tmp/venv \

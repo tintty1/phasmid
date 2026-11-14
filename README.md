@@ -43,14 +43,14 @@ Phasmid is an ordinary Chromium binary and works with Playwright, Puppeteer, Sel
 
 ```bash
 docker build -t phasmid docker/
-docker run --rm -p 127.0.0.1:9222:9222 --security-opt seccomp=unconfined \
+docker run --rm -p 127.0.0.1:9222:9222 --security-opt seccomp=docker/seccomp-chrome.json \
     -v "$PWD/profiles/examples/linux-arch-rtx3060-1080p.json:/profile.json:ro" \
     phasmid --phasmid-profile=/profile.json
 ```
 
 Then connect a CDP client to `http://127.0.0.1:9222`, e.g. Playwright's `chromium.connect_over_cdp`.
 
-- `--security-opt seccomp=unconfined` lets Chrome's sandbox create its namespaces. Do not use `--no-sandbox` instead: a headful window shows it as a warning infobar.
+- `docker/seccomp-chrome.json` is Docker's default seccomp profile plus the `clone` and `unshare` namespace flags Chrome's sandbox needs. `seccomp=unconfined` also works but is looser. Do not use `--no-sandbox` instead: a headful window shows it as a warning infobar.
 - `-e PHASMID_HEADFUL=1` runs headful under Xvfb. `PHASMID_XVFB_SCREEN` (default `3840x2160x24`) must be at least the profile's screen size.
 - Without a GPU device the browser renders WebGL and WebGPU on SwiftShader. Pass one with `--device /dev/dri` (or the NVIDIA container toolkit) to back a hardware GPU claim.
 - The image has no Widevine CDM. Mount Google Chrome's `WidevineCdm` directory and pass `--phasmid-widevine-cdm=<dir>` for a profile that claims Widevine.

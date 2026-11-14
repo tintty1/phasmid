@@ -6,6 +6,18 @@
 # From a local directory holding phasmid-<version>-linux-x64.tar.zst:
 #   docker build -t phasmid --build-context dist=<dir> \
 #       --build-arg PHASMID_VERSION=<version> docker/
+#
+# Run:
+#   docker run --security-opt seccomp=docker/seccomp-chrome.json -p 9222:9222 \
+#       -v "$PWD/profile.json:/profile.json:ro" phasmid --phasmid-profile=/profile.json
+# The browser's sandbox puts renderers in their own user, PID and network
+# namespaces. Docker's default seccomp profile refuses clone and unshare with
+# namespace flags unless the container has CAP_SYS_ADMIN, and the browser
+# then exits with "No usable sandbox!". seccomp-chrome.json is Docker's
+# default (github.com/moby/profiles seccomp/v0.2.4, Apache-2.0, the version
+# Docker 29 vendors) plus one rule allowing those two calls. It is tighter
+# than seccomp=unconfined or --cap-add=SYS_ADMIN, which also work, and keeps
+# the sandbox on, unlike --no-sandbox.
 
 ARG PHASMID_VERSION=155.0.8059.84-p1
 
