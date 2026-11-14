@@ -144,6 +144,9 @@ setup_toolchain() {
     [ -x /usr/lib/node_modules/esbuild/bin/esbuild ] || npm -g install esbuild
     if [ -L "${esbuild}" ]; then rm -f "${esbuild}"; else rm -rf "${esbuild}"; fi
     ln -s /usr/lib/node_modules/esbuild/ "${esbuild}"
+    # 156: chromium-156-revert-use-typescript-go.patch runs the system tsc.
+    mkdir -p "${_src_dir}/third_party/typescript/linux-amd64/src/lib"
+    ln -sf "$(command -v tsc)" "${_src_dir}/third_party/typescript/linux-amd64/src/lib/tsc"
 
     local clang_bin="${_src_dir}/third_party/llvm-build/Release+Asserts/bin"
     export CC="${clang_bin}/clang" CXX="${clang_bin}/clang++" AR="${clang_bin}/llvm-ar" NM="${clang_bin}/llvm-nm" LLVM_BIN="${clang_bin}"

@@ -11,6 +11,16 @@ Hooks:    gin/isolate_holder.cc IsolateHolder::getDefaultIsolateParams;
 Contexts: main, iframe; workers get the same heap but no performance.memory
 Guard:    tests/guards/hardware/js-heap-limit.py
 
+--- a/gin/BUILD.gn
++++ b/gin/BUILD.gn
+@@ -107,6 +107,7 @@
+     "//v8",
+   ]
+   deps = [
++    "//components/phasmid",
+     "//third_party/abseil-cpp:absl",
+     "//tools/v8_context_snapshot:buildflags",
+   ]
 --- a/gin/isolate_holder.cc
 +++ b/gin/isolate_holder.cc
 @@ -18,6 +18,7 @@
@@ -40,13 +50,3 @@ Guard:    tests/guards/hardware/js-heap-limit.py
    params->array_buffer_allocator = g_array_buffer_allocator;
    params->allow_atomics_wait = true;
    params->external_references = g_reference_table;
---- a/gin/BUILD.gn
-+++ b/gin/BUILD.gn
-@@ -107,6 +107,7 @@
-     "//v8",
-   ]
-   deps = [
-+    "//components/phasmid",
-     "//third_party/abseil-cpp:absl",
-     "//tools/v8_context_snapshot:buildflags",
-   ]

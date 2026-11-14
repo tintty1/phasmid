@@ -21,6 +21,7 @@ from typing import Any
 
 import jsonschema
 
+from .compare import NOISE_FACTORS, reported_rtt
 from .gpu_identity import ANGLE_VENDOR_IDS, IDENTITY_FIELDS, QUALCOMM_ID, angle_device_id, angle_parts
 
 SCHEMA_PATH = Path(__file__).resolve().parents[2] / "profiles" / "schema.json"
@@ -163,6 +164,44 @@ def disk_total_bytes_from_dump(quota_headroom: Any, seed: str) -> int:
     return (97696368 + 1953504 * (gb - 50)) * 512
 
 
+# The smallest window a profile takes (profiles/schema.json display.window).
+MIN_INNER, MIN_OUTER = 100, 200
+
+
+def captured_window(screen: dict, harness: dict) -> tuple[dict, str]:
+    """display.window and, when it is not the page's own, how it was derived.
+
+    A window is the user's choice, not the device's, so where the dump's is
+    not usable the profile claims the commonest one: maximized, which stock
+    Chrome reports as the available screen area at its origin (every
+    unframed Windows capture). That covers a page framed by another site,
+    whose inner size is the iframe's and whose outer window can be the
+    embedder's popup, and a window under the schema's minimum. Without
+    inner sizes the viewport is what the browser's own chrome leaves."""
+    framed = bool(harness.get("embedded"))
+    small = (screen["innerWidth"] < MIN_INNER or screen["innerHeight"] < MIN_INNER
+             or screen["outerWidth"] < MIN_OUTER or screen["outerHeight"] < MIN_OUTER)
+    if not framed and not small:
+        return {
+            "outer_width": screen["outerWidth"],
+            "outer_height": screen["outerHeight"],
+            "screen_x": screen["screenX"],
+            "screen_y": screen["screenY"],
+            "inner_width": screen["innerWidth"],
+            "inner_height": screen["innerHeight"],
+        }, ""
+    window = {
+        "outer_width": screen["availWidth"],
+        "outer_height": screen["availHeight"],
+        "screen_x": screen.get("availLeft", 0),
+        "screen_y": screen.get("availTop", 0),
+    }
+    why = "the page was framed by another site" if framed else (
+        f"the page's window was {screen['outerWidth']}x{screen['outerHeight']} "
+        f"with a {screen['innerWidth']}x{screen['innerHeight']} viewport")
+    return window, f"display.window maximized on the available screen because {why}"
+
+
 def _webgl(ctx: dict) -> dict:
     p = ctx.get("params", {})
     return {
@@ -240,6 +279,9 @@ def capture(dump: dict, *, profile_id: str, os_version: str, gpu_ids: dict[str, 
         derived.append("disk_total_bytes from the quota headroom")
     if from_renderer:
         derived.append("gpu vendor_id and device_id from the WebGL renderer")
+    window, window_derived = captured_window(screen, dump.get("harness") or {})
+    if window_derived:
+        derived.append(window_derived)
 
     m = _UA_PLATFORM_RE.match(nav["userAgent"])
     ua_platform_token = m.group(1) if m else ""
@@ -287,14 +329,7 @@ def capture(dump: dict, *, profile_id: str, os_version: str, gpu_ids: dict[str, 
             "device_pixel_ratio": screen["devicePixelRatio"],
             "is_extended": bool(screen.get("isExtended", False)),
             "orientation": screen.get("orientation") or {"type": "landscape-primary", "angle": 0},
-            "window": {
-                "outer_width": screen["outerWidth"],
-                "outer_height": screen["outerHeight"],
-                "screen_x": screen["screenX"],
-                "screen_y": screen["screenY"],
-                "inner_width": screen["innerWidth"],
-                "inner_height": screen["innerHeight"],
-            },
+            "window": window,
             "color_gamut": "rec2020" if mq.get("colorGamutRec2020") else "p3" if mq.get("colorGamutP3") else "srgb",
             "dynamic_range": "high" if mq.get("dynamicRangeHigh") else "standard",
             "prefers_color_scheme": "dark" if mq.get("prefersColorSchemeDark") else "light",
@@ -402,9 +437,31 @@ def capture(dump: dict, *, profile_id: str, os_version: str, gpu_ids: dict[str, 
     battery = nav.get("battery")
     if isinstance(battery, dict) and isinstance(battery.get("charging"), bool) and isinstance(battery.get("level"), (int, float)):
         profile["capabilities"]["battery"] = {"charging": battery["charging"], "level": battery["level"]}
-    # The page's values, after stock's per-host noise: the closest the dump
-    # comes to the estimate (network/connection.patch applies the noise again).
+    # The page's values are after stock's per-host noise, which
+    # network/connection.patch applies again; the profile holds the estimate.
     connection = nav.get("connection")
     if isinstance(connection, dict) and isinstance(connection.get("rtt"), int) and isinstance(connection.get("downlink"), (int, float)):
-        profile["network"]["connection"] = {"effective_type": connection["effectiveType"], "rtt": connection["rtt"], "downlink": connection["downlink"]}
+        profile["network"]["connection"] = {
+            "effective_type": connection["effectiveType"],
+            "rtt": estimated_rtt(connection["rtt"], connection["effectiveType"]),
+            "downlink": connection["downlink"],
+        }
     return profile
+
+
+# The estimator's HTTP RTT range for each effective type, in ms
+# (net/nqe/network_quality_estimator_params.cc; the validator in
+# core/profile.patch derives the type from the same thresholds).
+ECT_RTT_RANGES = {"slow-2g": (2010, 3000), "2g": (1420, 2009), "3g": (272, 1419), "4g": (0, 271)}
+
+
+def estimated_rtt(page_rtt: int, effective_type: str) -> int:
+    """The estimate nearest page_rtt that the page could have seen as
+    page_rtt with effective_type. A page reading is noised and bucketed
+    after the type is derived, so 300 ms with 4g is real (an estimate of
+    250-271 ms), while an estimate of 300 ms would be 3g."""
+    lo, hi = ECT_RTT_RANGES.get(effective_type, (page_rtt, page_rtt))
+    for rtt in sorted(range(lo, hi + 1), key=lambda r: (abs(r - page_rtt), r)):
+        if any(reported_rtt(rtt, f) == page_rtt for f in NOISE_FACTORS):
+            return rtt
+    return page_rtt  # no estimate gives this reading; the validator names it

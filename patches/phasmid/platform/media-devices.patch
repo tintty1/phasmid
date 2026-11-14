@@ -52,7 +52,7 @@ Guard:    tests/guards/platform/media-devices.py
               bool are_persistent_device_ids_allowed,
 -             const std::string& salt) {
 +             const std::string& stored_salt) {
-   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 +  // Phasmid: the ephemeral salt used where cookies are blocked stays, so IDs
 +  // there still change with every document.
 +  const std::string& salt =

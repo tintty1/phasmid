@@ -9,6 +9,16 @@ Hooks:    third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
 Contexts: main, iframe, worker, shared worker, service worker
 Guard:    tests/guards/hardware/hardware-concurrency.py
 
+--- a/third_party/blink/renderer/core/BUILD.gn
++++ b/third_party/blink/renderer/core/BUILD.gn
+@@ -408,6 +408,7 @@
+     ":make_deprecation_info",
+     ":xml_ffi",
+     "//base",
++    "//components/phasmid",
+     "//components/paint_preview/common",
+     "//components/performance_manager/public/mojom:mojom_blink",
+     "//components/shared_highlighting/core/common",
 --- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
 @@ -5,10 +5,15 @@
@@ -27,13 +37,3 @@ Guard:    tests/guards/hardware/hardware-concurrency.py
    return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
  }
  
---- a/third_party/blink/renderer/core/BUILD.gn
-+++ b/third_party/blink/renderer/core/BUILD.gn
-@@ -408,6 +408,7 @@
-     ":make_deprecation_info",
-     ":xml_ffi",
-     "//base",
-+    "//components/phasmid",
-     "//components/paint_preview/common",
-     "//components/performance_manager/public/mojom:mojom_blink",
-     "//components/shared_highlighting/core/common",

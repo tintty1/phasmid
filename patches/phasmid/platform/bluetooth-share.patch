@@ -23,45 +23,9 @@ Hooks:    chrome/renderer/chrome_content_renderer_client.cc
 Contexts: main, iframe; both APIs are window-only, as in stock
 Guard:    tests/guards/platform/bluetooth-share.py
 
---- a/chrome/renderer/BUILD.gn
-+++ b/chrome/renderer/BUILD.gn
-@@ -176,6 +176,7 @@
-     "//components/pdf/common:constants",
-     "//components/pdf/common:util",
-     "//components/permissions:permissions_common",
-+    "//components/phasmid",
-     "//components/plugins/renderer",
-     "//components/record_replay/core/common",
-     "//components/resources:components_resources",
---- a/chrome/renderer/chrome_content_renderer_client.cc
-+++ b/chrome/renderer/chrome_content_renderer_client.cc
-@@ -113,6 +113,7 @@
- #include "components/pdf/common/constants.h"
- #include "components/pdf/common/pdf_util.h"
- #include "components/permissions/features.h"
-+#include "components/phasmid/profile.h"
- #include "components/safe_browsing/buildflags.h"
- #include "components/sampling_profiler/process_type.h"
- #include "components/sampling_profiler/thread_profiler.h"
-@@ -1496,6 +1497,15 @@
-     BUILDFLAG(IS_MAC)
-   blink::WebRuntimeFeatures::EnableWebShare(true);
- #endif
-+  // Phasmid: Windows profiles have both APIs, Linux profiles neither.
-+  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
-+    if (profile->capabilities().web_share) {
-+      blink::WebRuntimeFeatures::EnableWebShare(true);
-+    }
-+    if (profile->capabilities().web_bluetooth) {
-+      blink::WebRuntimeFeatures::EnableWebBluetooth(true);
-+    }
-+  }
- 
-   if (base::FeatureList::IsEnabled(
-           autofill::features::kAutofillPolicyControlledFeatureAutofill)) {
 --- a/chrome/browser/BUILD.gn
 +++ b/chrome/browser/BUILD.gn
-@@ -3102,7 +3102,7 @@
+@@ -3133,7 +3133,7 @@
      }
    }
  
@@ -72,7 +36,7 @@ Guard:    tests/guards/platform/bluetooth-share.py
        "//chrome/browser/webshare:impl",
 --- a/chrome/browser/chrome_browser_interface_binders.cc
 +++ b/chrome/browser/chrome_browser_interface_binders.cc
-@@ -118,8 +118,9 @@
+@@ -117,8 +117,9 @@
  #endif  // BUILDFLAG(IS_CHROMEOS)
  
  #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
@@ -84,7 +48,7 @@ Guard:    tests/guards/platform/bluetooth-share.py
  #include "chrome/browser/webshare/share_service_impl.h"
  #include "chrome/common/chrome_features.h"
  #endif
-@@ -517,7 +518,10 @@
+@@ -520,7 +521,10 @@
    map->Add<blink::mojom::SetShapeService>(&ash::SetShapeServiceImpl::Create);
  #endif
  
@@ -120,7 +84,7 @@ Guard:    tests/guards/platform/bluetooth-share.py
    NOTREACHED();
  #endif
  }
-@@ -367,6 +368,9 @@
+@@ -391,6 +392,9 @@
            },
            std::move(share_operation), std::move(*blocker),
            std::move(callback)));
@@ -130,29 +94,42 @@ Guard:    tests/guards/platform/bluetooth-share.py
  #else
    NOTREACHED();
  #endif
---- a/content/browser/bluetooth/web_bluetooth_service_impl.cc
-+++ b/content/browser/bluetooth/web_bluetooth_service_impl.cc
-@@ -23,6 +23,7 @@
- #include "base/strings/string_util.h"
- #include "base/strings/utf_string_conversions.h"
- #include "base/task/single_thread_task_runner.h"
+--- a/chrome/renderer/BUILD.gn
++++ b/chrome/renderer/BUILD.gn
+@@ -178,6 +178,7 @@
+     "//components/pdf/common:constants",
+     "//components/pdf/common:util",
+     "//components/permissions:permissions_common",
++    "//components/phasmid",
+     "//components/plugins/renderer",
+     "//components/record_replay/core/common",
+     "//components/resources:components_resources",
+--- a/chrome/renderer/chrome_content_renderer_client.cc
++++ b/chrome/renderer/chrome_content_renderer_client.cc
+@@ -115,6 +115,7 @@
+ #include "components/pdf/common/constants.h"
+ #include "components/pdf/common/pdf_util.h"
+ #include "components/permissions/features.h"
 +#include "components/phasmid/profile.h"
- #include "content/browser/bluetooth/advertisement_client.h"
- #include "content/browser/bluetooth/bluetooth_adapter_factory_wrapper.h"
- #include "content/browser/bluetooth/bluetooth_allowed_devices.h"
-@@ -764,6 +765,12 @@
-     return;
-   }
- 
-+  // Phasmid: the host's BlueZ is never consulted.
+ #include "components/safe_browsing/buildflags.h"
+ #include "components/sampling_profiler/process_type.h"
+ #include "components/sampling_profiler/thread_profiler.h"
+@@ -1523,6 +1524,15 @@
+     BUILDFLAG(IS_MAC)
+   blink::WebRuntimeFeatures::EnableWebShare(true);
+ #endif
++  // Phasmid: Windows profiles have both APIs, Linux profiles neither.
 +  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
-+    std::move(callback).Run(profile->bluetooth_available());
-+    return;
++    if (profile->capabilities().web_share) {
++      blink::WebRuntimeFeatures::EnableWebShare(true);
++    }
++    if (profile->capabilities().web_bluetooth) {
++      blink::WebRuntimeFeatures::EnableWebBluetooth(true);
++    }
 +  }
-+
-   if (!BluetoothAdapterFactoryWrapper::Get().IsLowEnergySupported()) {
-     std::move(callback).Run(/*result=*/false);
-     return;
+ 
+   if (base::FeatureList::IsEnabled(
+           autofill::features::kAutofillPolicyControlledFeatureAutofill)) {
 --- a/content/browser/bluetooth/bluetooth_device_chooser_controller.cc
 +++ b/content/browser/bluetooth/bluetooth_device_chooser_controller.cc
 @@ -16,6 +16,7 @@
@@ -173,4 +150,27 @@ Guard:    tests/guards/platform/bluetooth-share.py
 +  if (!adapter_->IsPresent() || (profile && !profile->bluetooth_available())) {
      DVLOG(1) << "Bluetooth Adapter not present. Can't serve requestDevice.";
      PostErrorCallback(WebBluetoothResult::NO_BLUETOOTH_ADAPTER);
+     return;
+--- a/content/browser/bluetooth/web_bluetooth_service_impl.cc
++++ b/content/browser/bluetooth/web_bluetooth_service_impl.cc
+@@ -23,6 +23,7 @@
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/bluetooth/advertisement_client.h"
+ #include "content/browser/bluetooth/bluetooth_adapter_factory_wrapper.h"
+ #include "content/browser/bluetooth/bluetooth_allowed_devices.h"
+@@ -816,6 +817,12 @@
+     return;
+   }
+ 
++  // Phasmid: the host's BlueZ is never consulted.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    std::move(callback).Run(profile->bluetooth_available());
++    return;
++  }
++
+   if (!BluetoothAdapterFactoryWrapper::Get().IsLowEnergySupported()) {
+     std::move(callback).Run(/*result=*/false);
      return;

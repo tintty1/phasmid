@@ -16,49 +16,6 @@ Contexts: main, iframe; OffscreenCanvas fillStyle in pages and workers keeps
           stock's constant table except the selection colors, as stock does
 Guard:    tests/guards/display/system-colors.py
 
---- a/third_party/blink/renderer/core/layout/layout_theme.cc
-+++ b/third_party/blink/renderer/core/layout/layout_theme.cc
-@@ -22,6 +22,7 @@
- #include "third_party/blink/renderer/core/layout/layout_theme.h"
- 
- #include "build/build_config.h"
-+#include "components/phasmid/profile.h"
- #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
- #include "third_party/blink/public/resources/grit/blink_resources.h"
- #include "third_party/blink/public/strings/grit/blink_strings.h"
-@@ -163,6 +164,19 @@
-          RuntimeEnabledFeatures::CSSAccentColorKeywordEnabled();
- }
- 
-+// Phasmid: null when no profile is active, the used color scheme is not the
-+// profile's, or the keyword is internal.
-+const phasmid::Profile::SystemColor* PhasmidSystemColor(
-+    CSSValueID css_value_id,
-+    mojom::blink::ColorScheme color_scheme) {
-+  const phasmid::Profile* profile = phasmid::Profile::Get();
-+  if (!profile || profile->system_colors_dark() !=
-+                      (color_scheme == mojom::blink::ColorScheme::kDark)) {
-+    return nullptr;
-+  }
-+  return profile->system_color(GetCSSValueName(css_value_id));
-+}
-+
- }  // namespace
- 
- LayoutTheme& LayoutTheme::GetTheme() {
-@@ -776,6 +790,12 @@
-     mojom::blink::ColorScheme color_scheme,
-     const ui::ColorProvider* color_provider,
-     bool can_expose_accent_color) const {
-+  // Phasmid: contexts without a color provider (OffscreenCanvas fillStyle)
-+  // keep DefaultSystemColor(), as in stock.
-+  if (const phasmid::Profile::SystemColor* color =
-+          PhasmidSystemColor(css_value_id, color_scheme)) {
-+    return Color::FromRGBA32(color->argb());
-+  }
-   SkColor system_theme_color;
-   switch (css_value_id) {
-     case CSSValueID::kActivetext:
 --- a/chrome/browser/renderer_preferences_util.cc
 +++ b/chrome/browser/renderer_preferences_util.cc
 @@ -130,7 +130,17 @@
@@ -103,3 +60,46 @@ Guard:    tests/guards/display/system-colors.py
  #endif
  
    return params;
+--- a/third_party/blink/renderer/core/layout/layout_theme.cc
++++ b/third_party/blink/renderer/core/layout/layout_theme.cc
+@@ -22,6 +22,7 @@
+ #include "third_party/blink/renderer/core/layout/layout_theme.h"
+ 
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+ #include "third_party/blink/public/resources/grit/blink_resources.h"
+ #include "third_party/blink/public/strings/grit/blink_strings.h"
+@@ -161,6 +162,19 @@
+          RuntimeEnabledFeatures::CSSAccentColorKeywordEnabled();
+ }
+ 
++// Phasmid: null when no profile is active, the used color scheme is not the
++// profile's, or the keyword is internal.
++const phasmid::Profile::SystemColor* PhasmidSystemColor(
++    CSSValueID css_value_id,
++    mojom::blink::ColorScheme color_scheme) {
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (!profile || profile->system_colors_dark() !=
++                      (color_scheme == mojom::blink::ColorScheme::kDark)) {
++    return nullptr;
++  }
++  return profile->system_color(GetCSSValueName(css_value_id));
++}
++
+ }  // namespace
+ 
+ LayoutTheme& LayoutTheme::GetTheme() {
+@@ -789,6 +803,12 @@
+     mojom::blink::ColorScheme color_scheme,
+     const ui::ColorProvider* color_provider,
+     bool can_expose_accent_color) const {
++  // Phasmid: contexts without a color provider (OffscreenCanvas fillStyle)
++  // keep DefaultSystemColor(), as in stock.
++  if (const phasmid::Profile::SystemColor* color =
++          PhasmidSystemColor(css_value_id, color_scheme)) {
++    return Color::FromRGBA32(color->argb());
++  }
+   SkColor system_theme_color;
+   switch (css_value_id) {
+     case CSSValueID::kActivetext:

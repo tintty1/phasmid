@@ -16,7 +16,7 @@ Guard:    tests/guards/graphics/webgl-fallback.py
 
 --- a/chrome/browser/chrome_content_browser_client.cc
 +++ b/chrome/browser/chrome_content_browser_client.cc
-@@ -1603,7 +1603,10 @@
+@@ -1619,7 +1619,10 @@
    registry->RegisterIntegerPref(prefs::kSCTAuditingHashdanceReportCount, 0);
    registry->RegisterBooleanPref(prefs::kDataURLWhitespacePreservationEnabled,
                                  true);

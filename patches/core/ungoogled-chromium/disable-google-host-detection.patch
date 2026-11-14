@@ -39,7 +39,15 @@
  #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
  #include "chrome/common/bound_session_request_throttled_handler.h"
  #include "net/cookies/cookie_util.h"
-@@ -174,71 +170,6 @@ void GoogleURLLoaderThrottle::DetachFrom
+@@ -73,6 +69,7 @@ RequestBoundSessionStatus GetRequestSing
+   return RequestBoundSessionStatus::kCoveredWithMissingCookie;
+ }
+ 
++[[maybe_unused]]
+ bool IsCoveredRequestBoundSessionStatus(RequestBoundSessionStatus status) {
+   switch (status) {
+     case RequestBoundSessionStatus::kNotCovered:
+@@ -174,71 +171,6 @@ void GoogleURLLoaderThrottle::DetachFrom
  void GoogleURLLoaderThrottle::WillStartRequest(
      network::ResourceRequest* request,
      bool* defer) {
@@ -111,7 +119,7 @@
  }
  
  void GoogleURLLoaderThrottle::WillRedirectRequest(
-@@ -246,102 +177,12 @@ void GoogleURLLoaderThrottle::WillRedire
+@@ -246,102 +178,12 @@ void GoogleURLLoaderThrottle::WillRedire
      const network::mojom::URLResponseHead& response_head,
      bool* defer,
      network::HttpRequestHeadersUpdateParams* headers_update_params) {
@@ -214,9 +222,19 @@
  }
  
  #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+--- a/chrome/common/google_url_loader_throttle.h
++++ b/chrome/common/google_url_loader_throttle.h
+@@ -86,7 +86,6 @@ class GoogleURLLoaderThrottle final : pu
+       bound_session_request_throttled_handler_;
+   std::optional<base::TimeTicks> bound_session_request_throttled_start_time_;
+   bool is_main_frame_navigation_ = false;
+-  bool sends_cookies_ = false;
+   // `true` if at least one URL in the redirect chain was affected.
+   bool is_covered_by_bound_session_ = false;
+   bool is_deferred_for_bound_session_ = false;
 --- a/components/google/core/common/google_util.cc
 +++ b/components/google/core/common/google_util.cc
-@@ -34,116 +34,6 @@ namespace google_util {
+@@ -35,116 +35,6 @@ namespace google_util {
  
  namespace {
  
@@ -333,13 +351,14 @@
  }  // namespace
  
  BASE_FEATURE(kIsViewerGoogleSearchUrl, base::FEATURE_ENABLED_BY_DEFAULT);
-@@ -154,13 +44,6 @@ const char kGoogleHomepageURL[] = "https
+@@ -155,14 +45,6 @@ const char kGoogleHomepageURL[] = "https
  const char kGoogleSearchPrewarmPath[] = "/search/warmup.html";
  
  bool HasGoogleSearchQueryParam(std::string_view str) {
 -  url::Component query(0, static_cast<int>(str.length())), key, value;
 -  while (url::ExtractQueryKeyValue(str, &query, &key, &value)) {
--    std::string_view key_str = str.substr(key.begin, key.len);
+-    std::string key_str = base::ToLowerASCII(
+-        base::UnescapeBinaryURLComponent(str.substr(key.begin, key.len)));
 -    if (key_str == "q" || key_str == "as_q" || key_str == "imgurl") {
 -      return true;
 -    }
@@ -347,7 +366,7 @@
    return false;
  }
  
-@@ -171,186 +54,57 @@ std::string GetGoogleLocale(const std::s
+@@ -173,186 +55,57 @@ std::string GetGoogleLocale(const std::s
  
  GURL AppendGoogleLocaleParam(const GURL& url,
                               const std::string& application_locale) {
@@ -600,7 +619,7 @@
  bool IsProbablyGoogleSearchUrl(const GURL& url) {
 --- a/components/search_engines/template_url.cc
 +++ b/components/search_engines/template_url.cc
-@@ -628,10 +628,7 @@ std::u16string TemplateURLRef::SearchTer
+@@ -676,10 +676,7 @@ std::u16string TemplateURLRef::SearchTer
  bool TemplateURLRef::HasGoogleBaseURLs(
      const SearchTermsData& search_terms_data) const {
    ParseIfNecessary(search_terms_data);

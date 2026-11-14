@@ -24,7 +24,9 @@ Asserts the browser-side contract of the core patch:
   8. a windows profile's display.pointer and prefers_contrast follow
      pointer_device_win.cc and the Windows contrast rules: a touch-only
      tablet starts; hover without a fine pointer, or prefers_contrast more
-     without forced colors, stops the browser naming the field;
+     without forced colors, stops the browser naming the field; at 48 kHz,
+     audio.base_latency starts at 480 or 512 frames and stops the browser
+     naming the field at 500;
   9. a windows profile's capability claims as on the win11-uhd600 example
      start with a warning for each claim this build cannot back; pages see
      navigator.bluetooth and navigator.share in window contexts only, UVPAA
@@ -381,6 +383,18 @@ def check_windows(binary: str, profile: dict, work: Path, headless: bool) -> Non
         if r.returncode == 0 or f"'{field}'" not in r.stderr:
             raise GuardFailure(f"{name}: expected a refusal naming {field}, got exit {r.returncode}, stderr {r.stderr[-300:]!r}")
         print(f"PASS: {name} exits {r.returncode} naming {field}")
+
+    # The default WASAPI periods at 48 kHz: 10 ms, or 512 frames.
+    for frames, starts in ((480, True), (512, True), (500, False)):
+        name = f"windows-audio-{frames}-frames"
+        claim = with_value(win, ("audio", "sample_rate"), 48000)
+        claim = with_value(claim, ("audio", "base_latency"), frames / 48000)
+        r = start_and_exit(binary, claim, work, name)
+        if starts and r.returncode != 0:
+            raise GuardFailure(f"{name}: a windows profile with {frames} frames at 48 kHz does not start: exit {r.returncode}, stderr {r.stderr[-300:]!r}")
+        if not starts and (r.returncode == 0 or "'audio.base_latency'" not in r.stderr):
+            raise GuardFailure(f"{name}: expected a refusal naming audio.base_latency, got exit {r.returncode}, stderr {r.stderr[-300:]!r}")
+        print(f"PASS: {name} {'starts' if starts else f'exits {r.returncode} naming audio.base_latency'}")
 
 
 def check_windows_capabilities(binary: str, profile: dict, work: Path, headless: bool) -> None:

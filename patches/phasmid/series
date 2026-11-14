@@ -7,11 +7,11 @@ build/use-oauth2-client-switches-as-default.patch
 build/fix-compiling-on-arm64.patch
 build/chromium-138-drop-nodejs-version-check.patch
 build/chromium-153-revert-hermetic-python.patch
-build/chromium-154-revert-typescript-changes.patch
-build/chromium-155-remove-private-verification-tokens.patch
-build/chromium-155-revert-crubit-changes.patch
-build/chromium-155-revert-public-input-changes.patch
+build/chromium-154-use-system-tsc.patch
 build/chromium-155-use-system-esbuild.patch
+build/chromium-156-remove-private-verification-tokens.patch
+build/chromium-156-revert-crubit-changes.patch
+build/chromium-156-revert-use-typescript-go.patch
 
 # Core: profile loading and plumbing. Everything below depends on it.
 core/profile.patch

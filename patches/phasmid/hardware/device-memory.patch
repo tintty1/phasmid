@@ -11,6 +11,16 @@ Hooks:    third_party/blink/common/device_memory/approximated_device_memory.cc
 Contexts: main, iframe, worker, shared worker, service worker, headers
 Guard:    tests/guards/hardware/device-memory.py
 
+--- a/third_party/blink/common/BUILD.gn
++++ b/third_party/blink/common/BUILD.gn
+@@ -305,6 +305,7 @@
+ 
+   deps = [
+     "//base",
++    "//components/phasmid",
+     "//build:android_buildflags",
+     "//build:chromecast_buildflags",
+     "//media/capture:capture_base",
 --- a/third_party/blink/common/device_memory/approximated_device_memory.cc
 +++ b/third_party/blink/common/device_memory/approximated_device_memory.cc
 @@ -8,6 +8,7 @@
@@ -36,13 +46,3 @@ Guard:    tests/guards/hardware/device-memory.py
    CalculateAndSetApproximatedDeviceMemory();
  }
  
---- a/third_party/blink/common/BUILD.gn
-+++ b/third_party/blink/common/BUILD.gn
-@@ -305,6 +305,7 @@
- 
-   deps = [
-     "//base",
-+    "//components/phasmid",
-     "//build:android_buildflags",
-     "//build:chromecast_buildflags",
-     "//media/capture:capture_base",

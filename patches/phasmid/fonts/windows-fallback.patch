@@ -20,6 +20,76 @@ Contexts: main, same- and cross-origin iframe, worker, shared worker, service
           worker, OffscreenCanvas in workers; headless and headful.
 Guard:    tests/guards/fonts/windows_metrics.py
 
+--- a/third_party/blink/renderer/platform/BUILD.gn
++++ b/third_party/blink/renderer/platform/BUILD.gn
+@@ -1764,6 +1764,8 @@
+       "fonts/linux/font_cache_linux.cc",
+       "fonts/linux/font_unique_name_lookup_linux.cc",
+       "fonts/linux/font_unique_name_lookup_linux.h",
++      "fonts/linux/windows_fallback.cc",
++      "fonts/linux/windows_fallback.h",
+     ]
+   }
+ 
+--- a/third_party/blink/renderer/platform/fonts/font_cache.cc
++++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
+@@ -45,6 +45,7 @@
+ #include "base/trace_event/process_memory_dump.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "skia/ext/font_utils.h"
+ #include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/public/platform/platform.h"
+@@ -83,6 +84,29 @@
+ const char kColorEmojiLocale[] = "und-Zsye";
+ const char kMonoEmojiLocale[] = "und-Zsym";
+ 
++namespace {
++
++// Phasmid: a windows profile maps the names Windows Chrome maps before
++// matching (AdjustFamilyNameToAvoidUnsupportedFonts under IS_WIN): the
++// bitmap-only Courier, MS Sans Serif and MS Serif, and Times.
++const AtomicString& AdjustFamilyNameForProfile(const AtomicString& family) {
++  if (phasmid::ClaimsWindows()) {
++    if (EqualIgnoringAsciiCase(family, font_family_names::kCourier)) {
++      return font_family_names::kCourierNew;
++    }
++    if (EqualIgnoringAsciiCase(family, font_family_names::kMSSansSerif)) {
++      return font_family_names::kMicrosoftSansSerif;
++    }
++    if (EqualIgnoringAsciiCase(family, font_family_names::kMSSerif) ||
++        EqualIgnoringAsciiCase(family, font_family_names::kTimes)) {
++      return font_family_names::kTimesNewRoman;
++    }
++  }
++  return AdjustFamilyNameToAvoidUnsupportedFonts(family);
++}
++
++}  // namespace
++
+ #if BUILDFLAG(IS_ANDROID)
+ extern const char kNotoColorEmojiCompat[] = "Noto Color Emoji Compat";
+ #endif
+@@ -180,8 +204,7 @@
+     AlternateFontName altername_font_name) {
+   if (const FontPlatformData* platform_data = GetFontPlatformData(
+           font_description,
+-          FontFaceCreationParams(
+-              AdjustFamilyNameToAvoidUnsupportedFonts(family)),
++          FontFaceCreationParams(AdjustFamilyNameForProfile(family)),
+           altername_font_name)) {
+     return FontDataFromFontPlatformData(
+         platform_data, font_description.SubpixelAscentDescent());
+@@ -201,7 +224,7 @@
+     const AtomicString& family) {
+   return GetFontPlatformData(
+       font_description,
+-      FontFaceCreationParams(AdjustFamilyNameToAvoidUnsupportedFonts(family)),
++      FontFaceCreationParams(AdjustFamilyNameForProfile(family)),
+       AlternateFontName::kNoAlternate);
+ }
+ 
 --- a/third_party/blink/renderer/platform/fonts/linux/font_cache_linux.cc
 +++ b/third_party/blink/renderer/platform/fonts/linux/font_cache_linux.cc
 @@ -25,11 +25,17 @@
@@ -94,77 +164,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
        (font_description.Style() == kItalicSlopeValue ||
         font_description.Weight() >= kBoldThreshold)) {
      const SimpleFontData* font_data =
---- a/third_party/blink/renderer/platform/fonts/font_cache.cc
-+++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
-@@ -45,6 +45,7 @@
- #include "base/trace_event/process_memory_dump.h"
- #include "base/trace_event/trace_event.h"
- #include "build/build_config.h"
-+#include "components/phasmid/profile.h"
- #include "skia/ext/font_utils.h"
- #include "third_party/blink/public/common/features.h"
- #include "third_party/blink/public/platform/platform.h"
-@@ -82,6 +83,29 @@
- const char kColorEmojiLocale[] = "und-Zsye";
- const char kMonoEmojiLocale[] = "und-Zsym";
- 
-+namespace {
-+
-+// Phasmid: a windows profile maps the names Windows Chrome maps before
-+// matching (AdjustFamilyNameToAvoidUnsupportedFonts under IS_WIN): the
-+// bitmap-only Courier, MS Sans Serif and MS Serif, and Times.
-+const AtomicString& AdjustFamilyNameForProfile(const AtomicString& family) {
-+  if (phasmid::ClaimsWindows()) {
-+    if (EqualIgnoringAsciiCase(family, font_family_names::kCourier)) {
-+      return font_family_names::kCourierNew;
-+    }
-+    if (EqualIgnoringAsciiCase(family, font_family_names::kMSSansSerif)) {
-+      return font_family_names::kMicrosoftSansSerif;
-+    }
-+    if (EqualIgnoringAsciiCase(family, font_family_names::kMSSerif) ||
-+        EqualIgnoringAsciiCase(family, font_family_names::kTimes)) {
-+      return font_family_names::kTimesNewRoman;
-+    }
-+  }
-+  return AdjustFamilyNameToAvoidUnsupportedFonts(family);
-+}
-+
-+}  // namespace
-+
- #if BUILDFLAG(IS_ANDROID)
- extern const char kNotoColorEmojiCompat[] = "Noto Color Emoji Compat";
- #endif
-@@ -179,8 +203,7 @@
-     AlternateFontName altername_font_name) {
-   if (const FontPlatformData* platform_data = GetFontPlatformData(
-           font_description,
--          FontFaceCreationParams(
--              AdjustFamilyNameToAvoidUnsupportedFonts(family)),
-+          FontFaceCreationParams(AdjustFamilyNameForProfile(family)),
-           altername_font_name)) {
-     return FontDataFromFontPlatformData(
-         platform_data, font_description.SubpixelAscentDescent());
-@@ -200,7 +223,7 @@
-     const AtomicString& family) {
-   return GetFontPlatformData(
-       font_description,
--      FontFaceCreationParams(AdjustFamilyNameToAvoidUnsupportedFonts(family)),
-+      FontFaceCreationParams(AdjustFamilyNameForProfile(family)),
-       AlternateFontName::kNoAlternate);
- }
- 
---- a/third_party/blink/renderer/platform/BUILD.gn
-+++ b/third_party/blink/renderer/platform/BUILD.gn
-@@ -1762,6 +1762,8 @@
-       "fonts/linux/font_cache_linux.cc",
-       "fonts/linux/font_unique_name_lookup_linux.cc",
-       "fonts/linux/font_unique_name_lookup_linux.h",
-+      "fonts/linux/windows_fallback.cc",
-+      "fonts/linux/windows_fallback.h",
-     ]
-   }
- 
---- a/third_party/blink/renderer/platform/fonts/linux/windows_fallback.cc
+--- /dev/null
 +++ b/third_party/blink/renderer/platform/fonts/linux/windows_fallback.cc
 @@ -0,0 +1,647 @@
 +/*
@@ -814,7 +814,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
 +}
 +
 +}  // namespace blink
---- a/third_party/blink/renderer/platform/fonts/linux/windows_fallback.h
+--- /dev/null
 +++ b/third_party/blink/renderer/platform/fonts/linux/windows_fallback.h
 @@ -0,0 +1,42 @@
 +// Copyright 2026 The Phasmid Authors

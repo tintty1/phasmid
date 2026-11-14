@@ -26,181 +26,18 @@ Contexts: main, iframe, worker, shared worker, service worker; headless and
           headful
 Guard:    tests/guards/graphics/webgpu.py
 
---- a/gpu/command_buffer/service/webgpu_decoder_impl.cc
-+++ b/gpu/command_buffer/service/webgpu_decoder_impl.cc
-@@ -41,6 +41,7 @@
- #include "gpu/command_buffer/service/decoder_client.h"
- #include "gpu/command_buffer/service/graphite_utils.h"
- #include "gpu/command_buffer/service/isolation_key_provider.h"
-+#include "gpu/command_buffer/service/phasmid_webgpu.h"
- #include "gpu/command_buffer/service/shared_context_state.h"
- #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
- #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
-@@ -1165,6 +1166,9 @@
-     // immediately.
-     delete[] supported_features.features;
-   };
-+  // Phasmid: the adapter info and limits renderers see.
-+  wire_procs.adapterGetInfo = PhasmidAdapterGetInfo;
-+  wire_procs.adapterGetLimits = PhasmidAdapterGetLimits;
-   wire_procs.adapterRequestDevice = [](auto... args) {
-     DCHECK(parent_decoder);
-     return parent_decoder->RequestDeviceImpl(
-@@ -1255,6 +1259,11 @@
- }
- 
- bool WebGPUDecoderImpl::IsFeatureExposed(wgpu::FeatureName feature) const {
-+  // Phasmid: only the features gpu.webgpu.features lists, for the adapter's
-+  // feature list, hasFeature and the required-features check alike.
-+  if (!PhasmidFeatureListed(feature)) {
-+    return false;
-+  }
-   switch (feature) {
-     case wgpu::FeatureName::ChromiumExperimentalTimestampQueryInsidePasses:
-     case wgpu::FeatureName::ChromiumExperimentalSamplingResourceTable:
-@@ -1342,6 +1351,15 @@
-       static_cast<wgpu::PowerPreference>(options->powerPreference),
-       options->forceFallbackAdapter || force_fallback_adapter, feature_level,
-       webgpu_on_vk_gl_interop_);
-+  // Phasmid: gpu.webgpu.available false is a device without WebGPU. A page
-+  // asking for the fallback adapter gets none, as on the claimed hardware,
-+  // even where the fallback backs the claimed adapter.
-+  if (!PhasmidWebGPUAvailable() ||
-+      (options->forceFallbackAdapter &&
-+       safety_level_ != webgpu::SafetyLevel::kUnsafe &&
-+       PhasmidAllowsFallbackAdapter())) {
-+    adapter = wgpu::Adapter();
-+  }
- 
-   if (adapter == nullptr) {
-     // There are no adapters to return since webgpu is not supported here
-@@ -1408,6 +1426,7 @@
-       exposed_features.push_back(feature);
-     };
-   }
-+  PhasmidClaimFeatures(&exposed_features);
-   const size_t count = exposed_features.size();
-   WGPUFeatureName* features = new WGPUFeatureName[count];
-   uint32_t index = 0;
-@@ -1458,7 +1477,9 @@
-     // Check that no disallowed features were requested. They should be hidden
-     // by AdapterGetFeaturesImpl.
-     for (const wgpu::FeatureName& feature : required_features) {
--      if (!IsFeatureExposed(feature)) {
-+      // Phasmid: a claimed feature the backing adapter lacks is refused too.
-+      if (!IsFeatureExposed(feature) ||
-+          !PhasmidFeatureBacked(adapter_obj, feature)) {
-         callback_info.callback(WGPURequestDeviceStatus_Error, nullptr,
-                                MakeStringView("Disallowed feature requested."),
-                                callback_info.userdata1,
-@@ -1468,6 +1489,19 @@
-     }
-   }
- 
-+  // Phasmid: a required limit beyond the profile's fails as Dawn fails one
-+  // beyond the adapter's; one within the claim but beyond the backing
-+  // adapter's is refused as a disallowed feature is.
-+  const std::string phasmid_limit_error = PhasmidCheckRequiredLimits(
-+      adapter, descriptor ? descriptor->requiredLimits : nullptr);
-+  if (!phasmid_limit_error.empty()) {
-+    callback_info.callback(
-+        WGPURequestDeviceStatus_Error, nullptr,
-+        {phasmid_limit_error.data(), phasmid_limit_error.size()},
-+        callback_info.userdata1, callback_info.userdata2);
-+    return {};
-+  }
-+
-   // We need to request internal usage to be able to do operations with internal
-   // SharedImage / interop methods that would need specific usages.
-   required_features.push_back(wgpu::FeatureName::DawnInternalUsages);
-@@ -1625,8 +1659,10 @@
-     bool webgpu_on_vk_gl_interop) const {
-   // The fallback adapter is SwiftShader, which is only allowed with
-   // --enable-unsafe-webgpu. Don't make Dawn load it otherwise.
-+  // Phasmid: or when it backs the profile's adapter on a host without one.
-   const bool allow_fallback_adapter =
--      safety_level_ == webgpu::SafetyLevel::kUnsafe;
-+      safety_level_ == webgpu::SafetyLevel::kUnsafe ||
-+      PhasmidAllowsFallbackAdapter();
-   if (force_fallback && !allow_fallback_adapter) {
-     return nullptr;
-   }
-@@ -1774,7 +1810,12 @@
-     wgpu::AdapterInfo adapter_info = {};
-     adapter.GetInfo(&adapter_info);
- 
--    if (use_blocklist() && IsWebGPUAdapterBlocklisted(adapter).blocked) {
-+    // Phasmid: the CPU-adapter entry would refuse the fallback that backs
-+    // the profile's adapter; only searches for the fallback skip the list.
-+    if (use_blocklist() &&
-+        !(adapter_options.forceFallbackAdapter &&
-+          PhasmidAllowsFallbackAdapter()) &&
-+        IsWebGPUAdapterBlocklisted(adapter).blocked) {
-       return false;
-     }
- 
---- a/gpu/command_buffer/service/phasmid_webgpu.h
-+++ b/gpu/command_buffer/service/phasmid_webgpu.h
-@@ -0,0 +1,58 @@
-+// Copyright 2026 The Phasmid Authors
-+// Use of this source code is governed by a BSD-style license that can be
-+// found in the LICENSE file.
-+
-+#ifndef GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGPU_H_
-+#define GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGPU_H_
-+
-+#include <dawn/webgpu.h>
-+
-+#include <string>
-+#include <vector>
-+
-+#include "third_party/dawn/include/dawn/webgpu_cpp.h"
-+
-+namespace gpu::webgpu {
-+
-+// The WebGPU adapter a renderer sees, from the profile's gpu.webgpu. Without
-+// a profile every function leaves Dawn's answer alone. Only what the wire
-+// server sends changes; the decoder's own decisions keep reading Dawn.
-+
-+// False when gpu.webgpu.available is false: requestAdapter() then resolves
-+// to null with "No available adapters.", as on a device without WebGPU.
-+bool PhasmidWebGPUAvailable();
-+
-+// Whether the profile claims an adapter (gpu.webgpu.available), so the
-+// SwiftShader fallback may back it when the host has no hardware adapter,
-+// without --enable-unsafe-webgpu and its other effects.
-+bool PhasmidAllowsFallbackAdapter();
-+
-+// Whether `feature` may be exposed: gpu.webgpu.features lists it.
-+bool PhasmidFeatureListed(wgpu::FeatureName feature);
-+
-+// Replaces `exposed`, the features the host adapter backs, with every listed
-+// feature this build knows, reporting each listed one missing from it
-+// through phasmid::ReportUnbackedGpuClaim.
-+void PhasmidClaimFeatures(std::vector<wgpu::FeatureName>* exposed);
-+
-+// Whether a required `feature` can be enabled on `adapter`: always without a
-+// claimed adapter (Dawn validates), else whether the backing adapter has it.
-+bool PhasmidFeatureBacked(wgpu::Adapter adapter, wgpu::FeatureName feature);
-+
-+// Wire-server procs: Dawn's answer, then the profile's vendor, architecture,
-+// device, description, ids and subgroup sizes, or its limits. backendType and
-+// adapterType stay the host's. A subgroup size, limit or CPU adapter the
-+// claim does not match is reported.
-+WGPUStatus PhasmidAdapterGetInfo(WGPUAdapter adapter, WGPUAdapterInfo* info);
-+WGPUStatus PhasmidAdapterGetLimits(WGPUAdapter adapter, WGPULimits* limits);
-+
-+// The rejection message for the first requiredLimits entry, in Dawn's order,
-+// beyond the profile's limit (Dawn's own text) or within it but beyond the
-+// backing `adapter`'s ("Disallowed limit requested."), or empty when every
-+// required limit is backed.
-+std::string PhasmidCheckRequiredLimits(WGPUAdapter adapter,
-+                                       const WGPULimits* required);
-+
-+}  // namespace gpu::webgpu
-+
-+#endif  // GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGPU_H_
---- a/gpu/command_buffer/service/phasmid_webgpu.cc
+--- a/gpu/command_buffer/service/BUILD.gn
++++ b/gpu/command_buffer/service/BUILD.gn
+@@ -345,6 +345,8 @@
+       "dawn_service_serializer.h",
+       "dawn_wire_server.cc",
+       "dawn_wire_server.h",
++      "phasmid_webgpu.cc",
++      "phasmid_webgpu.h",
+       "shared_image/dawn_copy_strategy.cc",
+       "shared_image/dawn_copy_strategy.h",
+       "shared_image/dawn_fallback_image_representation.cc",
+--- /dev/null
 +++ b/gpu/command_buffer/service/phasmid_webgpu.cc
 @@ -0,0 +1,385 @@
 +// Copyright 2026 The Phasmid Authors
@@ -588,17 +425,190 @@ Guard:    tests/guards/graphics/webgpu.py
 +}
 +
 +}  // namespace gpu::webgpu
---- a/gpu/command_buffer/service/BUILD.gn
-+++ b/gpu/command_buffer/service/BUILD.gn
-@@ -345,6 +345,8 @@
-       "dawn_service_serializer.h",
-       "dawn_wire_server.cc",
-       "dawn_wire_server.h",
-+      "phasmid_webgpu.cc",
-+      "phasmid_webgpu.h",
-       "shared_image/dawn_copy_strategy.cc",
-       "shared_image/dawn_copy_strategy.h",
-       "shared_image/dawn_fallback_image_representation.cc",
+--- /dev/null
++++ b/gpu/command_buffer/service/phasmid_webgpu.h
+@@ -0,0 +1,58 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGPU_H_
++#define GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGPU_H_
++
++#include <dawn/webgpu.h>
++
++#include <string>
++#include <vector>
++
++#include "third_party/dawn/include/dawn/webgpu_cpp.h"
++
++namespace gpu::webgpu {
++
++// The WebGPU adapter a renderer sees, from the profile's gpu.webgpu. Without
++// a profile every function leaves Dawn's answer alone. Only what the wire
++// server sends changes; the decoder's own decisions keep reading Dawn.
++
++// False when gpu.webgpu.available is false: requestAdapter() then resolves
++// to null with "No available adapters.", as on a device without WebGPU.
++bool PhasmidWebGPUAvailable();
++
++// Whether the profile claims an adapter (gpu.webgpu.available), so the
++// SwiftShader fallback may back it when the host has no hardware adapter,
++// without --enable-unsafe-webgpu and its other effects.
++bool PhasmidAllowsFallbackAdapter();
++
++// Whether `feature` may be exposed: gpu.webgpu.features lists it.
++bool PhasmidFeatureListed(wgpu::FeatureName feature);
++
++// Replaces `exposed`, the features the host adapter backs, with every listed
++// feature this build knows, reporting each listed one missing from it
++// through phasmid::ReportUnbackedGpuClaim.
++void PhasmidClaimFeatures(std::vector<wgpu::FeatureName>* exposed);
++
++// Whether a required `feature` can be enabled on `adapter`: always without a
++// claimed adapter (Dawn validates), else whether the backing adapter has it.
++bool PhasmidFeatureBacked(wgpu::Adapter adapter, wgpu::FeatureName feature);
++
++// Wire-server procs: Dawn's answer, then the profile's vendor, architecture,
++// device, description, ids and subgroup sizes, or its limits. backendType and
++// adapterType stay the host's. A subgroup size, limit or CPU adapter the
++// claim does not match is reported.
++WGPUStatus PhasmidAdapterGetInfo(WGPUAdapter adapter, WGPUAdapterInfo* info);
++WGPUStatus PhasmidAdapterGetLimits(WGPUAdapter adapter, WGPULimits* limits);
++
++// The rejection message for the first requiredLimits entry, in Dawn's order,
++// beyond the profile's limit (Dawn's own text) or within it but beyond the
++// backing `adapter`'s ("Disallowed limit requested."), or empty when every
++// required limit is backed.
++std::string PhasmidCheckRequiredLimits(WGPUAdapter adapter,
++                                       const WGPULimits* required);
++
++}  // namespace gpu::webgpu
++
++#endif  // GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGPU_H_
+--- a/gpu/command_buffer/service/webgpu_decoder_impl.cc
++++ b/gpu/command_buffer/service/webgpu_decoder_impl.cc
+@@ -42,6 +42,7 @@
+ #include "gpu/command_buffer/service/decoder_client.h"
+ #include "gpu/command_buffer/service/graphite_utils.h"
+ #include "gpu/command_buffer/service/isolation_key_provider.h"
++#include "gpu/command_buffer/service/phasmid_webgpu.h"
+ #include "gpu/command_buffer/service/shared_context_state.h"
+ #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
+ #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
+@@ -1169,6 +1170,9 @@
+     // immediately.
+     delete[] supported_features.features;
+   };
++  // Phasmid: the adapter info and limits renderers see.
++  wire_procs.adapterGetInfo = PhasmidAdapterGetInfo;
++  wire_procs.adapterGetLimits = PhasmidAdapterGetLimits;
+   wire_procs.adapterRequestDevice = [](auto... args) {
+     DCHECK(parent_decoder);
+     return parent_decoder->RequestDeviceImpl(
+@@ -1259,6 +1263,11 @@
+ }
+ 
+ bool WebGPUDecoderImpl::IsFeatureExposed(wgpu::FeatureName feature) const {
++  // Phasmid: only the features gpu.webgpu.features lists, for the adapter's
++  // feature list, hasFeature and the required-features check alike.
++  if (!PhasmidFeatureListed(feature)) {
++    return false;
++  }
+   switch (feature) {
+     case wgpu::FeatureName::ChromiumExperimentalTimestampQueryInsidePasses:
+     case wgpu::FeatureName::ChromiumExperimentalSamplingResourceTable:
+@@ -1346,6 +1355,15 @@
+       static_cast<wgpu::PowerPreference>(options->powerPreference),
+       options->forceFallbackAdapter || force_fallback_adapter, feature_level,
+       webgpu_on_vk_gl_interop_);
++  // Phasmid: gpu.webgpu.available false is a device without WebGPU. A page
++  // asking for the fallback adapter gets none, as on the claimed hardware,
++  // even where the fallback backs the claimed adapter.
++  if (!PhasmidWebGPUAvailable() ||
++      (options->forceFallbackAdapter &&
++       safety_level_ != webgpu::SafetyLevel::kUnsafe &&
++       PhasmidAllowsFallbackAdapter())) {
++    adapter = wgpu::Adapter();
++  }
+ 
+   if (adapter == nullptr) {
+     // There are no adapters to return since webgpu is not supported here
+@@ -1412,6 +1430,7 @@
+       exposed_features.push_back(feature);
+     };
+   }
++  PhasmidClaimFeatures(&exposed_features);
+   const size_t count = exposed_features.size();
+   WGPUFeatureName* features = new WGPUFeatureName[count];
+   uint32_t index = 0;
+@@ -1462,7 +1481,9 @@
+     // Check that no disallowed features were requested. They should be hidden
+     // by AdapterGetFeaturesImpl.
+     for (const wgpu::FeatureName& feature : required_features) {
+-      if (!IsFeatureExposed(feature)) {
++      // Phasmid: a claimed feature the backing adapter lacks is refused too.
++      if (!IsFeatureExposed(feature) ||
++          !PhasmidFeatureBacked(adapter_obj, feature)) {
+         callback_info.callback(WGPURequestDeviceStatus_Error, nullptr,
+                                MakeStringView("Disallowed feature requested."),
+                                callback_info.userdata1,
+@@ -1472,6 +1493,19 @@
+     }
+   }
+ 
++  // Phasmid: a required limit beyond the profile's fails as Dawn fails one
++  // beyond the adapter's; one within the claim but beyond the backing
++  // adapter's is refused as a disallowed feature is.
++  const std::string phasmid_limit_error = PhasmidCheckRequiredLimits(
++      adapter, descriptor ? descriptor->requiredLimits : nullptr);
++  if (!phasmid_limit_error.empty()) {
++    callback_info.callback(
++        WGPURequestDeviceStatus_Error, nullptr,
++        {phasmid_limit_error.data(), phasmid_limit_error.size()},
++        callback_info.userdata1, callback_info.userdata2);
++    return {};
++  }
++
+   // We need to request internal usage to be able to do operations with internal
+   // SharedImage / interop methods that would need specific usages.
+   required_features.push_back(wgpu::FeatureName::DawnInternalUsages);
+@@ -1629,8 +1663,10 @@
+     bool webgpu_on_vk_gl_interop) const {
+   // The fallback adapter is SwiftShader, which is only allowed with
+   // --enable-unsafe-webgpu. Don't make Dawn load it otherwise.
++  // Phasmid: or when it backs the profile's adapter on a host without one.
+   const bool allow_fallback_adapter =
+-      safety_level_ == webgpu::SafetyLevel::kUnsafe;
++      safety_level_ == webgpu::SafetyLevel::kUnsafe ||
++      PhasmidAllowsFallbackAdapter();
+   if (force_fallback && !allow_fallback_adapter) {
+     return nullptr;
+   }
+@@ -1778,7 +1814,12 @@
+     wgpu::AdapterInfo adapter_info = {};
+     adapter.GetInfo(&adapter_info);
+ 
+-    if (use_blocklist() && IsWebGPUAdapterBlocklisted(adapter).blocked) {
++    // Phasmid: the CPU-adapter entry would refuse the fallback that backs
++    // the profile's adapter; only searches for the fallback skip the list.
++    if (use_blocklist() &&
++        !(adapter_options.forceFallbackAdapter &&
++          PhasmidAllowsFallbackAdapter()) &&
++        IsWebGPUAdapterBlocklisted(adapter).blocked) {
+       return false;
+     }
+ 
+--- a/third_party/blink/renderer/modules/webgpu/BUILD.gn
++++ b/third_party/blink/renderer/modules/webgpu/BUILD.gn
+@@ -111,6 +111,7 @@
+     "wgsl_language_features.h",
+   ]
+   deps = [
++    "//components/phasmid",
+     "//gpu/command_buffer/client:webgpu_interface",
+     "//services/metrics/public/cpp:ukm_builders",
+     "//skia",
 --- a/third_party/blink/renderer/modules/webgpu/gpu.cc
 +++ b/third_party/blink/renderer/modules/webgpu/gpu.cc
 @@ -10,6 +10,7 @@
@@ -646,13 +656,3 @@ Guard:    tests/guards/graphics/webgpu.py
  
    GPUAdapterInfo* info;
    if (RuntimeEnabledFeatures::WebGPUDeveloperFeaturesEnabled()) {
---- a/third_party/blink/renderer/modules/webgpu/BUILD.gn
-+++ b/third_party/blink/renderer/modules/webgpu/BUILD.gn
-@@ -111,6 +111,7 @@
-     "wgsl_language_features.h",
-   ]
-   deps = [
-+    "//components/phasmid",
-     "//gpu/command_buffer/client:webgpu_interface",
-     "//services/metrics/public/cpp:ukm_builders",
-     "//skia",

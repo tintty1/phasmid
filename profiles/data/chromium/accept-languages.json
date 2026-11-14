@@ -372,7 +372,7 @@
   "zh-TW"
  ],
  "source": {
-  "chromium": "155.0.8059.84",
+  "chromium": "156.0.8078.79",
   "default": "en-US,en",
   "files": {
    "build/config/locales.gni": "736f5f1d23e7e4abe8ee939cf36da6dcb7870acb",

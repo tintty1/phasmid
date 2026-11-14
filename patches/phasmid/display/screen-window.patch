@@ -5,7 +5,8 @@ What:     screen.width/height/avail*, colorDepth, pixelDepth,
           device-width media queries, and window.outerWidth/outerHeight/
           screenX/screenY come from the profile. The first window opens at
           the profile's size, the headless screen is the profile's display,
-          and the browser runs at the profile's device pixel ratio.
+          and the browser runs at the profile's device pixel ratio. A popup
+          reports its own bounds, as placed.
 Why:      Stock headless reports an 800x600 screen and a 780x580 window, and
           a headful run reports the host's monitor and window manager.
 Profile:  display.width, display.height, display.avail_left,
@@ -17,7 +18,7 @@ Profile:  display.width, display.height, display.avail_left,
 Hooks:    content/browser/renderer_host/render_widget_host_view_base.cc
           GetNewScreenInfosForUpdate;
           content/browser/renderer_host/render_widget_host_impl.cc
-          SendScreenRects, GetVisualProperties;
+          SendScreenRects (not for popups), GetVisualProperties;
           chrome/browser/ui/window_sizer/window_sizer.cc
           DetermineWindowBoundsAndShowState;
           chrome/app/chrome_main_delegate.cc BasicStartupComplete;
@@ -26,9 +27,20 @@ Contexts: main, iframe; workers have no screen. isExtended is false in
           cross-origin iframes (permissions policy), as in stock.
 Guard:    tests/guards/display/screen-window.py
 
+--- a/chrome/app/BUILD.gn
++++ b/chrome/app/BUILD.gn
+@@ -182,6 +182,8 @@
+     "//printing/buildflags",
+     "//services/tracing/public/cpp",
+     "//ui/base",
++    "//ui/display",
++    "//ui/gfx",
+     "//v8:v8_headers",
+   ]
+   public_deps = [ "//ui/lottie" ]
 --- a/chrome/app/chrome_main_delegate.cc
 +++ b/chrome/app/chrome_main_delegate.cc
-@@ -6,6 +6,7 @@
+@@ -6,6 +8,7 @@
  
  #include <stddef.h>
  
@@ -36,7 +48,7 @@ Guard:    tests/guards/display/screen-window.py
  #include <string>
  #include <variant>
  
-@@ -30,7 +31,9 @@
+@@ -32,7 +35,9 @@
  #include "base/process/process_handle.h"
  #include "base/profiler/thread_group_profiler.h"
  #include "base/rand_util.h"
@@ -46,7 +58,7 @@ Guard:    tests/guards/display/screen-window.py
  #include "base/strings/sys_string_conversions.h"
  #include "base/strings/utf_string_conversions.h"
  #include "base/task/thread_pool/thread_pool_instance.h"
-@@ -91,6 +94,8 @@
+@@ -93,6 +98,8 @@
  #include "ui/base/resource/resource_bundle.h"
  #include "ui/base/resource/scoped_startup_resource_bundle.h"
  #include "ui/base/ui_base_switches.h"
@@ -55,7 +67,7 @@ Guard:    tests/guards/display/screen-window.py
  
  
  #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || \
-@@ -1190,6 +1195,34 @@
+@@ -1242,6 +1249,34 @@
        LOG(ERROR) << "Phasmid: " << phasmid_error;
        return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
      }
@@ -90,20 +102,124 @@ Guard:    tests/guards/display/screen-window.py
    }
  #elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
    const bool is_browser = false;
---- a/chrome/app/BUILD.gn
-+++ b/chrome/app/BUILD.gn
-@@ -182,6 +182,8 @@
-     "//printing/buildflags",
-     "//services/tracing/public/cpp",
-     "//ui/base",
-+    "//ui/display",
-+    "//ui/gfx",
-     "//v8:v8_headers",
-   ]
-   public_deps = [ "//ui/lottie" ]
+--- a/chrome/browser/ui/window_sizer/window_sizer.cc
++++ b/chrome/browser/ui/window_sizer/window_sizer.cc
+@@ -5,6 +40,7 @@
+ #include "chrome/browser/ui/window_sizer/window_sizer.h"
+ 
+ #include <algorithm>
++#include <cstdint>
+ #include <utility>
+ 
+ #include "base/command_line.h"
+@@ -20,6 +56,7 @@
+ #include "chrome/browser/ui/browser_window_state.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+ #include "chrome/common/chrome_switches.h"
++#include "components/phasmid/profile.h"
+ #include "components/prefs/pref_service.h"
+ #include "ui/base/mojom/window_show_state.mojom.h"
+ #include "ui/base/ui_base_switches.h"
+@@ -43,6 +80,20 @@
+ constexpr float kMinVisibleRatio = 0.3f;
+ #endif
+ 
++// Phasmid: the nearest coordinate at or below `css` on a whole physical pixel.
++// At a fractional DPR an origin between pixels widens the viewport by a pixel
++// on each side. The reported screenX/screenY stay the profile's.
++int PixelAlignedOrigin(int css, double device_pixel_ratio) {
++  for (int candidate = css; candidate > css - 64 && candidate >= 0;
++       --candidate) {
++    const double px = candidate * device_pixel_ratio;
++    if (px == static_cast<double>(static_cast<int64_t>(px))) {
++      return candidate;
++    }
++  }
++  return 0;
++}
++
+ ui::BaseWindow* FindMostRecentWindow(
+     base::FunctionRef<bool(BrowserWindowInterface*)> matcher) {
+   ui::BaseWindow* window = nullptr;
+@@ -257,6 +308,15 @@
+     if (GetLastActiveWindowBounds(bounds, show_state)) {
+       return;
+     }
++    // Phasmid: --window-size and --window-position still apply afterwards.
++    if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++      const phasmid::Profile::Display& d = profile->display();
++      *bounds = gfx::Rect(PixelAlignedOrigin(d.screen_x, d.device_pixel_ratio),
++                          PixelAlignedOrigin(d.screen_y, d.device_pixel_ratio),
++                          d.outer_width, d.outer_height);
++      *show_state = ui::mojom::WindowShowState::kNormal;
++      return;
++    }
+     // See if there's saved placement information.
+     if (GetSavedWindowBounds(bounds, show_state)) {
+       return;
+--- a/content/browser/renderer_host/render_widget_host_impl.cc
++++ b/content/browser/renderer_host/render_widget_host_impl.cc
+@@ -46,6 +106,7 @@
+ #include "cc/trees/browser_controls_params.h"
+ #include "cc/trees/render_frame_metadata.h"
+ #include "components/input/dispatch_to_renderer_callback.h"
++#include "components/phasmid/profile.h"
+ #include "components/input/features.h"
+ #include "components/input/input_constants.h"
+ #include "components/input/input_router_config_helper.h"
+@@ -76,6 +137,7 @@
+ #include "content/browser/renderer_host/input/fling_scheduler.h"
+ #include "content/browser/renderer_host/navigation_controller_impl.h"
+ #include "content/browser/renderer_host/render_frame_host_impl.h"
++#include "content/browser/renderer_host/render_frame_host_delegate.h"
+ #include "content/browser/renderer_host/render_process_host_impl.h"
+ #include "content/browser/renderer_host/render_view_host_delegate.h"
+ #include "content/browser/renderer_host/render_view_host_delegate_view.h"
+@@ -733,8 +795,25 @@
+ 
+   last_view_screen_rect_ = view_->GetViewBoundsWithoutTransform();
+   last_window_screen_rect_ = view_->GetBoundsInScreenWithoutTransform();
++  gfx::Rect view_screen_rect = last_view_screen_rect_;
++  gfx::Rect window_screen_rect = last_window_screen_rect_;
++  // Phasmid: report the profile's window rect. Widgets keep their real size
++  // and move with the window, so event screen coordinates stay consistent.
++  // A popup keeps its real bounds, which stock reports as placed and
++  // clamped to the work area.
++  const bool is_popup =
++      frame_tree_ && frame_tree_->render_frame_delegate()->IsPopup();
++  const phasmid::Profile* profile = phasmid::Profile::Get();
++  if (profile && !is_popup) {
++    const phasmid::Profile::Display& d = profile->display();
++    const gfx::Vector2d offset =
++        gfx::Point(d.screen_x, d.screen_y) - window_screen_rect.origin();
++    view_screen_rect.Offset(offset);
++    window_screen_rect =
++        gfx::Rect(d.screen_x, d.screen_y, d.outer_width, d.outer_height);
++  }
+   blink_widget_->UpdateScreenRects(
+-      last_view_screen_rect_, last_window_screen_rect_,
++      view_screen_rect, window_screen_rect,
+       base::BindOnce(&RenderWidgetHostImpl::OnUpdateScreenRectsAck,
+                      weak_factory_.GetWeakPtr()));
+   waiting_for_screen_rects_ack_ = true;
+@@ -1131,6 +1210,14 @@
+     for (auto& screen_info : visual_properties.screen_infos.screen_infos) {
+       display::DisplayUtil::DisableHdrAndHighBitDepth(&screen_info);
+     }
++    // Phasmid: keep the claimed bit depth when this host renders in
++    // software.
++    if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++      for (auto& screen_info : visual_properties.screen_infos.screen_infos) {
++        screen_info.depth = profile->display().color_depth;
++        screen_info.depth_per_component = profile->display().color_depth / 3;
++      }
++    }
+   }
+ 
+   // For testing, override the raster color profile.
 --- a/content/browser/renderer_host/render_widget_host_view_base.cc
 +++ b/content/browser/renderer_host/render_widget_host_view_base.cc
-@@ -17,6 +17,7 @@
+@@ -18,6 +105,7 @@
  #include "base/unguessable_token.h"
  #include "build/build_config.h"
  #include "components/input/event_with_latency_info.h"
@@ -111,7 +227,7 @@ Guard:    tests/guards/display/screen-window.py
  #include "components/input/render_widget_host_input_event_router.h"
  #include "components/input/render_widget_host_view_input_observer.h"
  #include "components/viz/common/features.h"
-@@ -970,6 +971,37 @@
+@@ -984,6 +1072,37 @@
      screen_infos = display::ScreenInfos(display::ScreenInfo());
    }
  
@@ -149,105 +265,3 @@ Guard:    tests/guards/display/screen-window.py
    // Set system cursor size separately as it's not a property of screen or
    // display.
    screen_infos.system_cursor_size = system_cursor_size_;
---- a/content/browser/renderer_host/render_widget_host_impl.cc
-+++ b/content/browser/renderer_host/render_widget_host_impl.cc
-@@ -46,6 +46,7 @@
- #include "cc/trees/browser_controls_params.h"
- #include "cc/trees/render_frame_metadata.h"
- #include "components/input/dispatch_to_renderer_callback.h"
-+#include "components/phasmid/profile.h"
- #include "components/input/features.h"
- #include "components/input/input_constants.h"
- #include "components/input/input_router_config_helper.h"
-@@ -698,8 +699,20 @@
- 
-   last_view_screen_rect_ = view_->GetViewBoundsWithoutTransform();
-   last_window_screen_rect_ = view_->GetBoundsInScreenWithoutTransform();
-+  gfx::Rect view_screen_rect = last_view_screen_rect_;
-+  gfx::Rect window_screen_rect = last_window_screen_rect_;
-+  // Phasmid: report the profile's window rect. Widgets keep their real size
-+  // and move with the window, so event screen coordinates stay consistent.
-+  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
-+    const phasmid::Profile::Display& d = profile->display();
-+    const gfx::Vector2d offset =
-+        gfx::Point(d.screen_x, d.screen_y) - window_screen_rect.origin();
-+    view_screen_rect.Offset(offset);
-+    window_screen_rect =
-+        gfx::Rect(d.screen_x, d.screen_y, d.outer_width, d.outer_height);
-+  }
-   blink_widget_->UpdateScreenRects(
--      last_view_screen_rect_, last_window_screen_rect_,
-+      view_screen_rect, window_screen_rect,
-       base::BindOnce(&RenderWidgetHostImpl::OnUpdateScreenRectsAck,
-                      weak_factory_.GetWeakPtr()));
-   waiting_for_screen_rects_ack_ = true;
-@@ -1094,6 +1107,14 @@
-     for (auto& screen_info : visual_properties.screen_infos.screen_infos) {
-       display::DisplayUtil::DisableHdrAndHighBitDepth(&screen_info);
-     }
-+    // Phasmid: keep the claimed bit depth when this host renders in
-+    // software.
-+    if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
-+      for (auto& screen_info : visual_properties.screen_infos.screen_infos) {
-+        screen_info.depth = profile->display().color_depth;
-+        screen_info.depth_per_component = profile->display().color_depth / 3;
-+      }
-+    }
-   }
- 
-   // For testing, override the raster color profile.
---- a/chrome/browser/ui/window_sizer/window_sizer.cc
-+++ b/chrome/browser/ui/window_sizer/window_sizer.cc
-@@ -5,6 +5,7 @@
- #include "chrome/browser/ui/window_sizer/window_sizer.h"
- 
- #include <algorithm>
-+#include <cstdint>
- #include <utility>
- 
- #include "base/command_line.h"
-@@ -20,6 +21,7 @@
- #include "chrome/browser/ui/browser_window_state.h"
- #include "chrome/browser/ui/web_applications/app_browser_controller.h"
- #include "chrome/common/chrome_switches.h"
-+#include "components/phasmid/profile.h"
- #include "components/prefs/pref_service.h"
- #include "ui/base/mojom/window_show_state.mojom.h"
- #include "ui/base/ui_base_switches.h"
-@@ -43,6 +45,20 @@
- constexpr float kMinVisibleRatio = 0.3f;
- #endif
- 
-+// Phasmid: the nearest coordinate at or below `css` on a whole physical pixel.
-+// At a fractional DPR an origin between pixels widens the viewport by a pixel
-+// on each side. The reported screenX/screenY stay the profile's.
-+int PixelAlignedOrigin(int css, double device_pixel_ratio) {
-+  for (int candidate = css; candidate > css - 64 && candidate >= 0;
-+       --candidate) {
-+    const double px = candidate * device_pixel_ratio;
-+    if (px == static_cast<double>(static_cast<int64_t>(px))) {
-+      return candidate;
-+    }
-+  }
-+  return 0;
-+}
-+
- ui::BaseWindow* FindMostRecentWindow(
-     base::FunctionRef<bool(BrowserWindowInterface*)> matcher) {
-   ui::BaseWindow* window = nullptr;
-@@ -257,6 +273,15 @@
-     if (GetLastActiveWindowBounds(bounds, show_state)) {
-       return;
-     }
-+    // Phasmid: --window-size and --window-position still apply afterwards.
-+    if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
-+      const phasmid::Profile::Display& d = profile->display();
-+      *bounds = gfx::Rect(PixelAlignedOrigin(d.screen_x, d.device_pixel_ratio),
-+                          PixelAlignedOrigin(d.screen_y, d.device_pixel_ratio),
-+                          d.outer_width, d.outer_height);
-+      *show_state = ui::mojom::WindowShowState::kNormal;
-+      return;
-+    }
-     // See if there's saved placement information.
-     if (GetSavedWindowBounds(bounds, show_state)) {
-       return;

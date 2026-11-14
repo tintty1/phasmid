@@ -17,6 +17,38 @@ Contexts: main, iframe, worker, shared worker, service worker, headers
           (worker requests carry no network hints, as in stock)
 Guard:    tests/guards/network/connection.py
 
+--- a/content/browser/client_hints/client_hints.cc
++++ b/content/browser/client_hints/client_hints.cc
+@@ -20,6 +20,7 @@
+ #include "base/strings/string_util.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
++#include "components/phasmid/profile.h"
+ #include "content/browser/devtools/devtools_instrumentation.h"
+ #include "content/browser/preloading/prerender/prerender_host.h"
+ #include "content/browser/renderer_host/frame_tree.h"
+@@ -88,6 +89,11 @@
+   // cross-origin fingerprinting. The random number should also be a function
+   // of randomized salt which is known only to the device. This prevents
+   // origin from removing noise from the estimates.
++  // Phasmid: the profile's seed in place of the salt, the same factor the
++  // renderer applies to navigator.connection.
++  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
++    return profile->ConnectionNoiseMultiplier(host);
++  }
+   unsigned hash = std::hash<std::string>{}(host) + RandomizationSalt();
+   double random_multiplier =
+       0.9 + static_cast<double>((hash % kMaxRandomNumbers)) * 0.01;
+--- a/services/network/public/cpp/BUILD.gn
++++ b/services/network/public/cpp/BUILD.gn
+@@ -217,6 +217,7 @@
+     "//components/link_header_util",
+     "//components/os_crypt/browser",
+     "//components/os_crypt/common",
++    "//components/phasmid",
+     "//components/prefs",
+     "//components/url_pattern",
+     "//ipc",
 --- a/services/network/public/cpp/network_quality_tracker.cc
 +++ b/services/network/public/cpp/network_quality_tracker.cc
 @@ -9,12 +9,33 @@
@@ -82,38 +114,16 @@ Guard:    tests/guards/network/connection.py
    // If the RTT values are unavailable, set them to value 0.
    if (http_rtt.is_negative())
      http_rtt = base::TimeDelta();
---- a/services/network/public/cpp/BUILD.gn
-+++ b/services/network/public/cpp/BUILD.gn
-@@ -215,6 +215,7 @@
-     "//components/link_header_util",
-     "//components/os_crypt/browser",
-     "//components/os_crypt/common",
+--- a/third_party/blink/renderer/platform/network/BUILD.gn
++++ b/third_party/blink/renderer/platform/network/BUILD.gn
+@@ -67,6 +67,7 @@
+   sources += get_target_outputs(":http_names")
+ 
+   deps = [
 +    "//components/phasmid",
-     "//components/prefs",
-     "//components/url_pattern",
-     "//ipc",
---- a/content/browser/client_hints/client_hints.cc
-+++ b/content/browser/client_hints/client_hints.cc
-@@ -20,6 +20,7 @@
- #include "base/strings/string_util.h"
- #include "base/time/time.h"
- #include "build/build_config.h"
-+#include "components/phasmid/profile.h"
- #include "content/browser/devtools/devtools_instrumentation.h"
- #include "content/browser/preloading/prerender/prerender_host.h"
- #include "content/browser/renderer_host/frame_tree.h"
-@@ -88,6 +89,11 @@
-   // cross-origin fingerprinting. The random number should also be a function
-   // of randomized salt which is known only to the device. This prevents
-   // origin from removing noise from the estimates.
-+  // Phasmid: the profile's seed in place of the salt, the same factor the
-+  // renderer applies to navigator.connection.
-+  if (const phasmid::Profile* profile = phasmid::Profile::Get()) {
-+    return profile->ConnectionNoiseMultiplier(host);
-+  }
-   unsigned hash = std::hash<std::string>{}(host) + RandomizationSalt();
-   double random_multiplier =
-       0.9 + static_cast<double>((hash % kMaxRandomNumbers)) * 0.01;
+     "//media",
+     "//services/metrics/public/cpp:ukm_builders",
+     "//third_party/blink/renderer/platform:allow_discouraged_type",
 --- a/third_party/blink/renderer/platform/network/network_state_notifier.cc
 +++ b/third_party/blink/renderer/platform/network/network_state_notifier.cc
 @@ -30,6 +30,7 @@
@@ -136,13 +146,3 @@ Guard:    tests/guards/network/connection.py
    uint32_t hash = GetHash(host) + RandomizationSalt();
    double random_multiplier = 0.9 + static_cast<double>((hash % 21)) * 0.01;
    DCHECK_LE(0.90, random_multiplier);
---- a/third_party/blink/renderer/platform/network/BUILD.gn
-+++ b/third_party/blink/renderer/platform/network/BUILD.gn
-@@ -67,6 +67,7 @@
-   sources += get_target_outputs(":http_names")
- 
-   deps = [
-+    "//components/phasmid",
-     "//media",
-     "//services/metrics/public/cpp:ukm_builders",
-     "//third_party/blink/renderer/platform:allow_discouraged_type",

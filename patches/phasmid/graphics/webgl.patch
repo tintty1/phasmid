@@ -24,17 +24,28 @@ Contexts: main, iframe, worker, shared worker, service worker, offscreen;
           WebGL1 and WebGL2
 Guard:    tests/guards/graphics/webgl.py
 
+--- a/gpu/command_buffer/service/BUILD.gn
++++ b/gpu/command_buffer/service/BUILD.gn
+@@ -209,6 +209,8 @@
+     "multi_draw_manager.h",
+     "passthrough_program_cache.cc",
+     "passthrough_program_cache.h",
++    "phasmid_webgl.cc",
++    "phasmid_webgl.h",
+     "program_cache.cc",
+     "program_cache.h",
+     "program_manager.cc",
 --- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
 +++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
-@@ -29,6 +29,7 @@
- #include "gpu/command_buffer/service/gpu_tracer.h"
+@@ -33,6 +33,7 @@
+ #include "gpu/command_buffer/service/gpu_switches.h"
  #include "gpu/command_buffer/service/multi_draw_manager.h"
  #include "gpu/command_buffer/service/passthrough_program_cache.h"
 +#include "gpu/command_buffer/service/phasmid_webgl.h"
  #include "gpu/command_buffer/service/program_cache.h"
  #include "gpu/command_buffer/service/service_utils.h"
  #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
-@@ -1451,6 +1452,8 @@
+@@ -1514,6 +1515,8 @@
    PopulateDRMCapabilities(&caps, feature_info_.get());
  #endif
  
@@ -43,7 +54,7 @@ Guard:    tests/guards/graphics/webgl.py
    return caps;
  }
  
-@@ -1470,6 +1473,9 @@
+@@ -1533,6 +1536,9 @@
    }
    caps.sync_query = feature_info_->feature_flags().chromium_sync_query;
  
@@ -53,7 +64,7 @@ Guard:    tests/guards/graphics/webgl.py
    return caps;
  }
  
-@@ -1934,6 +1940,8 @@
+@@ -1997,6 +2003,8 @@
        break;
  
      default:
@@ -95,82 +106,7 @@ Guard:    tests/guards/graphics/webgl.py
        break;
    }
  
---- a/gpu/command_buffer/service/phasmid_webgl.h
-+++ b/gpu/command_buffer/service/phasmid_webgl.h
-@@ -0,0 +1,72 @@
-+// Copyright 2026 The Phasmid Authors
-+// Use of this source code is governed by a BSD-style license that can be
-+// found in the LICENSE file.
-+
-+#ifndef GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
-+#define GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
-+
-+#include "ui/gl/gl_bindings.h"
-+
-+namespace gpu {
-+
-+struct Capabilities;
-+struct GLCapabilities;
-+
-+namespace gles2 {
-+
-+class FeatureInfo;
-+
-+// Phasmid: what a WebGL context reports, from the profile's gpu.webgl or
-+// gpu.webgl2. Every function below leaves its output alone unless a profile
-+// is active and `feature_info` belongs to a WebGL context, so the
-+// compositor, raster and interop contexts keep the host's values.
-+// Framebuffer-dependent values (*_BITS, SAMPLES, SAMPLE_BUFFERS,
-+// IMPLEMENTATION_COLOR_READ_*) are never touched: they answer for whatever
-+// framebuffer the page has bound.
-+
-+// UNMASKED_RENDERER_WEBGL for GL_RENDERER and UNMASKED_VENDOR_WEBGL for
-+// GL_VENDOR, or null for any other name. The string lives as long as the
-+// process.
-+const char* PhasmidWebGLString(const FeatureInfo* feature_info, GLenum name);
-+
-+// Overwrites every limit the client caches and the twelve shader
-+// precisions. A claim beyond the host's value, after the host's driver
-+// workarounds, goes to phasmid::ReportUnbackedGpuClaim.
-+void PhasmidApplyGLCapabilities(const FeatureInfo* feature_info,
-+                                GLCapabilities* caps);
-+
-+// Capabilities::max_texture_size, so it agrees with GLCapabilities.
-+void PhasmidApplyCapabilities(const FeatureInfo* feature_info,
-+                              Capabilities* caps);
-+
-+// Fixed limits the client does not cache: ALIASED_LINE_WIDTH_RANGE,
-+// ALIASED_POINT_SIZE_RANGE, SUBPIXEL_BITS, MAX_VIEWPORT_DIMS,
-+// MAX_TEXTURE_MAX_ANISOTROPY_EXT and, in WebGL1, MAX_DRAW_BUFFERS_EXT.
-+void PhasmidPatchNumeric(const FeatureInfo* feature_info,
-+                         GLenum pname,
-+                         GLsizei length,
-+                         GLint* params);
-+void PhasmidPatchNumeric(const FeatureInfo* feature_info,
-+                         GLenum pname,
-+                         GLsizei length,
-+                         GLint64* params);
-+void PhasmidPatchNumeric(const FeatureInfo* feature_info,
-+                         GLenum pname,
-+                         GLsizei length,
-+                         GLfloat* params);
-+void PhasmidPatchNumeric(const FeatureInfo* feature_info,
-+                         GLenum pname,
-+                         GLsizei length,
-+                         GLboolean* params);
-+
-+// getShaderPrecisionFormat() when the client cache misses.
-+void PhasmidPatchShaderPrecision(const FeatureInfo* feature_info,
-+                                 GLenum shader_type,
-+                                 GLenum precision_type,
-+                                 GLint* range,
-+                                 GLint* precision);
-+
-+}  // namespace gles2
-+}  // namespace gpu
-+
-+#endif  // GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
---- a/gpu/command_buffer/service/phasmid_webgl.cc
+--- /dev/null
 +++ b/gpu/command_buffer/service/phasmid_webgl.cc
 @@ -0,0 +1,362 @@
 +// Copyright 2026 The Phasmid Authors
@@ -535,17 +471,91 @@ Guard:    tests/guards/graphics/webgl.py
 +}
 +
 +}  // namespace gpu::gles2
---- a/gpu/command_buffer/service/BUILD.gn
-+++ b/gpu/command_buffer/service/BUILD.gn
-@@ -209,6 +209,8 @@
-     "multi_draw_manager.h",
-     "passthrough_program_cache.cc",
-     "passthrough_program_cache.h",
-+    "phasmid_webgl.cc",
-+    "phasmid_webgl.h",
-     "program_cache.cc",
-     "program_cache.h",
-     "program_manager.cc",
+--- /dev/null
++++ b/gpu/command_buffer/service/phasmid_webgl.h
+@@ -0,0 +1,72 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
++#define GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
++
++#include "ui/gl/gl_bindings.h"
++
++namespace gpu {
++
++struct Capabilities;
++struct GLCapabilities;
++
++namespace gles2 {
++
++class FeatureInfo;
++
++// Phasmid: what a WebGL context reports, from the profile's gpu.webgl or
++// gpu.webgl2. Every function below leaves its output alone unless a profile
++// is active and `feature_info` belongs to a WebGL context, so the
++// compositor, raster and interop contexts keep the host's values.
++// Framebuffer-dependent values (*_BITS, SAMPLES, SAMPLE_BUFFERS,
++// IMPLEMENTATION_COLOR_READ_*) are never touched: they answer for whatever
++// framebuffer the page has bound.
++
++// UNMASKED_RENDERER_WEBGL for GL_RENDERER and UNMASKED_VENDOR_WEBGL for
++// GL_VENDOR, or null for any other name. The string lives as long as the
++// process.
++const char* PhasmidWebGLString(const FeatureInfo* feature_info, GLenum name);
++
++// Overwrites every limit the client caches and the twelve shader
++// precisions. A claim beyond the host's value, after the host's driver
++// workarounds, goes to phasmid::ReportUnbackedGpuClaim.
++void PhasmidApplyGLCapabilities(const FeatureInfo* feature_info,
++                                GLCapabilities* caps);
++
++// Capabilities::max_texture_size, so it agrees with GLCapabilities.
++void PhasmidApplyCapabilities(const FeatureInfo* feature_info,
++                              Capabilities* caps);
++
++// Fixed limits the client does not cache: ALIASED_LINE_WIDTH_RANGE,
++// ALIASED_POINT_SIZE_RANGE, SUBPIXEL_BITS, MAX_VIEWPORT_DIMS,
++// MAX_TEXTURE_MAX_ANISOTROPY_EXT and, in WebGL1, MAX_DRAW_BUFFERS_EXT.
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLint* params);
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLint64* params);
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLfloat* params);
++void PhasmidPatchNumeric(const FeatureInfo* feature_info,
++                         GLenum pname,
++                         GLsizei length,
++                         GLboolean* params);
++
++// getShaderPrecisionFormat() when the client cache misses.
++void PhasmidPatchShaderPrecision(const FeatureInfo* feature_info,
++                                 GLenum shader_type,
++                                 GLenum precision_type,
++                                 GLint* range,
++                                 GLint* precision);
++
++}  // namespace gles2
++}  // namespace gpu
++
++#endif  // GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
+--- a/third_party/blink/renderer/modules/webgl/BUILD.gn
++++ b/third_party/blink/renderer/modules/webgl/BUILD.gn
+@@ -195,6 +195,7 @@
+ 
+   public_deps = [ "//device/vr/public/mojom:vr_service_blink" ]
+   deps = [
++    "//components/phasmid",
+     "//device/vr/buildflags",
+     "//gpu/command_buffer/client:gles2_implementation",
+     "//gpu/command_buffer/client:gles2_interface",
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 @@ -45,6 +45,7 @@
@@ -581,13 +591,3 @@ Guard:    tests/guards/graphics/webgl.py
    if (!tracker->Supported(this))
      return false;
    if (disabled_extensions_.Contains(String(tracker->ExtensionName())))
---- a/third_party/blink/renderer/modules/webgl/BUILD.gn
-+++ b/third_party/blink/renderer/modules/webgl/BUILD.gn
-@@ -195,6 +195,7 @@
- 
-   public_deps = [ "//device/vr/public/mojom:vr_service_blink" ]
-   deps = [
-+    "//components/phasmid",
-     "//device/vr/buildflags",
-     "//gpu/command_buffer/client:gles2_implementation",
-     "//gpu/command_buffer/client:gles2_interface",

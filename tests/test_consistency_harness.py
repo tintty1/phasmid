@@ -249,6 +249,41 @@ def test_capture_derives_physical_memory_from_the_heap_limit():
         physical_memory_from_dump(8, 2000000000)
 
 
+def test_capture_turns_the_page_rtt_into_an_estimate_of_its_type():
+    """A page sees the estimate after per-host noise and 50 ms buckets; the
+    effective type comes from the estimate. 300 ms with 4g (a Windows 11
+    HD 620 capture) is an estimate under 272 ms, which the validator needs."""
+    from consistency.capture import ECT_RTT_RANGES, estimated_rtt
+    from consistency.compare import NOISE_FACTORS, reported_rtt
+
+    for page, ect in ((0, "4g"), (100, "4g"), (150, "4g"), (300, "3g"), (3000, "slow-2g")):
+        assert estimated_rtt(page, ect) == page
+    for page, ect, estimate in ((300, "4g", 271), (250, "3g", 272), (1400, "2g", 1420), (1450, "3g", 1419)):
+        assert estimated_rtt(page, ect) == estimate
+        lo, hi = ECT_RTT_RANGES[ect]
+        assert lo <= estimate <= hi
+        assert page in {reported_rtt(estimate, f) for f in NOISE_FACTORS}
+    assert estimated_rtt(400, "4g") == 400  # unreachable: left for the validator to name
+
+
+def test_capture_maximizes_a_framed_or_tiny_window():
+    """The window is the user's choice: a framed page's, or one under the
+    schema's minimum, becomes the available screen area at its origin."""
+    from consistency.capture import captured_window
+
+    screen = {"availWidth": 1536, "availHeight": 816, "availLeft": 0, "availTop": 0,
+              "outerWidth": 1536, "outerHeight": 816, "screenX": 0, "screenY": 0, "innerWidth": 1536, "innerHeight": 695}
+    window, why = captured_window(screen, {"embedded": False})
+    assert window["inner_height"] == 695 and why == ""
+    maximized = {"outer_width": 1536, "outer_height": 816, "screen_x": 0, "screen_y": 0}
+    popup = dict(screen, outerWidth=516, outerHeight=867, screenX=1020, innerWidth=500, innerHeight=687)
+    window, why = captured_window(popup, {"embedded": True, "ancestor_origins": ["https://exc.example"]})
+    assert window == maximized and "framed" in why
+    collapsed = dict(screen, outerWidth=519, outerHeight=144, innerWidth=504, innerHeight=0)
+    window, why = captured_window(collapsed, {})
+    assert window == maximized and "519x144" in why
+
+
 def test_capture_disk_reproduces_the_quota_headroom():
     """The disk size is one the reported quota headroom implies."""
     from consistency.capture import GIB, disk_total_bytes_from_dump

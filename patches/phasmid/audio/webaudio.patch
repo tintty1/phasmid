@@ -119,6 +119,16 @@ Guard:    tests/guards/audio/webaudio.py
    int frames_filled =
        webaudio_callback_->Render(delay, delay_timestamp, glitch_info, dest);
    if (speech_recognition_client_) {
+--- a/third_party/blink/renderer/platform/BUILD.gn
++++ b/third_party/blink/renderer/platform/BUILD.gn
+@@ -1844,6 +1844,7 @@
+     "//components/language_detection/content/common:common_blink",
+     "//components/language_detection/content/renderer",
+     "//components/paint_preview/common",
++    "//components/phasmid",
+     "//components/search_engines:search_engine_utils",
+     "//components/translate/core/language_detection",
+     "//components/ungoogled:ungoogled_switches",
 --- a/third_party/blink/renderer/platform/audio/dynamics_compressor.cc
 +++ b/third_party/blink/renderer/platform/audio/dynamics_compressor.cc
 @@ -29,12 +29,17 @@
@@ -215,13 +225,3 @@ Guard:    tests/guards/audio/webaudio.py
  
        // Calculate metering.
        const float db_real_gain =
---- a/third_party/blink/renderer/platform/BUILD.gn
-+++ b/third_party/blink/renderer/platform/BUILD.gn
-@@ -1842,6 +1842,7 @@
-     "//components/language_detection/content/common:common_blink",
-     "//components/language_detection/content/renderer",
-     "//components/paint_preview/common",
-+    "//components/phasmid",
-     "//components/search_engines:search_engine_utils",
-     "//components/translate/core/language_detection",
-     "//components/ungoogled:ungoogled_switches",

@@ -12,29 +12,6 @@ Hooks:    content/child/runtime_features.cc SetRuntimeFeaturesFromCommandLine;
 Contexts: main, iframe; workers have no navigator.webdriver
 Guard:    tests/guards/automation/signals.py
 
---- a/content/child/runtime_features.cc
-+++ b/content/child/runtime_features.cc
-@@ -20,6 +20,7 @@
- #include "cc/base/features.h"
- #include "components/attribution_reporting/features.h"
- #include "components/content_settings/core/common/features.h"
-+#include "components/phasmid/profile.h"
- #include "content/common/content_navigation_policy.h"
- #include "content/common/content_switches_internal.h"
- #include "content/common/features.h"
-@@ -402,6 +403,12 @@
-       WebRuntimeFeatures::EnableAutomationControlled(true);
-     }
-   }
-+
-+  // Phasmid: the switches above describe how the browser was launched, not
-+  // the device.
-+  if (phasmid::Profile::Get()) {
-+    WebRuntimeFeatures::EnableAutomationControlled(false);
-+  }
- }
- 
- // Sets blink runtime features that depend on a combination
 --- a/chrome/browser/ui/startup/infobar_utils.cc
 +++ b/chrome/browser/ui/startup/infobar_utils.cc
 @@ -37,6 +37,7 @@
@@ -55,3 +32,26 @@ Guard:    tests/guards/automation/signals.py
        if (infobars::IsInfoBarMigrated(
                infobars::InfoBarDelegate::AUTOMATION_INFOBAR_DELEGATE)) {
          infobars::BrowserInfoBarManager::From(g_browser_process)
+--- a/content/child/runtime_features.cc
++++ b/content/child/runtime_features.cc
+@@ -20,6 +20,7 @@
+ #include "cc/base/features.h"
+ #include "components/attribution_reporting/features.h"
+ #include "components/content_settings/core/common/features.h"
++#include "components/phasmid/profile.h"
+ #include "content/common/content_navigation_policy.h"
+ #include "content/common/content_switches_internal.h"
+ #include "content/common/features.h"
+@@ -404,6 +405,12 @@
+       WebRuntimeFeatures::EnableAutomationControlled(true);
+     }
+   }
++
++  // Phasmid: the switches above describe how the browser was launched, not
++  // the device.
++  if (phasmid::Profile::Get()) {
++    WebRuntimeFeatures::EnableAutomationControlled(false);
++  }
+ }
+ 
+ // Sets blink runtime features that depend on a combination

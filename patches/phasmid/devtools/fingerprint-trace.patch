@@ -57,7 +57,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
    if (state_ == kResolving) {
      // TODO(462010740): clean up call sites with pending exceptions.
      ExceptionState::AssertNoPendingException(script_state_->GetIsolate());
---- a/third_party/blink/renderer/bindings/phasmid_fingerprint_allowlist.txt
+--- /dev/null
 +++ b/third_party/blink/renderer/bindings/phasmid_fingerprint_allowlist.txt
 @@ -0,0 +1,99 @@
 +# Members traced by the Phasmid fingerprint inspector, one per line:
@@ -435,7 +435,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
      "bindings/runtime_call_stats.cc",
      "bindings/runtime_call_stats.h",
      "bindings/scoped_persistent.h",
---- a/third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.cc
+--- /dev/null
 +++ b/third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.cc
 @@ -0,0 +1,469 @@
 +// Copyright 2026 The Phasmid Authors
@@ -907,7 +907,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
 +}
 +
 +}  // namespace blink
---- a/third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.h
+--- /dev/null
 +++ b/third_party/blink/renderer/platform/bindings/phasmid_fingerprint_trace.h
 @@ -0,0 +1,95 @@
 +// Copyright 2026 The Phasmid Authors

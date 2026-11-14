@@ -20,9 +20,29 @@ Hooks:    chrome/browser/net/profile_network_context_service.cc
 Contexts: main, iframe, worker, shared worker, service worker, headers
 Guard:    tests/guards/locale/accept-language.py
 
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -306,6 +306,7 @@
+ #include "components/performance_manager/public/graph/frame_node.h"
+ #include "components/performance_manager/public/performance_manager.h"
+ #include "components/permissions/content_setting_permission_context_base.h"
++#include "components/phasmid/profile.h"
+ #include "components/policy/core/browser/url_list/policy_blocklist_service.h"
+ #include "components/policy/core/common/features.h"
+ #include "components/policy/core/common/management/management_service.h"
+@@ -3342,6 +3343,9 @@
+ 
+ std::string ChromeContentBrowserClient::GetAcceptLangs(
+     content::BrowserContext* context) {
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    return base::JoinString(phasmid_profile->languages(), ",");
++  }
+   Profile* profile = Profile::FromBrowserContext(context);
+   return profile->GetPrefs()->GetString(language::prefs::kAcceptLanguages);
+ }
 --- a/chrome/browser/net/profile_network_context_service.cc
 +++ b/chrome/browser/net/profile_network_context_service.cc
-@@ -71,6 +71,7 @@
+@@ -70,6 +70,7 @@
  #include "components/metrics/metrics_pref_names.h"
  #include "components/metrics/metrics_reporting_choice_service.h"
  #include "components/permissions/features.h"
@@ -30,7 +50,7 @@ Guard:    tests/guards/locale/accept-language.py
  #include "components/pref_registry/pref_registry_syncable.h"
  #include "components/prefs/pref_registry_simple.h"
  #include "components/prefs/pref_service.h"
-@@ -718,11 +719,17 @@
+@@ -709,11 +710,17 @@
  }
  
  std::string ProfileNetworkContextService::ComputeAcceptLanguage() const {
@@ -51,45 +71,6 @@ Guard:    tests/guards/locale/accept-language.py
  }
  
  void ProfileNetworkContextService::UpdateReferrersEnabled() {
---- a/chrome/browser/renderer_preferences_util.cc
-+++ b/chrome/browser/renderer_preferences_util.cc
-@@ -208,8 +208,14 @@
-                  &prefs->webrtc_udp_min_port, &prefs->webrtc_udp_max_port);
-   prefs->webrtc_local_ips_allowed_urls = GetLocalIpsAllowedUrls(
-       pref_service->GetList(prefs::kWebRtcLocalIpsAllowedUrls));
--  prefs->accept_languages = GetLanguageListForProfile(
--      profile, pref_service->GetString(language::prefs::kAcceptLanguages));
-+  // Phasmid: frames and workers read navigator.languages from these
-+  // preferences.
-+  std::string language_list =
-+      pref_service->GetString(language::prefs::kAcceptLanguages);
-+  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
-+    language_list = base::JoinString(phasmid_profile->languages(), ",");
-+  }
-+  prefs->accept_languages = GetLanguageListForProfile(profile, language_list);
- #if !BUILDFLAG(IS_MAC)
-   prefs->plugin_fullscreen_allowed =
-       pref_service->GetBoolean(prefs::kFullscreenAllowed);
---- a/chrome/browser/chrome_content_browser_client.cc
-+++ b/chrome/browser/chrome_content_browser_client.cc
-@@ -303,6 +303,7 @@
- #include "components/performance_manager/public/graph/frame_node.h"
- #include "components/performance_manager/public/performance_manager.h"
- #include "components/permissions/content_setting_permission_context_base.h"
-+#include "components/phasmid/profile.h"
- #include "components/policy/core/browser/url_list/policy_blocklist_service.h"
- #include "components/policy/core/common/features.h"
- #include "components/policy/core/common/management/management_service.h"
-@@ -3297,6 +3298,9 @@
- 
- std::string ChromeContentBrowserClient::GetAcceptLangs(
-     content::BrowserContext* context) {
-+  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
-+    return base::JoinString(phasmid_profile->languages(), ",");
-+  }
-   Profile* profile = Profile::FromBrowserContext(context);
-   return profile->GetPrefs()->GetString(language::prefs::kAcceptLanguages);
- }
 --- a/chrome/browser/preloading/prefetch/prefetch_service/chrome_prefetch_service_delegate.cc
 +++ b/chrome/browser/preloading/prefetch/prefetch_service/chrome_prefetch_service_delegate.cc
 @@ -4,6 +4,7 @@
@@ -119,6 +100,25 @@ Guard:    tests/guards/locale/accept-language.py
    return net::HttpUtil::GenerateAcceptLanguageHeader(
        profile_->GetPrefs()->GetString(language::prefs::kAcceptLanguages));
  }
+--- a/chrome/browser/renderer_preferences_util.cc
++++ b/chrome/browser/renderer_preferences_util.cc
+@@ -208,8 +208,14 @@
+                  &prefs->webrtc_udp_min_port, &prefs->webrtc_udp_max_port);
+   prefs->webrtc_local_ips_allowed_urls = GetLocalIpsAllowedUrls(
+       pref_service->GetList(prefs::kWebRtcLocalIpsAllowedUrls));
+-  prefs->accept_languages = GetLanguageListForProfile(
+-      profile, pref_service->GetString(language::prefs::kAcceptLanguages));
++  // Phasmid: frames and workers read navigator.languages from these
++  // preferences.
++  std::string language_list =
++      pref_service->GetString(language::prefs::kAcceptLanguages);
++  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
++    language_list = base::JoinString(phasmid_profile->languages(), ",");
++  }
++  prefs->accept_languages = GetLanguageListForProfile(profile, language_list);
+ #if !BUILDFLAG(IS_MAC)
+   prefs->plugin_fullscreen_allowed =
+       pref_service->GetBoolean(prefs::kFullscreenAllowed);
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
 @@ -78,6 +78,7 @@
@@ -129,7 +129,7 @@ Guard:    tests/guards/locale/accept-language.py
  #include "components/services/storage/privileged/mojom/indexed_db_control.mojom.h"
  #include "components/services/storage/public/cpp/buckets/bucket_id.h"
  #include "components/services/storage/public/cpp/buckets/bucket_info.h"
-@@ -3794,8 +3795,10 @@
+@@ -3808,8 +3809,10 @@
    PropagateBrowserCommandLineToRenderer(browser_command_line, command_line);
  
    // Pass on the browser locale.
@@ -142,7 +142,7 @@ Guard:    tests/guards/locale/accept-language.py
    command_line->AppendSwitchASCII(switches::kLang, locale);
  
    // A non-empty RendererCmdPrefix implies that Zygote is disabled.
-@@ -5213,8 +5216,11 @@
+@@ -5218,8 +5221,11 @@
      if (!command_line->HasSwitch(switches::kLang)) {
        // Modify the current process' command line to include the browser
        // locale, as the renderer expects this flag to be set.
@@ -157,7 +157,7 @@ Guard:    tests/guards/locale/accept-language.py
      // TODO(piman): we should really send configuration through bools rather
 --- a/content/renderer/renderer_main.cc
 +++ b/content/renderer/renderer_main.cc
-@@ -34,6 +34,7 @@
+@@ -36,6 +36,7 @@
  #include "base/trace_event/trace_event.h"
  #include "build/build_config.h"
  #include "components/performance_manager/scenario_api/performance_scenario_memory.h"
@@ -165,7 +165,7 @@ Guard:    tests/guards/locale/accept-language.py
  #include "components/startup_metric_utils/renderer/startup_metric_utils.h"
  #include "content/child/memory_coordinator/child_memory_coordinator.h"
  #include "content/common/content_constants_internal.h"
-@@ -175,6 +176,12 @@
+@@ -181,6 +182,12 @@
    chromeos::system::EnableCoreSchedulingIfAvailable();
  #endif  // BUILDFLAG(IS_CHROMEOS)
  

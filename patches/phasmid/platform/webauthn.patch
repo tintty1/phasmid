@@ -18,9 +18,35 @@ Hooks:    chrome/browser/webauthn/chrome_web_authentication_delegate.cc
 Contexts: main, iframe; workers have no PublicKeyCredential
 Guard:    tests/guards/core/profile-loading.py
 
+--- a/chrome/browser/chrome_browser_field_trials.cc
++++ b/chrome/browser/chrome_browser_field_trials.cc
+@@ -25,9 +25,11 @@
+ #include "components/metrics/metrics_features.h"
+ #include "components/metrics/metrics_pref_names.h"
+ #include "components/metrics/persistent_histograms.h"
++#include "components/phasmid/profile.h"
+ #include "components/site_isolation/features.h"
+ #include "components/variations/feature_overrides.h"
+ #include "components/version_info/version_info.h"
++#include "content/public/common/content_features.h"
+ #include "third_party/blink/public/common/features.h"
+ 
+ #if BUILDFLAG(IS_ANDROID)
+@@ -127,6 +129,11 @@
+     base::FeatureList* feature_list) {
+   variations::FeatureOverrides feature_overrides(*feature_list);
+ 
++  // Phasmid: Windows Chrome enables Secure Payment Confirmation by default.
++  if (phasmid::ClaimsWindows()) {
++    feature_overrides.EnableFeature(features::kSecurePaymentConfirmation);
++  }
++
+ #if BUILDFLAG(IS_ANDROID)
+ #if BUILDFLAG(IS_DESKTOP_ANDROID)
+   // Nota bene: Anything here is expected to be short-lived, unless deemed too
 --- a/chrome/browser/webauthn/BUILD.gn
 +++ b/chrome/browser/webauthn/BUILD.gn
-@@ -261,6 +261,7 @@
+@@ -263,6 +263,7 @@
      ":webauthn",
      "//chrome/browser/profiles:profile",
      "//chrome/common:constants",
@@ -57,29 +83,3 @@ Guard:    tests/guards/core/profile-loading.py
                  // The enclave won't allow credentials for an account to be
                  // stored in GPM _in_ that account. So we don't want to tell
                  // accounts.google.com that there is a platform authenticator
---- a/chrome/browser/chrome_browser_field_trials.cc
-+++ b/chrome/browser/chrome_browser_field_trials.cc
-@@ -26,9 +26,11 @@
- #include "components/metrics/metrics_features.h"
- #include "components/metrics/metrics_pref_names.h"
- #include "components/metrics/persistent_histograms.h"
-+#include "components/phasmid/profile.h"
- #include "components/site_isolation/features.h"
- #include "components/variations/feature_overrides.h"
- #include "components/version_info/version_info.h"
-+#include "content/public/common/content_features.h"
- #include "third_party/blink/public/common/features.h"
- 
- #if BUILDFLAG(IS_ANDROID)
-@@ -127,6 +129,11 @@
-     base::FeatureList* feature_list) {
-   variations::FeatureOverrides feature_overrides(*feature_list);
- 
-+  // Phasmid: Windows Chrome enables Secure Payment Confirmation by default.
-+  if (phasmid::ClaimsWindows()) {
-+    feature_overrides.EnableFeature(features::kSecurePaymentConfirmation);
-+  }
-+
-   // TODO(crbug.com/552456654): Remove when rollout is complete to stable.
-   if (chrome::GetChannel() != version_info::Channel::STABLE) {
-     feature_overrides.EnableFeature(

@@ -13,6 +13,16 @@ Hooks:    storage/browser/quota/quota_device_info_helper.cc
 Contexts: main, iframe, worker, shared worker, service worker
 Guard:    tests/guards/hardware/storage-quota.py
 
+--- a/storage/browser/BUILD.gn
++++ b/storage/browser/BUILD.gn
+@@ -227,6 +227,7 @@
+     "//build:chromeos_buildflags",
+     "//components/crash/core/common:crash_key",
+     "//components/file_access",
++    "//components/phasmid",
+     "//components/services/storage/public/cpp",
+     "//components/services/storage/public/cpp/filesystem",
+     "//mojo/public/cpp/bindings",
 --- a/storage/browser/quota/quota_device_info_helper.cc
 +++ b/storage/browser/quota/quota_device_info_helper.cc
 @@ -6,6 +6,7 @@
@@ -52,7 +62,7 @@ Guard:    tests/guards/hardware/storage-quota.py
  #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
  #include "components/services/storage/public/cpp/buckets/constants.h"
  #include "components/services/storage/public/mojom/quota_client.mojom.h"
-@@ -2987,6 +2988,16 @@
+@@ -2986,6 +2987,16 @@
      return {};
    }
  
@@ -69,13 +79,3 @@ Guard:    tests/guards/hardware/storage-quota.py
  #if BUILDFLAG(IS_ANDROID)
    // On Android, `statvfs()` may return `f_bavail > f_blocks`, producing
    // `available > total`. The root cause is unknown. See crbug.com/501709109
---- a/storage/browser/BUILD.gn
-+++ b/storage/browser/BUILD.gn
-@@ -227,6 +227,7 @@
-     "//build:chromeos_buildflags",
-     "//components/crash/core/common:crash_key",
-     "//components/file_access",
-+    "//components/phasmid",
-     "//components/services/storage/public/cpp",
-     "//components/services/storage/public/cpp/filesystem",
-     "//mojo/public/cpp/bindings",

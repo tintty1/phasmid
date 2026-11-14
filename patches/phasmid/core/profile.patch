@@ -24,7 +24,138 @@ Hooks:    chrome/app/chrome_main_delegate.cc
 Contexts: main, iframe, worker, shared worker, service worker
 Guard:    tests/guards/core/profile-loading.py
 
---- a/components/phasmid/BUILD.gn
+--- a/chrome/BUILD.gn
++++ b/chrome/BUILD.gn
+@@ -312,6 +312,7 @@
+         "//chrome/browser:startup_data",
+         "//chrome/browser/lifetime",
+         "//chrome/common:version_header",
++        "//components/phasmid",
+ 
+         # For the sampling profiler.
+         "//chrome/common/profiler",
+@@ -456,6 +457,7 @@
+       "//chrome/install_static:install_static_util",
+       "//chrome/install_static:secondary_module",
+       "//components/crash/core/app",
++      "//components/phasmid",
+       "//components/memory_system",
+       "//components/policy:generated",
+       "//components/webapps/isolated_web_apps:scheme",
+--- a/chrome/app/BUILD.gn
++++ b/chrome/app/BUILD.gn
+@@ -171,6 +173,7 @@
+     "//components/crash/core/app",
+     "//components/crash/core/app:test_support",
+     "//components/devtools/devtools_pipe",
++    "//components/phasmid",
+     "//components/memory_system",
+     "//components/startup_metric_utils",
+     "//components/variations/service",
+--- a/chrome/app/chrome_main_delegate.cc
++++ b/chrome/app/chrome_main_delegate.cc
+@@ -60,6 +63,7 @@
+ #include "chrome/grit/generated_resources.h"
+ #include "chrome/renderer/chrome_content_renderer_client.h"
+ #include "components/component_updater/component_updater_paths.h"
++#include "components/phasmid/profile.h"
+ #include "components/content_settings/core/common/content_settings_pattern.h"
+ #include "components/crash/core/app/crash_reporter_client.h"
+ #include "components/crash/core/common/crash_key.h"
+@@ -1226,6 +1230,22 @@
+     LOG(ERROR) << "Remote debugging pipe file descriptors are not open.";
+     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
+   }
++
++  // Phasmid: load the profile before the zygote, GPU and utility processes
++  // are launched, so they inherit the exported environment. An invalid
++  // profile stops the browser.
++  if (is_browser) {
++    std::vector<std::string> phasmid_warnings;
++    std::string phasmid_error = phasmid::Profile::LoadAndExportFromCommandLine(
++        command_line, &phasmid_warnings);
++    for (const std::string& warning : phasmid_warnings) {
++      LOG(ERROR) << "Phasmid: host cannot back " << warning;
++    }
++    if (!phasmid_error.empty()) {
++      LOG(ERROR) << "Phasmid: " << phasmid_error;
++      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
++    }
++  }
+ #elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+   const bool is_browser = false;
+ #endif  // !defined(BUILDING_CHROME_RENDERER)
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1193,6 +1213,7 @@
+     "//components/pdf/common:constants",
+     "//components/pdf/common:util",
+     "//components/performance_manager",
++    "//components/phasmid",
+     "//components/policy/content",
+     "//components/policy/content:safe_sites_navigation_throttle",
+     "//components/privacy_sandbox:features",
+--- a/chrome/browser/net/BUILD.gn
++++ b/chrome/browser/net/BUILD.gn
+@@ -204,6 +225,7 @@
+     "//components/offline_pages/core",
+     "//components/page_load_metrics/browser",
+     "//components/permissions",
++    "//components/phasmid",
+     "//components/pref_registry",
+     "//components/privacy_sandbox",
+     "//components/proxy_config",
+--- a/chrome/browser/preloading/prefetch/prefetch_service/BUILD.gn
++++ b/chrome/browser/preloading/prefetch/prefetch_service/BUILD.gn
+@@ -32,6 +54,7 @@
+     "//chrome/browser/search_engines",
+     "//components/language/core/browser",
+     "//components/page_load_metrics/browser",
++    "//components/phasmid",
+     "//components/unified_consent",
+   ]
+ 
+--- a/chrome/browser/ui/startup/BUILD.gn
++++ b/chrome/browser/ui/startup/BUILD.gn
+@@ -164,6 +187,7 @@
+     "//components/infobars/core",
+     "//components/media_router/common/providers/cast/certificate",
+     "//components/network_session_configurator/common",
++    "//components/phasmid",
+     "//components/prefs",
+     "//components/signin/public/base",
+     "//components/signin/public/identity_manager",
+--- a/chrome/browser/ui/window_sizer/BUILD.gn
++++ b/chrome/browser/ui/window_sizer/BUILD.gn
+@@ -39,6 +63,7 @@
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/web_applications",
+     "//chrome/common:non_code_constants",
++    "//components/phasmid",
+     "//components/prefs",
+     "//ui/base",
+     "//ui/display",
+--- a/components/BUILD.gn
++++ b/components/BUILD.gn
+@@ -306,6 +331,7 @@
+     "//components/payments/core:unit_tests",
+     "//components/persistent_cache:unit_tests",
+     "//components/personal_context/core:unit_tests",
++    "//components/phasmid:unit_tests",
+     "//components/policy/core/browser:unit_tests",
+     "//components/policy/core/common:unit_tests",
+     "//components/policy/test_support:unittests",
+--- a/components/embedder_support/BUILD.gn
++++ b/components/embedder_support/BUILD.gn
+@@ -57,6 +83,7 @@
+ 
+   deps = [
+     ":embedder_support",
++    "//components/phasmid",
+     "//build:branding_buildflags",
+     "//components/policy/core/common",
+     "//components/prefs",
+--- /dev/null
 +++ b/components/phasmid/BUILD.gn
 @@ -0,0 +1,45 @@
 +# Copyright 2026 The Phasmid Authors
@@ -72,54 +203,1346 @@ Guard:    tests/guards/core/profile-loading.py
 +    "//testing/gtest",
 +  ]
 +}
---- a/components/phasmid/noise.h
-+++ b/components/phasmid/noise.h
-@@ -0,0 +1,44 @@
+--- /dev/null
++++ b/components/phasmid/font_allowlist_linux.cc
+@@ -0,0 +1,1302 @@
 +// Copyright 2026 The Phasmid Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
 +
-+#ifndef COMPONENTS_PHASMID_NOISE_H_
-+#define COMPONENTS_PHASMID_NOISE_H_
++#include "components/phasmid/font_allowlist_linux.h"
 +
-+#include <stdint.h>
++#include <fontconfig/fontconfig.h>
++#include <unistd.h>
 +
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <map>
++#include <memory>
++#include <optional>
++#include <set>
++#include <string>
 +#include <string_view>
++#include <tuple>
++#include <utility>
++#include <vector>
 +
-+#include "base/component_export.h"
++#include "base/command_line.h"
++#include "base/compiler_specific.h"
 +#include "base/containers/span.h"
++#include "base/environment.h"
++#include "base/files/file.h"
++#include "base/files/file_enumerator.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/hash/sha1.h"
++#include "base/json/json_reader.h"
++#include "base/nix/xdg_util.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_split.h"
++#include "base/strings/string_util.h"
++#include "base/values.h"
++#include "base/version.h"
++#include "components/phasmid/profile.h"
++#include "components/phasmid/switches.h"
++#include "crypto/hash.h"
++#include "third_party/skia/include/core/SkFontMgr.h"
++#include "third_party/skia/include/core/SkFontStyle.h"
++#include "third_party/skia/include/core/SkRefCnt.h"
++#include "third_party/skia/include/core/SkStream.h"
++#include "third_party/skia/include/core/SkString.h"
++#include "third_party/skia/include/core/SkTypeface.h"
++#include "third_party/skia/include/ports/SkFontConfigInterface.h"
 +
 +namespace phasmid {
 +
-+// A 128-bit SipHash key, derived from the profile seed.
-+struct NoiseKey {
-+  uint64_t k0 = 0;
-+  uint64_t k1 = 0;
++namespace {
++
++constexpr char kFontconfigFileEnvVar[] = "FONTCONFIG_FILE";
++// The host's FONTCONFIG_FILE before Phasmid replaced it, empty when it was
++// unset.
++constexpr char kHostFontconfigFileEnvVar[] = "PHASMID_HOST_FONTCONFIG_FILE";
++
++// Blink's color emoji locale (font_cache.cc kColorEmojiLocale) and a
++// character every color emoji font has, U+1F600 GRINNING FACE.
++constexpr char kEmojiLocale[] = "und-Zsye";
++constexpr FcChar32 kEmojiCharacter = 0x1F600;
++
++// The family Windows Chrome draws emoji with when it is installed.
++constexpr char kWindowsEmoji[] = "Segoe UI Emoji";
++
++// Blink's AlternateFamilyName outside Windows: a family that does not match
++// is retried under its pair, so a listed name resolves when its pair does.
++constexpr std::pair<std::string_view, std::string_view> kBlinkAlternates[] = {
++    {"courier", "courier new"}, {"courier new", "courier"},
++    {"times", "times new roman"}, {"times new roman", "times"},
++    {"arial", "helvetica"},     {"helvetica", "arial"},
 +};
 +
-+// SipHash-2-4 of `data` under `key`, with the reference algorithm's
-+// little-endian key and message loading.
++struct FcDeleter {
++  void operator()(FcConfig* config) const { FcConfigDestroy(config); }
++  void operator()(FcPattern* pattern) const { FcPatternDestroy(pattern); }
++  void operator()(FcObjectSet* objects) const { FcObjectSetDestroy(objects); }
++  void operator()(FcFontSet* fonts) const { FcFontSetDestroy(fonts); }
++  void operator()(FcStrList* strings) const { FcStrListDone(strings); }
++};
++template <typename T>
++using FcPtr = std::unique_ptr<T, FcDeleter>;
++
++std::string Err(const char* field, const std::string& what) {
++  return std::string("profile field '") + field + "' " + what;
++}
++
++base::span<FcPattern*> Patterns(const FcFontSet* fonts) {
++  if (!fonts || fonts->nfont <= 0) {
++    return {};
++  }
++  // SAFETY: an FcFontSet holds `nfont` patterns at `fonts`.
++  return UNSAFE_BUFFERS(
++      base::span(fonts->fonts, static_cast<size_t>(fonts->nfont)));
++}
++
++std::string PatternString(FcPattern* pattern, const char* object, int index) {
++  FcChar8* value = nullptr;
++  if (FcPatternGetString(pattern, object, index, &value) != FcResultMatch ||
++      !value) {
++    return std::string();
++  }
++  return std::string(reinterpret_cast<const char*>(value));
++}
++
++// The families a font publishes, in fontconfig's order.
++std::vector<std::string> Families(FcPattern* font) {
++  std::vector<std::string> families;
++  for (int i = 0;; ++i) {
++    std::string family = PatternString(font, FC_FAMILY, i);
++    if (family.empty()) {
++      return families;
++    }
++    families.push_back(std::move(family));
++  }
++}
++
++// Every font file `config` reaches, with the families its faces publish,
++// lowercased.
++std::map<std::string, std::set<std::string>> FamiliesByFile(
++    FcConfig* config) {
++  std::map<std::string, std::set<std::string>> out;
++  FcPtr<FcPattern> any(FcPatternCreate());
++  FcPtr<FcObjectSet> objects(FcObjectSetBuild(FC_FILE, FC_FAMILY, nullptr));
++  FcPtr<FcFontSet> fonts(FcFontList(config, any.get(), objects.get()));
++  for (FcPattern* font : Patterns(fonts.get())) {
++    std::string file = PatternString(font, FC_FILE, 0);
++    if (file.empty()) {
++      continue;
++    }
++    std::set<std::string>& families = out[file];
++    for (const std::string& family : Families(font)) {
++      families.insert(base::ToLowerASCII(family));
++    }
++  }
++  return out;
++}
++
++// The families of the font gfx::GetFallbackFontForChar picks for emoji: the
++// first scalable, readable TrueType or CFF font in fontconfig's order for
++// Blink's emoji locale whose charset has the character. Empty when none has.
++std::vector<std::string> EmojiFallbackFamilies(FcConfig* config) {
++  FcPtr<FcPattern> pattern(FcPatternCreate());
++  FcPatternAddString(pattern.get(), FC_LANG,
++                     reinterpret_cast<const FcChar8*>(kEmojiLocale));
++  FcPatternAddBool(pattern.get(), FC_SCALABLE, FcTrue);
++  FcConfigSubstitute(config, pattern.get(), FcMatchPattern);
++  FcDefaultSubstitute(pattern.get());
++  FcResult result;
++  FcPtr<FcFontSet> sorted(
++      FcFontSort(config, pattern.get(), FcFalse, nullptr, &result));
++  for (FcPattern* font : Patterns(sorted.get())) {
++    FcBool scalable = FcFalse;
++    if (FcPatternGetBool(font, FC_SCALABLE, 0, &scalable) != FcResultMatch ||
++        !scalable) {
++      continue;
++    }
++    std::string format = PatternString(font, FC_FONTFORMAT, 0);
++    if (format != "TrueType" && format != "CFF") {
++      continue;
++    }
++    std::string file = PatternString(font, FC_FILE, 0);
++    if (file.empty() || access(file.c_str(), R_OK) != 0) {
++      continue;
++    }
++    FcCharSet* charset = nullptr;
++    if (FcPatternGetCharSet(font, FC_CHARSET, 0, &charset) != FcResultMatch ||
++        !FcCharSetHasChar(charset, kEmojiCharacter)) {
++      continue;
++    }
++    return Families(font);
++  }
++  return {};
++}
++
++// Writes `contents` to `path` through a temporary file in the same
++// directory, so a concurrent reader sees the old file or the whole new one.
++bool WriteAtomically(const base::FilePath& path, std::string_view contents) {
++  base::FilePath temp;
++  if (!base::CreateTemporaryFileInDir(path.DirName(), &temp)) {
++    return false;
++  }
++  if (base::WriteFile(temp, contents) &&
++      base::ReplaceFile(temp, path, nullptr)) {
++    return true;
++  }
++  base::DeleteFile(temp);
++  return false;
++}
++
++// "A, B and C".
++std::string JoinNames(const std::vector<std::string>& names) {
++  std::string out;
++  for (size_t i = 0; i < names.size(); ++i) {
++    if (i > 0) {
++      out += i + 1 == names.size() ? " and " : ", ";
++    }
++    out += names[i];
++  }
++  return out;
++}
++
++std::string XmlText(std::string_view text) {
++  std::string out;
++  for (char c : text) {
++    switch (c) {
++      case '&':
++        out += "&amp;";
++        break;
++      case '<':
++        out += "&lt;";
++        break;
++      case '>':
++        out += "&gt;";
++        break;
++      default:
++        out += c;
++    }
++  }
++  return out;
++}
++
++// Creates the directory for Phasmid's fontconfig files and sets `resolved`
++// to its resolved path, as fontconfig records the files it loads. Returns an
++// error, or an empty string.
++std::string ConfigDirectory(base::Environment* env, base::FilePath* resolved) {
++  const base::FilePath dir =
++      base::nix::GetXDGDirectory(env, "XDG_CACHE_HOME", ".cache")
++          .Append("phasmid")
++          .Append("fontconfig");
++  *resolved = base::CreateDirectory(dir) ? base::MakeAbsoluteFilePath(dir)
++                                         : base::FilePath();
++  if (resolved->empty()) {
++    return Err("fonts.families", "cannot be backed: cannot create " +
++                                     dir.AsUTF8Unsafe());
++  }
++  return std::string();
++}
++
++// Writes `config` to `dir`, named by content, so concurrent browsers with
++// the same profile and host share one file and one with another profile
++// never rewrites it, and exports it as FONTCONFIG_FILE. Returns an error, or
++// an empty string with `path` set.
++std::string WriteAndExportConfig(base::Environment* env,
++                                 const base::FilePath& dir,
++                                 const std::string& config,
++                                 base::FilePath* path) {
++  *path = dir.Append(base::HexEncodeLower(base::SHA1HashString(config)) +
++                     ".conf");
++  std::string existing;
++  if ((!base::ReadFileToString(*path, &existing) || existing != config) &&
++      !WriteAtomically(*path, config)) {
++    return Err("fonts.families", "cannot be backed: cannot write " +
++                                     path->AsUTF8Unsafe());
++  }
++  if (!env->SetVar(kFontconfigFileEnvVar, path->value())) {
++    return "cannot export FONTCONFIG_FILE to the environment";
++  }
++  return std::string();
++}
++
++// Loads the exported file the way every process will. fontconfig answers a
++// configuration it cannot load with a fallback that reaches every font under
++// /usr/share/fonts, so that is ruled out here. Returns an error, or an empty
++// string with `check` set.
++std::string LoadExportedConfig(const base::FilePath& path,
++                               FcPtr<FcConfig>* check) {
++  check->reset(FcInitLoadConfigAndFonts());
++  bool loaded = false;
++  if (*check) {
++    FcPtr<FcStrList> files(FcConfigGetConfigFiles(check->get()));
++    while (FcChar8* file = files ? FcStrListNext(files.get()) : nullptr) {
++      loaded = loaded || path.value() == reinterpret_cast<const char*>(file);
++    }
++  }
++  if (!loaded) {
++    return Err("fonts.families", "cannot be backed: fontconfig does not load " +
++                                     path.AsUTF8Unsafe());
++  }
++  return std::string();
++}
++
++// The Windows font store: font files copied from a Windows installation the
++// user licenses, with a manifest naming each file's SHA-256 and the files
++// behind each family as DirectWrite names it.
++constexpr char kStoreManifest[] = "manifest.json";
++
++struct WindowsStore {
++  base::FilePath dir;
++  base::DictValue manifest;
++};
++
++// The store manifest in `dir`, when it is readable and has the fields this
++// file reads.
++std::optional<base::DictValue> ReadStoreManifest(const base::FilePath& dir) {
++  std::string contents;
++  if (!base::ReadFileToString(dir.Append(kStoreManifest), &contents)) {
++    return std::nullopt;
++  }
++  std::optional<base::Value> value =
++      base::JSONReader::Read(contents, base::JSON_PARSE_RFC);
++  if (!value || !value->is_dict()) {
++    return std::nullopt;
++  }
++  base::DictValue manifest = std::move(*value).TakeDict();
++  if (!manifest.FindString("set") ||
++      !manifest.FindStringByDottedPath("os.build") ||
++      !manifest.FindList("files") || !manifest.FindDict("families")) {
++    return std::nullopt;
++  }
++  return manifest;
++}
++
++// The files the manifest lists for `family`, matched ignoring ASCII case as
++// DirectWrite matches family names; null when it lists none.
++const base::ListValue* ManifestFiles(const base::DictValue& manifest,
++                                     std::string_view family) {
++  for (const auto [name, files] : *manifest.FindDict("families")) {
++    if (files.is_list() && base::EqualsCaseInsensitiveASCII(name, family)) {
++      return &files.GetList();
++    }
++  }
++  return nullptr;
++}
++
++// The family the manifest says `family` resolves to without a file of its
++// own (Blink's alternate names on Windows: Courier to Courier New, Helvetica
++// to Arial), or an empty string.
++std::string ManifestAlias(const base::DictValue& manifest,
++                          std::string_view family) {
++  const base::DictValue* aliases = manifest.FindDict("aliases");
++  if (!aliases) {
++    return std::string();
++  }
++  for (const auto [name, target] : *aliases) {
++    if (target.is_string() && base::EqualsCaseInsensitiveASCII(name, family)) {
++      return target.GetString();
++    }
++  }
++  return std::string();
++}
++
++// The directory given by --phasmid-windows-fonts, else, among
++// $XDG_DATA_HOME/phasmid/fonts/windows/<build> whose manifest names that
++// os.build, the one with the most of the listed families, the newest build
++// on a tie. Null, with `why` set, when there is none.
++std::optional<WindowsStore> FindWindowsStore(const Profile::Fonts& claimed,
++                                             base::Environment* env,
++                                             std::string* why) {
++  const base::CommandLine& command_line =
++      *base::CommandLine::ForCurrentProcess();
++  if (command_line.HasSwitch(switches::kPhasmidWindowsFonts)) {
++    const base::FilePath given =
++        command_line.GetSwitchValuePath(switches::kPhasmidWindowsFonts);
++    const base::FilePath dir = base::MakeAbsoluteFilePath(given);
++    std::optional<base::DictValue> manifest =
++        dir.empty() ? std::nullopt : ReadStoreManifest(dir);
++    if (!manifest) {
++      *why = given.AsUTF8Unsafe() + " (--phasmid-windows-fonts) has no " +
++             kStoreManifest;
++      return std::nullopt;
++    }
++    return WindowsStore{dir, std::move(*manifest)};
++  }
++  const base::FilePath root =
++      base::nix::GetXDGDirectory(env, "XDG_DATA_HOME", ".local/share")
++          .Append("phasmid")
++          .Append("fonts")
++          .Append("windows");
++  std::vector<base::FilePath> dirs;
++  base::FileEnumerator entries(root, false, base::FileEnumerator::DIRECTORIES);
++  for (base::FilePath dir = entries.Next(); !dir.empty();
++       dir = entries.Next()) {
++    dirs.push_back(dir);
++  }
++  std::sort(dirs.begin(), dirs.end());
++  std::optional<WindowsStore> best;
++  size_t best_listed = 0;
++  base::Version best_build;
++  for (const base::FilePath& dir : dirs) {
++    std::optional<base::DictValue> manifest = ReadStoreManifest(dir);
++    if (!manifest ||
++        *manifest->FindStringByDottedPath("os.build") != dir.BaseName().value()) {
++      continue;
++    }
++    size_t listed = 0;
++    for (const std::string& family : claimed.families) {
++      if (ManifestFiles(*manifest, family) ||
++          !ManifestAlias(*manifest, family).empty()) {
++        ++listed;
++      }
++    }
++    const base::Version build(dir.BaseName().value());
++    if (!best || listed > best_listed ||
++        (listed == best_listed && build.IsValid() &&
++         (!best_build.IsValid() || build > best_build))) {
++      best = WindowsStore{dir, std::move(*manifest)};
++      best_listed = listed;
++      best_build = build;
++    }
++  }
++  if (best) {
++    best->dir = base::MakeAbsoluteFilePath(best->dir);
++  }
++  if (!best || best->dir.empty()) {
++    *why = "no " + std::string(kStoreManifest) + " under " +
++           root.AsUTF8Unsafe() +
++           "/<build>; import the font files with the committed manifest "
++           "there or pass --phasmid-windows-fonts=<dir>";
++    return std::nullopt;
++  }
++  return best;
++}
++
++// CSS family names over the Windows font store as Windows Chrome resolves
++// them. DirectWrite's system collection knows a face by its
++// weight-stretch-style family: name ID 21; else the typographic family (16)
++// plus the words of its subfamily that are not style words (Bodoni MT
++// Poster); else the legacy family (1) with its style words moved into the
++// face's style (Franklin Gothic Demi Cond is Franklin Gothic at 600,
++// condensed); a named instance of a variable font by the WWS family the
++// manifest derives from STAT (Sitka Small). fontconfig knows the file's own
++// names instead, so the browser matches through the faces below.
++
++struct WindowsFace {
++  std::string file;
++  // fontconfig's FC_INDEX: the face, and the named instance + 1 in the
++  // upper 16 bits.
++  int index = 0;
++  std::vector<std::string> families;
++  // DWRITE_FONT_WEIGHT, DWRITE_FONT_STRETCH (1-9) and DWRITE_FONT_STYLE
++  // (0 normal, 1 oblique, 2 italic).
++  int weight = 400;
++  int stretch = 5;
++  int slope = 0;
++};
++
++struct StyleWord {
++  std::string_view word;
++  int weight;
++  int stretch;
++  int slope;
++};
++constexpr StyleWord kStyleWords[] = {
++    {"thin", 100, 0, 0},           {"hairline", 100, 0, 0},
++    {"extralight", 200, 0, 0},     {"ultralight", 200, 0, 0},
++    {"light", 300, 0, 0},          {"semilight", 350, 0, 0},
++    {"demilight", 350, 0, 0},      {"regular", 400, 0, 0},
++    {"normal", 400, 0, 0},         {"medium", 500, 0, 0},
++    {"demi", 600, 0, 0},           {"demibold", 600, 0, 0},
++    {"semibold", 600, 0, 0},       {"bold", 700, 0, 0},
++    {"extrabold", 800, 0, 0},      {"ultrabold", 800, 0, 0},
++    {"black", 900, 0, 0},          {"heavy", 900, 0, 0},
++    {"extrablack", 950, 0, 0},     {"ultrablack", 950, 0, 0},
++    {"ultracondensed", 0, 1, 0},   {"extracondensed", 0, 2, 0},
++    {"compressed", 0, 2, 0},       {"condensed", 0, 3, 0},
++    {"cond", 0, 3, 0},             {"cn", 0, 3, 0},
++    {"narrow", 0, 3, 0},           {"semicondensed", 0, 4, 0},
++    {"semiexpanded", 0, 6, 0},     {"expanded", 0, 7, 0},
++    {"extended", 0, 7, 0},         {"extraexpanded", 0, 8, 0},
++    {"ultraexpanded", 0, 9, 0},    {"italic", 0, 0, 2},
++    {"kursiv", 0, 0, 2},           {"oblique", 0, 0, 1},
++    {"slanted", 0, 0, 1},          {"inclined", 0, 0, 1},
++};
++// Style words only before another one (Extra Bold, Ext Condensed).
++constexpr std::string_view kStyleModifiers[] = {"extra", "ultra", "ext",
++                                                "semi", "demi"};
++
++const StyleWord* FindStyleWord(std::string_view lower) {
++  for (const StyleWord& word : kStyleWords) {
++    if (word.word == lower) {
++      return &word;
++    }
++  }
++  return nullptr;
++}
++
++// Whether `lower` is a style word; in a subfamily, Roman is one too
++// (Lucida Sans Demibold Roman).
++bool IsStyleWord(std::string_view lower, bool subfamily) {
++  return FindStyleWord(lower) || (subfamily && lower == "roman");
++}
++
++// `name` without its style words, which are appended to `words`, lowercased.
++std::string WithoutStyleWords(const std::string& name,
++                              bool subfamily,
++                              std::vector<std::string>* words) {
++  const std::vector<std::string> tokens = base::SplitString(
++      name, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++  std::string kept;
++  for (size_t i = 0; i < tokens.size(); ++i) {
++    const std::string lower = base::ToLowerASCII(tokens[i]);
++    const std::string next =
++        i + 1 < tokens.size() ? base::ToLowerASCII(tokens[i + 1]) : "";
++    const bool modifier =
++        std::find(std::begin(kStyleModifiers), std::end(kStyleModifiers),
++                  lower) != std::end(kStyleModifiers);
++    if (IsStyleWord(lower, subfamily) ||
++        (modifier && IsStyleWord(next, subfamily))) {
++      words->push_back(lower);
++    } else {
++      kept += (kept.empty() ? "" : " ") + tokens[i];
++    }
++  }
++  return kept;
++}
++
++// The style the moved words name: the first weight other than regular, the
++// last stretch and slope; 0 where they name none. Extra and Ultra join the
++// next word (Extra Bold is 800).
++StyleWord StyleOfWords(const std::vector<std::string>& words) {
++  StyleWord style{"", 0, 0, 0};
++  for (size_t i = 0; i < words.size(); ++i) {
++    std::string word = words[i];
++    if ((word == "extra" || word == "ultra") && i + 1 < words.size() &&
++        (words[i + 1] == "bold" || words[i + 1] == "light" ||
++         words[i + 1] == "condensed" || words[i + 1] == "expanded" ||
++         words[i + 1] == "black")) {
++      word += words[++i];
++    }
++    const StyleWord* found = FindStyleWord(word);
++    if (!found) {
++      continue;
++    }
++    if (found->weight && found->weight != 400 && !style.weight) {
++      style.weight = found->weight;
++    }
++    if (found->stretch) {
++      style.stretch = found->stretch;
++    }
++    if (found->slope) {
++      style.slope = found->slope;
++    }
++  }
++  return style;
++}
++
++std::string JoinWords(const std::string& a, const std::string& b) {
++  return a.empty() ? b : b.empty() ? a : a + " " + b;
++}
++
++std::string FaceString(const base::DictValue& face, const char* key) {
++  const std::string* value = face.FindString(key);
++  return value ? *value : std::string();
++}
++
++// A face without named instances: its family names, from the manifest's
++// name table facts, and its OS/2 weight, width and italic bit, which the
++// moved style words override where those say regular (Franklin Gothic
++// Demi has usWeightClass 400). `slope` is fontconfig's.
++void StaticWindowsFace(const base::DictValue& face,
++                       int slope,
++                       WindowsFace* out) {
++  std::vector<std::string> words;
++  std::string family = FaceString(face, "family_wws");
++  if (family.empty() && !FaceString(face, "family_typo").empty()) {
++    family = JoinWords(
++        FaceString(face, "family_typo"),
++        WithoutStyleWords(FaceString(face, "subfamily_typo"), true, &words));
++  } else if (family.empty()) {
++    const std::string legacy = FaceString(face, "family_legacy");
++    const std::string base = WithoutStyleWords(legacy, false, &words);
++    family = JoinWords(
++        base.empty() ? legacy : base,
++        WithoutStyleWords(FaceString(face, "subfamily_legacy"), true, &words));
++  }
++  if (family.empty()) {
++    return;
++  }
++  out->families.push_back(family);
++  if (const base::ListValue* localized =
++          face.FindList("family_names_localized")) {
++    for (const base::Value& name : *localized) {
++      std::vector<std::string> unused;
++      const std::string stripped =
++          name.is_string() ? WithoutStyleWords(name.GetString(), false, &unused)
++                           : std::string();
++      if (!stripped.empty() &&
++          std::find(out->families.begin(), out->families.end(), stripped) ==
++              out->families.end()) {
++        out->families.push_back(stripped);
++      }
++    }
++  }
++  out->weight = face.FindInt("weight").value_or(400);
++  out->stretch = face.FindInt("width").value_or(5);
++  out->slope = face.FindBool("italic").value_or(false) ? 2 : slope;
++  const StyleWord style = StyleOfWords(words);
++  if (out->weight == 400 && style.weight && style.weight != 500) {
++    out->weight = style.weight;
++  }
++  if (out->stretch == 5 && style.stretch) {
++    out->stretch = style.stretch;
++  }
++  if (!out->slope && style.slope) {
++    out->slope = style.slope;
++  }
++}
++
++// The WWS family of named instance `instance` (fontconfig's FC_INDEX >> 16,
++// 1-based) of `face`, or for 0 of the instance at the default coordinates,
++// which fontconfig lists only as the face itself. Null for a face without
++// named instances.
++const std::string* InstanceFamily(const base::DictValue& face, int instance) {
++  const base::ListValue* instances = face.FindList("instances");
++  if (!instances || instances->empty()) {
++    return nullptr;
++  }
++  if (instance > 0) {
++    const size_t i = static_cast<size_t>(instance) - 1;
++    if (i >= instances->size() || !(*instances)[i].is_dict()) {
++      return nullptr;
++    }
++    return (*instances)[i].GetDict().FindString("family_wws");
++  }
++  for (const char* key : {"subfamily_typo", "subfamily_legacy"}) {
++    const std::string subfamily = FaceString(face, key);
++    for (const base::Value& entry : *instances) {
++      const std::string* name =
++          entry.is_dict() ? entry.GetDict().FindString("subfamily") : nullptr;
++      if (!subfamily.empty() && name && *name == subfamily) {
++        return entry.GetDict().FindString("family_wws");
++      }
++    }
++  }
++  return nullptr;
++}
++
++// DWRITE_FONT_STRETCH of fontconfig's width (the usWidthClass percentages).
++int StretchOfFcWidth(double width) {
++  constexpr std::array<double, 9> kPercent = {50,  62.5, 75,  87.5, 100,
++                                              112.5, 125, 150, 200};
++  int stretch = 0;
++  double nearest = 0;
++  for (size_t i = 0; i < kPercent.size(); ++i) {
++    const double distance = std::abs(width - kPercent[i]);
++    if (!stretch || distance < nearest) {
++      stretch = static_cast<int>(i) + 1;
++      nearest = distance;
++    }
++  }
++  return stretch;
++}
++
++// The faces `config` reaches, as DirectWrite has them. Variable font
++// patterns are left out: DirectWrite's collection lists the named
++// instances.
++std::vector<WindowsFace> WindowsFaces(FcConfig* config,
++                                      const base::DictValue& manifest) {
++  std::map<std::string, const base::ListValue*> faces_by_file;
++  for (const base::Value& entry : *manifest.FindList("files")) {
++    const std::string* name =
++        entry.is_dict() ? entry.GetDict().FindString("name") : nullptr;
++    const base::ListValue* faces =
++        entry.is_dict() ? entry.GetDict().FindList("faces") : nullptr;
++    if (name && faces) {
++      faces_by_file[*name] = faces;
++    }
++  }
++  FcPtr<FcPattern> any(FcPatternCreate());
++  FcPtr<FcObjectSet> objects(FcObjectSetBuild(FC_FILE, FC_INDEX, FC_WEIGHT,
++                                              FC_WIDTH, FC_SLANT, FC_VARIABLE,
++                                              nullptr));
++  FcPtr<FcFontSet> fonts(FcFontList(config, any.get(), objects.get()));
++  std::vector<WindowsFace> out;
++  for (FcPattern* font : Patterns(fonts.get())) {
++    FcBool variable = FcFalse;
++    if (FcPatternGetBool(font, FC_VARIABLE, 0, &variable) == FcResultMatch &&
++        variable) {
++      continue;
++    }
++    WindowsFace face;
++    face.file = PatternString(font, FC_FILE, 0);
++    FcPatternGetInteger(font, FC_INDEX, 0, &face.index);
++    const auto entry =
++        faces_by_file.find(base::FilePath(face.file).BaseName().value());
++    if (face.file.empty() || entry == faces_by_file.end()) {
++      continue;
++    }
++    const base::DictValue* facts = nullptr;
++    for (const base::Value& candidate : *entry->second) {
++      if (candidate.is_dict() &&
++          candidate.GetDict().FindInt("index") == (face.index & 0xFFFF)) {
++        facts = &candidate.GetDict();
++      }
++    }
++    if (!facts) {
++      continue;
++    }
++    double weight = FC_WEIGHT_REGULAR;
++    double width = FC_WIDTH_NORMAL;
++    int slant = FC_SLANT_ROMAN;
++    FcPatternGetDouble(font, FC_WEIGHT, 0, &weight);
++    FcPatternGetDouble(font, FC_WIDTH, 0, &width);
++    FcPatternGetInteger(font, FC_SLANT, 0, &slant);
++    const int slope = slant == FC_SLANT_ITALIC    ? 2
++                      : slant == FC_SLANT_OBLIQUE ? 1
++                                                  : 0;
++    if (const std::string* family =
++            InstanceFamily(*facts, face.index >> 16)) {
++      face.families.push_back(*family);
++      face.weight =
++          static_cast<int>(std::lround(FcWeightToOpenTypeDouble(weight)));
++      face.stretch = StretchOfFcWidth(width);
++      face.slope = slope;
++    } else {
++      StaticWindowsFace(*facts, slope, &face);
++    }
++    if (!face.families.empty()) {
++      out.push_back(std::move(face));
++    }
++  }
++  // DirectWrite keeps the first of equally good faces, in this order.
++  std::sort(out.begin(), out.end(),
++            [](const WindowsFace& a, const WindowsFace& b) {
++              return std::tie(a.file, a.index) < std::tie(b.file, b.index);
++            });
++  return out;
++}
++
++// IDWriteFontFamily::GetFirstMatchingFont's choice between two faces:
++// the nearer in (stretch * 11, style * 7, weight / 100 * 5), and on a tie
++// the one further along the request (Franklin Gothic at 500 is Demi, 600,
++// not Medium, 400).
++bool BetterWindowsFace(const WindowsFace& next,
++                       const WindowsFace& current,
++                       const SkFontStyle& requested) {
++  const auto point = [](int weight, int stretch, int slope) {
++    return std::array<double, 3>{(stretch - 5) * 11.0, slope * 7.0,
++                                 (weight - 400) / 100.0 * 5.0};
++  };
++  const int requested_slope =
++      requested.slant() == SkFontStyle::kItalic_Slant    ? 2
++      : requested.slant() == SkFontStyle::kOblique_Slant ? 1
++                                                         : 0;
++  const std::array<double, 3> want =
++      point(requested.weight(), requested.width(), requested_slope);
++  const auto distance = [&](const std::array<double, 3>& v) {
++    return (v[0] - want[0]) * (v[0] - want[0]) +
++           (v[1] - want[1]) * (v[1] - want[1]) +
++           (v[2] - want[2]) * (v[2] - want[2]);
++  };
++  const auto dot = [&](const std::array<double, 3>& v) {
++    return v[0] * want[0] + v[1] * want[1] + v[2] * want[2];
++  };
++  const std::array<double, 3> a = point(next.weight, next.stretch, next.slope);
++  const std::array<double, 3> b =
++      point(current.weight, current.stretch, current.slope);
++  return distance(a) < distance(b) ||
++         (distance(a) == distance(b) && dot(a) > dot(b));
++}
++
++// The browser's family matcher for a windows profile with a store (the
++// global SkFontConfigInterface, which the font services and the browser's
++// font manager use): a family DirectWrite has resolves to its best face; a
++// name a page may ask for that it does not have fails, so that Blink
++// retries it; other names (the browser's own UI lookups) and the default
++// typeface keep fontconfig's answer.
++class WindowsStoreFontConfigInterface : public SkFontConfigInterface {
++ public:
++  explicit WindowsStoreFontConfigInterface(std::vector<WindowsFace> faces)
++      : direct_(
++            sk_ref_sp(SkFontConfigInterface::GetSingletonDirectInterface())),
++        faces_(std::move(faces)) {}
++
++  bool matchFamilyName(const char family_name[],
++                       SkFontStyle requested,
++                       FontIdentity* identity,
++                       SkString* out_family,
++                       SkFontStyle* out_style) override {
++    const std::string_view family = family_name ? family_name : "";
++    const WindowsFace* best = nullptr;
++    const std::string* best_name = nullptr;
++    for (const WindowsFace& face : faces_) {
++      for (const std::string& name : face.families) {
++        if (!family.empty() && base::EqualsCaseInsensitiveASCII(name, family) &&
++            (!best || BetterWindowsFace(face, *best, requested))) {
++          best = &face;
++          best_name = &name;
++        }
++      }
++    }
++    if (!best) {
++      return (family.empty() || !FontFamilyResolvable(family)) &&
++             direct_->matchFamilyName(family_name, requested, identity,
++                                      out_family, out_style);
++    }
++    if (identity) {
++      identity->fTTCIndex = best->index;
++      identity->fString.set(best->file.c_str());
++    }
++    if (out_family) {
++      out_family->set(best_name->c_str());
++    }
++    if (out_style) {
++      const SkFontStyle::Slant slant =
++          best->slope == 2   ? SkFontStyle::kItalic_Slant
++          : best->slope == 1 ? SkFontStyle::kOblique_Slant
++                             : SkFontStyle::kUpright_Slant;
++      *out_style = SkFontStyle(best->weight, best->stretch, slant);
++    }
++    return true;
++  }
++
++  SkStreamAsset* openStream(const FontIdentity& identity) override {
++    return direct_->openStream(identity);
++  }
++
++  sk_sp<SkTypeface> makeTypeface(const FontIdentity& identity,
++                                 sk_sp<SkFontMgr> manager) override {
++    return direct_->makeTypeface(identity, std::move(manager));
++  }
++
++ private:
++  const sk_sp<SkFontConfigInterface> direct_;
++  const std::vector<WindowsFace> faces_;
++};
++
++// A standalone fontconfig over the store only (no host font, alias or rule),
++// reaching the files of the listed families that match the manifest's
++// SHA-256. A missing or mismatched file is left out and its families are
++// absent, reported once as unbacked. Render settings are Windows' defaults:
++// antialiased, slight hinting, embedded bitmaps on (DirectWrite uses a
++// face's bitmap strikes), ClearType RGB subpixel order.
++std::string ExportWindowsStore(const WindowsStore& store,
++                               const Profile::Fonts& claimed,
++                               base::Environment* env,
++                               std::vector<std::string>* warnings) {
++  const base::DictValue& manifest = store.manifest;
++  std::map<std::string, std::string> hashes;
++  for (const base::Value& entry : *manifest.FindList("files")) {
++    const std::string* name =
++        entry.is_dict() ? entry.GetDict().FindString("name") : nullptr;
++    const std::string* sha256 =
++        entry.is_dict() ? entry.GetDict().FindString("sha256") : nullptr;
++    if (name && sha256) {
++      hashes[*name] = base::ToLowerASCII(*sha256);
++    }
++  }
++
++  // The files of the listed families, as the manifest names them.
++  std::set<std::string> wanted;
++  for (const std::string& family : claimed.families) {
++    if (const base::ListValue* files = ManifestFiles(manifest, family)) {
++      for (const base::Value& file : *files) {
++        if (file.is_string()) {
++          wanted.insert(file.GetString());
++        }
++      }
++    }
++  }
++  std::set<std::string> kept;
++  std::vector<std::string> missing;
++  std::vector<std::string> mismatched;
++  for (const std::string& name : wanted) {
++    const base::FilePath file = store.dir.Append(name);
++    base::File contents(file, base::File::FLAG_OPEN | base::File::FLAG_READ);
++    if (!contents.IsValid()) {
++      missing.push_back(name);
++      continue;
++    }
++    std::array<uint8_t, crypto::hash::kSha256Size> digest;
++    const auto hash = hashes.find(name);
++    if (hash == hashes.end() ||
++        !crypto::hash::HashFile(crypto::hash::kSha256, &contents, digest) ||
++        base::HexEncodeLower(digest) != hash->second) {
++      mismatched.push_back(name);
++      continue;
++    }
++    kept.insert(file.value());
++  }
++  std::vector<std::string> rejected;
++  base::FileEnumerator entries(store.dir, false, base::FileEnumerator::FILES);
++  for (base::FilePath file = entries.Next(); !file.empty();
++       file = entries.Next()) {
++    if (!kept.contains(file.value())) {
++      rejected.push_back(file.value());
++    }
++  }
++  std::sort(rejected.begin(), rejected.end());
++
++  base::FilePath dir;
++  std::string error = ConfigDirectory(env, &dir);
++  if (!error.empty()) {
++    return error;
++  }
++  const base::FilePath cache = dir.Append("cache");
++  if (!base::CreateDirectory(cache)) {
++    return Err("fonts.families", "cannot be backed: cannot create " +
++                                     cache.AsUTF8Unsafe());
++  }
++  std::string config =
++      "<?xml version=\"1.0\"?>\n"
++      "<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n"
++      "<!-- Phasmid: the Windows font store " +
++      XmlText(*manifest.FindString("set")) +
++      ", reaching only the files of the profile's fonts.families that match "
++      "its manifest. -->\n"
++      "<fontconfig>\n"
++      "  <dir>" +
++      XmlText(store.dir.value()) +
++      "</dir>\n"
++      "  <cachedir>" +
++      XmlText(cache.value()) +
++      "</cachedir>\n"
++      "  <match target=\"font\">\n"
++      "    <edit name=\"antialias\" mode=\"assign\"><bool>true</bool></edit>\n"
++      "    <edit name=\"hinting\" mode=\"assign\"><bool>true</bool></edit>\n"
++      "    <edit name=\"hintstyle\" mode=\"assign\"><const>hintslight</const>"
++      "</edit>\n"
++      "    <edit name=\"embeddedbitmap\" mode=\"assign\"><bool>true</bool>"
++      "</edit>\n"
++      "    <edit name=\"rgba\" mode=\"assign\"><const>rgb</const></edit>\n"
++      "  </match>\n"
++      "  <selectfont>\n"
++      "    <rejectfont>\n";
++  for (const std::string& file : rejected) {
++    config += "      <glob>" + XmlText(file) + "</glob>\n";
++  }
++  config +=
++      "    </rejectfont>\n"
++      "  </selectfont>\n"
++      "</fontconfig>\n";
++
++  base::FilePath path;
++  error = WriteAndExportConfig(env, dir, config, &path);
++  if (!error.empty()) {
++    return error;
++  }
++  FcPtr<FcConfig> check;
++  error = LoadExportedConfig(path, &check);
++  if (!error.empty()) {
++    return error;
++  }
++  // Exactly the verified files: anything else means the filter failed. A
++  // verified file fontconfig cannot read is unbacked like a missing one.
++  std::set<std::string> reached;
++  for (const auto& entry : FamiliesByFile(check.get())) {
++    if (!kept.contains(entry.first)) {
++      return Err("fonts.families",
++                 "cannot be backed: the Windows font store configuration "
++                 "reaches " + entry.first + ", which is not a verified file");
++    }
++    reached.insert(entry.first);
++  }
++  std::vector<std::string> unreadable;
++  for (const std::string& file : kept) {
++    if (!reached.contains(file)) {
++      unreadable.push_back(base::FilePath(file).BaseName().value());
++    }
++  }
++  if (!FcConfigSetCurrent(check.get())) {
++    return Err("fonts.families",
++               "cannot be backed: fontconfig cannot use " +
++                   path.AsUTF8Unsafe());
++  }
++  // Family names and faces as DirectWrite has them.
++  SkFontConfigInterface::SetGlobal(
++      sk_make_sp<WindowsStoreFontConfigInterface>(
++          WindowsFaces(check.get(), manifest)));
++
++  // A listed family is there when one of its files is; a name without a
++  // file of its own (Courier, Helvetica) when the family it resolves to is
++  // listed and there. The rest are absent, as uninstalled fonts.
++  const auto present = [&](std::string_view family) {
++    const base::ListValue* files = ManifestFiles(manifest, family);
++    if (!files) {
++      return false;
++    }
++    for (const base::Value& file : *files) {
++      if (file.is_string() &&
++          reached.contains(store.dir.Append(file.GetString()).value())) {
++        return true;
++      }
++    }
++    return false;
++  };
++  const auto listed = [&](std::string_view family) {
++    for (const std::string& name : claimed.families) {
++      if (base::EqualsCaseInsensitiveASCII(name, family)) {
++        return true;
++      }
++    }
++    return false;
++  };
++  std::vector<std::string> absent;
++  for (const std::string& family : claimed.families) {
++    const std::string alias = ManifestAlias(manifest, family);
++    if (!present(family) &&
++        (alias.empty() || !listed(alias) || !present(alias))) {
++      absent.push_back(family);
++    }
++  }
++  std::vector<std::string> problems;
++  if (!missing.empty()) {
++    problems.push_back(base::NumberToString(missing.size()) +
++                       " files are not in the store (" + JoinNames(missing) +
++                       ")");
++  }
++  if (!mismatched.empty()) {
++    problems.push_back(base::NumberToString(mismatched.size()) +
++                       " files do not match the manifest's SHA-256 (" +
++                       JoinNames(mismatched) + ")");
++  }
++  if (!unreadable.empty()) {
++    problems.push_back(base::NumberToString(unreadable.size()) +
++                       " files fontconfig cannot read (" +
++                       JoinNames(unreadable) + ")");
++  }
++  if (!absent.empty()) {
++    problems.push_back(base::NumberToString(absent.size()) + " of " +
++                       base::NumberToString(claimed.families.size()) +
++                       " families are absent (" + JoinNames(absent) + ")");
++  }
++  if (!problems.empty()) {
++    std::string detail;
++    for (const std::string& problem : problems) {
++      detail += (detail.empty() ? "" : "; ") + problem;
++    }
++    warnings->push_back("fonts.families: the Windows font store " +
++                        store.dir.AsUTF8Unsafe() + " (" +
++                        *manifest.FindString("set") + "): " + detail);
++  }
++
++  // Windows Chrome draws emoji with the first of Segoe UI Emoji and Segoe UI
++  // Symbol that is installed, whatever the profile says.
++  if (!claimed.emoji.empty()) {
++    if (!base::EqualsCaseInsensitiveASCII(claimed.emoji, kWindowsEmoji)) {
++      warnings->push_back("fonts.emoji: is " + claimed.emoji +
++                          " but Windows Chrome draws emoji with " +
++                          kWindowsEmoji + ", which pages see instead");
++    } else if (!present(claimed.emoji)) {
++      warnings->push_back("fonts.emoji: is " + claimed.emoji +
++                          " but the Windows font store has no verified file "
++                          "for it; emoji fall back without it");
++    }
++  }
++  return std::string();
++}
++
++}  // namespace
++
++std::string ExportFontAllowlist(std::vector<std::string>* warnings) {
++  const Profile* profile = Profile::Get();
++  if (!profile) {
++    return std::string();
++  }
++  const Profile::Fonts& claimed = profile->fonts();
++  std::unique_ptr<base::Environment> env = base::Environment::Create();
++
++  // Chromium sets FC_FONTATIONS=1 after this callback. Set it first, so that
++  // a font cache written here is indexed as the browser reads it afterwards.
++  if (!env->SetVar("FC_FONTATIONS", "1")) {
++    return "cannot set FC_FONTATIONS in the environment";
++  }
++
++  // A browser started from a Phasmid process (a relaunch, or anything that
++  // inherited its environment) finds the generated file in FONTCONFIG_FILE;
++  // the host's own value is the one that process started with.
++  if (std::optional<std::string> host_value =
++          env->GetVar(kHostFontconfigFileEnvVar)) {
++    if (host_value->empty() ? !env->UnSetVar(kFontconfigFileEnvVar)
++                            : !env->SetVar(kFontconfigFileEnvVar, *host_value)) {
++      return "cannot restore the host's FONTCONFIG_FILE";
++    }
++  }
++  if (!env->SetVar(kHostFontconfigFileEnvVar,
++                   env->GetVar(kFontconfigFileEnvVar).value_or(""))) {
++    return "cannot export the host's FONTCONFIG_FILE to the environment";
++  }
++
++  // Without a Windows font store, a windows profile runs on the host's files.
++  std::string no_store;
++  if (profile->os_family() == "windows") {
++    if (std::optional<WindowsStore> store =
++            FindWindowsStore(claimed, env.get(), &no_store)) {
++      return ExportWindowsStore(*store, claimed, env.get(), warnings);
++    }
++  }
++
++  // The host's own configuration, found as fontconfig's first initialization
++  // finds it (FONTCONFIG_FILE, FONTCONFIG_PATH, then /etc/fonts/fonts.conf).
++  FcPtr<FcConfig> host(FcInitLoadConfig());
++  FcChar8* host_file_name =
++      host ? FcConfigGetFilename(host.get(), nullptr) : nullptr;
++  if (!host_file_name) {
++    return Err("fonts.families",
++               "cannot be backed: this host has no fontconfig configuration");
++  }
++  const std::string host_file(reinterpret_cast<const char*>(host_file_name));
++  FcStrFree(host_file_name);
++  if (!FcConfigBuildFonts(host.get())) {
++    return Err("fonts.families",
++               "cannot be backed: fontconfig cannot load this host's fonts");
++  }
++
++  // The browser's own family matcher, which the font data service answers
++  // renderers with. It reads the current configuration on every call.
++  sk_sp<SkFontConfigInterface> matcher = SkFontConfigInterface::RefGlobal();
++  // The file `family` resolves to as a CSS family does on the current
++  // configuration: host aliases and metric-compatible names, then Blink's
++  // alternate name. Empty when it resolves nowhere; `resolved_family`, when
++  // given, is the family of the match.
++  const auto resolve = [&matcher](std::string_view family,
++                                  std::string* resolved_family) {
++    const auto match = [&](std::string_view name) {
++      SkFontConfigInterface::FontIdentity identity;
++      SkString matched_family;
++      if (!matcher ||
++          !matcher->matchFamilyName(std::string(name).c_str(), SkFontStyle(),
++                                    &identity, &matched_family, nullptr)) {
++        return std::string();
++      }
++      if (resolved_family) {
++        *resolved_family = matched_family.c_str();
++      }
++      return std::string(identity.fString.c_str());
++    };
++    std::string file = match(family);
++    const std::string key = base::ToLowerASCII(family);
++    for (const auto& [name, alternate] : kBlinkAlternates) {
++      if (file.empty() && name == key) {
++        file = match(alternate);
++      }
++    }
++    return file;
++  };
++
++  // A font file stays reachable when one of its faces publishes a listed
++  // family: a collection comes whole, as a package installs it.
++  std::set<std::string> listed;
++  for (const std::string& family : claimed.families) {
++    listed.insert(base::ToLowerASCII(family));
++  }
++  const std::map<std::string, std::set<std::string>> host_files =
++      FamiliesByFile(host.get());
++  std::set<std::string> published;
++  std::set<std::string> kept;
++  for (const auto& [file, families] : host_files) {
++    for (const std::string& family : families) {
++      published.insert(family);
++      if (listed.contains(family)) {
++        kept.insert(file);
++      }
++    }
++  }
++  // A windows profile without a store: a listed family no host file
++  // publishes keeps the file a metric-compatible host alias resolves it to
++  // (Arial to Liberation Sans). The warning below names each one.
++  if (profile->os_family() == "windows") {
++    if (!FcConfigSetCurrent(host.get())) {
++      return Err("fonts.families",
++                 "cannot be backed: fontconfig cannot use this host's "
++                 "configuration");
++    }
++    for (const std::string& family : claimed.families) {
++      if (published.contains(base::ToLowerASCII(family))) {
++        continue;
++      }
++      const std::string file = resolve(family, nullptr);
++      if (host_files.contains(file)) {
++        kept.insert(file);
++      }
++    }
++  }
++  std::vector<std::string> rejected;
++  for (const auto& entry : host_files) {
++    if (!kept.contains(entry.first)) {
++      rejected.push_back(entry.first);
++    }
++  }
++
++  // The host's configuration (its directories, caches, aliases and render
++  // settings) with every other font file rejected by path. Rejection by
++  // <glob> happens before a font's pattern is looked at, so a host
++  // <acceptfont> pattern cannot bring a rejected file back.
++  std::string config =
++      "<?xml version=\"1.0\"?>\n"
++      "<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n"
++      "<!-- Phasmid: the host configuration, reaching only the font files "
++      "that publish a family in the profile's fonts.families. -->\n"
++      "<fontconfig>\n"
++      "  <include ignore_missing=\"no\">" +
++      XmlText(host_file) +
++      "</include>\n"
++      "  <selectfont>\n"
++      "    <rejectfont>\n";
++  for (const std::string& file : rejected) {
++    config += "      <glob>" + XmlText(file) + "</glob>\n";
++  }
++  config +=
++      "    </rejectfont>\n"
++      "  </selectfont>\n"
++      "</fontconfig>\n";
++
++  base::FilePath dir;
++  std::string error = ConfigDirectory(env.get(), &dir);
++  if (!error.empty()) {
++    return error;
++  }
++  base::FilePath path;
++  error = WriteAndExportConfig(env.get(), dir, config, &path);
++  if (!error.empty()) {
++    return error;
++  }
++
++  // Check that it reaches exactly the kept files.
++  FcPtr<FcConfig> check;
++  error = LoadExportedConfig(path, &check);
++  if (!error.empty()) {
++    return error;
++  }
++  std::set<std::string> reached;
++  for (const auto& entry : FamiliesByFile(check.get())) {
++    reached.insert(entry.first);
++  }
++  if (reached != kept) {
++    for (const std::string& file : reached) {
++      if (!kept.contains(file)) {
++        return Err("fonts.families",
++                   "cannot be backed: the host fontconfig keeps " + file +
++                       " reachable although it publishes no listed family");
++      }
++    }
++    for (const std::string& file : kept) {
++      if (!reached.contains(file)) {
++        return Err("fonts.families", "cannot be backed: rejecting other "
++                                     "files also drops " + file);
++      }
++    }
++  }
++
++  // The browser's font matching from now on runs on it.
++  if (!FcConfigSetCurrent(check.get())) {
++    return Err("fonts.families",
++               "cannot be backed: fontconfig cannot use " +
++                   path.AsUTF8Unsafe());
++  }
++
++  // A listed family that resolves nowhere on the kept files stays absent, as
++  // an uninstalled font, and is reported.
++  std::vector<std::string> unbacked;
++  std::vector<std::string> aliased;
++  for (const std::string& family : claimed.families) {
++    std::string resolved_family;
++    if (resolve(family, &resolved_family).empty()) {
++      unbacked.push_back(family);
++    } else if (!published.contains(base::ToLowerASCII(family))) {
++      aliased.push_back(family + " -> " + resolved_family);
++    }
++  }
++  const std::string listed_count =
++      base::NumberToString(claimed.families.size());
++  if (profile->os_family() == "windows") {
++    // A name that resolves only through an alias carries the alias's
++    // metrics, so it is named too.
++    {
++      std::string detail =
++          "a windows profile without a Windows font store (" + no_store +
++          "), on the host's font files: " +
++          base::NumberToString(unbacked.size()) + " of " + listed_count +
++          " families have no font here and are absent";
++      if (!unbacked.empty()) {
++        detail += " (" + JoinNames(unbacked) + ")";
++      }
++      detail += "; " + base::NumberToString(aliased.size()) +
++                " resolve only through host aliases and measure as the alias";
++      if (!aliased.empty()) {
++        detail += " (" + JoinNames(aliased) + ")";
++      }
++      warnings->push_back("fonts.families: " + detail);
++    }
++  } else if (!unbacked.empty()) {
++    warnings->push_back(
++        "fonts.families: " + base::NumberToString(unbacked.size()) + " of " +
++        listed_count + " families have no font on this host and are absent (" +
++        JoinNames(unbacked) + ")");
++  }
++
++  // Emoji fall back through fontconfig's order for the emoji locale, which
++  // only the host's rules decide; a claim they do not pick runs with what
++  // they pick.
++  if (!claimed.emoji.empty()) {
++    std::vector<std::string> emoji = EmojiFallbackFamilies(check.get());
++    bool matches = false;
++    for (const std::string& family : emoji) {
++      matches = matches || base::EqualsCaseInsensitiveASCII(family,
++                                                            claimed.emoji);
++    }
++    if (!matches) {
++      warnings->push_back(
++          "fonts.emoji: is " + claimed.emoji +
++          " but emoji on this host fall back to " +
++          (emoji.empty() ? std::string("no font") : emoji.front()) +
++          ", which pages see instead");
++    }
++  }
++  return std::string();
++}
++
++}  // namespace phasmid
+--- /dev/null
++++ b/components/phasmid/font_allowlist_linux.h
+@@ -0,0 +1,31 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_PHASMID_FONT_ALLOWLIST_LINUX_H_
++#define COMPONENTS_PHASMID_FONT_ALLOWLIST_LINUX_H_
++
++#include <string>
++#include <vector>
++
++namespace phasmid {
++
++// Makes only the font files that publish a family in fonts.families
++// reachable, in every process: on Linux every font lookup ends in
++// fontconfig.
 +//
-+// Frozen: changing it, or any key derivation below, changes every profile's
-+// canvas and audio readback.
-+COMPONENT_EXPORT(PHASMID)
-+uint64_t SipHash24(const NoiseKey& key, base::span<const uint8_t> data);
-+
-+// The profile seed as a key: the 32 hex digits are 16 bytes in string order,
-+// k0 is bytes 0..7 and k1 bytes 8..15, each read little-endian. Returns false
-+// unless `hex` is exactly 32 lowercase hex digits.
-+COMPONENT_EXPORT(PHASMID)
-+bool NoiseKeyFromSeed(std::string_view hex, NoiseKey* key);
-+
-+// A key for one purpose, separated from every other purpose by `tag`:
-+// k0 = SipHash24(seed, tag || 0x00), k1 = SipHash24(seed, tag || 0x01).
-+COMPONENT_EXPORT(PHASMID)
-+NoiseKey DeriveNoiseKey(const NoiseKey& seed, std::string_view tag);
++// Browser process, before any child process exists. Writes a fontconfig
++// configuration that includes the host's own and rejects every other font
++// file, exports it as FONTCONFIG_FILE and makes it this process's current
++// configuration. A windows profile with a Windows font store instead gets a
++// standalone configuration over the store, and the browser's global
++// SkFontConfigInterface matches the store's families as DirectWrite names
++// them. Returns an error naming the profile field when the filter cannot be
++// put in place, or an empty string. Claims the fonts cannot back are
++// appended to `warnings` as "<field>: <detail>". Does nothing when Phasmid
++// is not active.
++std::string ExportFontAllowlist(std::vector<std::string>* warnings);
 +
 +}  // namespace phasmid
 +
-+#endif  // COMPONENTS_PHASMID_NOISE_H_
---- a/components/phasmid/noise.cc
++#endif  // COMPONENTS_PHASMID_FONT_ALLOWLIST_LINUX_H_
+--- /dev/null
 +++ b/components/phasmid/noise.cc
 @@ -0,0 +1,120 @@
 +// Copyright 2026 The Phasmid Authors
@@ -242,7 +1665,54 @@ Guard:    tests/guards/core/profile-loading.py
 +}
 +
 +}  // namespace phasmid
---- a/components/phasmid/noise_unittest.cc
+--- /dev/null
++++ b/components/phasmid/noise.h
+@@ -0,0 +1,44 @@
++// Copyright 2026 The Phasmid Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_PHASMID_NOISE_H_
++#define COMPONENTS_PHASMID_NOISE_H_
++
++#include <stdint.h>
++
++#include <string_view>
++
++#include "base/component_export.h"
++#include "base/containers/span.h"
++
++namespace phasmid {
++
++// A 128-bit SipHash key, derived from the profile seed.
++struct NoiseKey {
++  uint64_t k0 = 0;
++  uint64_t k1 = 0;
++};
++
++// SipHash-2-4 of `data` under `key`, with the reference algorithm's
++// little-endian key and message loading.
++//
++// Frozen: changing it, or any key derivation below, changes every profile's
++// canvas and audio readback.
++COMPONENT_EXPORT(PHASMID)
++uint64_t SipHash24(const NoiseKey& key, base::span<const uint8_t> data);
++
++// The profile seed as a key: the 32 hex digits are 16 bytes in string order,
++// k0 is bytes 0..7 and k1 bytes 8..15, each read little-endian. Returns false
++// unless `hex` is exactly 32 lowercase hex digits.
++COMPONENT_EXPORT(PHASMID)
++bool NoiseKeyFromSeed(std::string_view hex, NoiseKey* key);
++
++// A key for one purpose, separated from every other purpose by `tag`:
++// k0 = SipHash24(seed, tag || 0x00), k1 = SipHash24(seed, tag || 0x01).
++COMPONENT_EXPORT(PHASMID)
++NoiseKey DeriveNoiseKey(const NoiseKey& seed, std::string_view tag);
++
++}  // namespace phasmid
++
++#endif  // COMPONENTS_PHASMID_NOISE_H_
+--- /dev/null
 +++ b/components/phasmid/noise_unittest.cc
 @@ -0,0 +1,85 @@
 +// Copyright 2026 The Phasmid Authors
@@ -330,9 +1800,9 @@ Guard:    tests/guards/core/profile-loading.py
 +
 +}  // namespace
 +}  // namespace phasmid
---- a/components/phasmid/profile.cc
+--- /dev/null
 +++ b/components/phasmid/profile.cc
-@@ -0,0 +1,2543 @@
+@@ -0,0 +1,2545 @@
 +// Copyright 2026 The Phasmid Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -2476,8 +3946,9 @@ Guard:    tests/guards/core/profile-loading.py
 +  }
 +  const int frames_per_buffer = static_cast<int>(whole_frames);
 +  // The default ("interactive") buffer is the platform's hardware buffer:
-+  // 512 frames with PulseAudio, 2048 with ALSA only, and the 10 ms WASAPI
-+  // engine period on Windows.
++  // 512 frames with PulseAudio, 2048 with ALSA only, and the device's
++  // default WASAPI period on Windows: 10 ms on most drivers, 512 frames at
++  // 48 kHz on others.
 +  if (*os_family == "linux" && frames_per_buffer != 512 &&
 +      frames_per_buffer != 2048) {
 +    return Err("audio.base_latency",
@@ -2486,10 +3957,11 @@ Guard:    tests/guards/core/profile-loading.py
 +                                  frames_per_buffer));
 +  }
 +  if (*os_family == "windows" &&
-+      frames_per_buffer != *audio_sample_rate / 100) {
++      frames_per_buffer != *audio_sample_rate / 100 &&
++      !(*audio_sample_rate == 48000 && frames_per_buffer == 512)) {
 +    return Err("audio.base_latency",
 +               base::StringPrintf("is %d frames; a windows profile has the "
-+                                  "10 ms WASAPI period, %d",
++                                  "10 ms WASAPI period, %d, or 512 at 48000",
 +                                  frames_per_buffer, *audio_sample_rate / 100));
 +  }
 +  std::optional<double> output_latency = audio->FindDouble("output_latency");
@@ -2876,7 +4348,7 @@ Guard:    tests/guards/core/profile-loading.py
 +}
 +
 +}  // namespace phasmid
---- a/components/phasmid/profile.h
+--- /dev/null
 +++ b/components/phasmid/profile.h
 @@ -0,0 +1,457 @@
 +// Copyright 2026 The Phasmid Authors
@@ -3336,7 +4808,7 @@ Guard:    tests/guards/core/profile-loading.py
 +}  // namespace phasmid
 +
 +#endif  // COMPONENTS_PHASMID_PROFILE_H_
---- a/components/phasmid/switches.cc
+--- /dev/null
 +++ b/components/phasmid/switches.cc
 @@ -0,0 +1,16 @@
 +// Copyright 2026 The Phasmid Authors
@@ -3355,7 +4827,7 @@ Guard:    tests/guards/core/profile-loading.py
 +}  // namespace switches
 +
 +}  // namespace phasmid
---- a/components/phasmid/switches.h
+--- /dev/null
 +++ b/components/phasmid/switches.h
 @@ -0,0 +1,36 @@
 +// Copyright 2026 The Phasmid Authors
@@ -3394,130 +4866,9 @@ Guard:    tests/guards/core/profile-loading.py
 +}  // namespace phasmid
 +
 +#endif  // COMPONENTS_PHASMID_SWITCHES_H_
---- a/chrome/app/chrome_main_delegate.cc
-+++ b/chrome/app/chrome_main_delegate.cc
-@@ -58,6 +58,7 @@
- #include "chrome/grit/generated_resources.h"
- #include "chrome/renderer/chrome_content_renderer_client.h"
- #include "components/component_updater/component_updater_paths.h"
-+#include "components/phasmid/profile.h"
- #include "components/content_settings/core/common/content_settings_pattern.h"
- #include "components/crash/core/app/crash_reporter_client.h"
- #include "components/crash/core/common/crash_key.h"
-@@ -1171,6 +1172,22 @@
-     LOG(ERROR) << "Remote debugging pipe file descriptors are not open.";
-     return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
-   }
-+
-+  // Phasmid: load the profile before the zygote, GPU and utility processes
-+  // are launched, so they inherit the exported environment. An invalid
-+  // profile stops the browser.
-+  if (is_browser) {
-+    std::vector<std::string> phasmid_warnings;
-+    std::string phasmid_error = phasmid::Profile::LoadAndExportFromCommandLine(
-+        command_line, &phasmid_warnings);
-+    for (const std::string& warning : phasmid_warnings) {
-+      LOG(ERROR) << "Phasmid: host cannot back " << warning;
-+    }
-+    if (!phasmid_error.empty()) {
-+      LOG(ERROR) << "Phasmid: " << phasmid_error;
-+      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
-+    }
-+  }
- #elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-   const bool is_browser = false;
- #endif  // !defined(BUILDING_CHROME_RENDERER)
---- a/chrome/BUILD.gn
-+++ b/chrome/BUILD.gn
-@@ -306,6 +306,7 @@
-         "//chrome/browser:startup_data",
-         "//chrome/browser/lifetime",
-         "//chrome/common:version_header",
-+        "//components/phasmid",
- 
-         # For the sampling profiler.
-         "//chrome/common/profiler",
-@@ -450,6 +451,7 @@
-       "//chrome/install_static:install_static_util",
-       "//chrome/install_static:secondary_module",
-       "//components/crash/core/app",
-+      "//components/phasmid",
-       "//components/memory_system",
-       "//components/policy:generated",
-       "//components/webapps/isolated_web_apps:scheme",
---- a/chrome/app/BUILD.gn
-+++ b/chrome/app/BUILD.gn
-@@ -171,6 +171,7 @@
-     "//components/crash/core/app",
-     "//components/crash/core/app:test_support",
-     "//components/devtools/devtools_pipe",
-+    "//components/phasmid",
-     "//components/memory_system",
-     "//components/startup_metric_utils",
-     "//components/variations/service",
---- a/chrome/browser/BUILD.gn
-+++ b/chrome/browser/BUILD.gn
-@@ -1191,6 +1191,7 @@
-     "//components/pdf/common:constants",
-     "//components/pdf/common:util",
-     "//components/performance_manager",
-+    "//components/phasmid",
-     "//components/policy/content",
-     "//components/policy/content:safe_sites_navigation_throttle",
-     "//components/privacy_sandbox:features",
---- a/chrome/browser/net/BUILD.gn
-+++ b/chrome/browser/net/BUILD.gn
-@@ -205,6 +205,7 @@
-     "//components/offline_pages/core",
-     "//components/page_load_metrics/browser",
-     "//components/permissions",
-+    "//components/phasmid",
-     "//components/pref_registry",
-     "//components/privacy_sandbox",
-     "//components/proxy_config",
---- a/chrome/browser/preloading/prefetch/prefetch_service/BUILD.gn
-+++ b/chrome/browser/preloading/prefetch/prefetch_service/BUILD.gn
-@@ -32,6 +32,7 @@
-     "//chrome/browser/search_engines",
-     "//components/language/core/browser",
-     "//components/page_load_metrics/browser",
-+    "//components/phasmid",
-     "//components/unified_consent",
-   ]
- 
---- a/chrome/browser/ui/startup/BUILD.gn
-+++ b/chrome/browser/ui/startup/BUILD.gn
-@@ -164,6 +164,7 @@
-     "//components/infobars/core",
-     "//components/media_router/common/providers/cast/certificate",
-     "//components/network_session_configurator/common",
-+    "//components/phasmid",
-     "//components/prefs",
-     "//components/signin/public/base",
-     "//components/signin/public/identity_manager",
---- a/chrome/browser/ui/window_sizer/BUILD.gn
-+++ b/chrome/browser/ui/window_sizer/BUILD.gn
-@@ -38,6 +38,7 @@
-     "//chrome/browser/ui/browser_window",
-     "//chrome/browser/ui/web_applications",
-     "//chrome/common:non_code_constants",
-+    "//components/phasmid",
-     "//components/prefs",
-     "//ui/base",
-     "//ui/display",
---- a/components/embedder_support/BUILD.gn
-+++ b/components/embedder_support/BUILD.gn
-@@ -57,6 +57,7 @@
- 
-   deps = [
-     ":embedder_support",
-+    "//components/phasmid",
-     "//build:branding_buildflags",
-     "//components/policy/core/common",
-     "//components/prefs",
 --- a/content/browser/BUILD.gn
 +++ b/content/browser/BUILD.gn
-@@ -132,6 +132,7 @@
+@@ -132,6 +4840,7 @@
  
    deps = [
      ":child_process_security_policy_impl",
@@ -3527,7 +4878,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//base:clang_profiling_buildflags",
 --- a/content/child/BUILD.gn
 +++ b/content/child/BUILD.gn
-@@ -71,6 +71,7 @@
+@@ -71,6 +4780,7 @@
  
    deps = [
      "//base",
@@ -3537,7 +4888,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/attribution_reporting:features",
 --- a/content/renderer/BUILD.gn
 +++ b/content/renderer/BUILD.gn
-@@ -241,6 +241,7 @@
+@@ -241,6 +4951,7 @@
      "//components/metrics",
      "//components/metrics:single_sample_metrics",
      "//components/performance_manager/scenario_api",
@@ -3545,19 +4896,9 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/startup_metric_utils",
      "//components/url_formatter",
      "//components/variations:variations_mojom",
---- a/services/network/BUILD.gn
-+++ b/services/network/BUILD.gn
-@@ -361,6 +361,7 @@
-     "//components/network_session_configurator/browser",
-     "//components/network_session_configurator/common",
-     "//components/os_crypt/common",
-+    "//components/phasmid",
-     "//components/prefs",
-     "//components/unexportable_keys/mojom:mojo_service",
-     "//components/url_matcher",
 --- a/gpu/command_buffer/service/BUILD.gn
 +++ b/gpu/command_buffer/service/BUILD.gn
-@@ -387,6 +387,7 @@
+@@ -387,6 +5098,7 @@
      "//build:chromecast_buildflags",
      "//components/crash/core/common",
      "//components/persistent_cache",
@@ -3565,1352 +4906,13 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/version_info",
      "//components/viz/common/resources:shared_image_format",
      "//gpu/command_buffer/client",
---- a/components/BUILD.gn
-+++ b/components/BUILD.gn
-@@ -307,6 +307,7 @@
-     "//components/payments/core:unit_tests",
-     "//components/persistent_cache:unit_tests",
-     "//components/personal_context/core:unit_tests",
-+    "//components/phasmid:unit_tests",
-     "//components/policy/core/browser:unit_tests",
-     "//components/policy/core/common:unit_tests",
-     "//components/policy/test_support:unittests",
---- a/components/phasmid/font_allowlist_linux.cc
-+++ b/components/phasmid/font_allowlist_linux.cc
-@@ -0,0 +1,1302 @@
-+// Copyright 2026 The Phasmid Authors
-+// Use of this source code is governed by a BSD-style license that can be
-+// found in the LICENSE file.
-+
-+#include "components/phasmid/font_allowlist_linux.h"
-+
-+#include <fontconfig/fontconfig.h>
-+#include <unistd.h>
-+
-+#include <algorithm>
-+#include <array>
-+#include <cmath>
-+#include <map>
-+#include <memory>
-+#include <optional>
-+#include <set>
-+#include <string>
-+#include <string_view>
-+#include <tuple>
-+#include <utility>
-+#include <vector>
-+
-+#include "base/command_line.h"
-+#include "base/compiler_specific.h"
-+#include "base/containers/span.h"
-+#include "base/environment.h"
-+#include "base/files/file.h"
-+#include "base/files/file_enumerator.h"
-+#include "base/files/file_path.h"
-+#include "base/files/file_util.h"
-+#include "base/hash/sha1.h"
-+#include "base/json/json_reader.h"
-+#include "base/nix/xdg_util.h"
-+#include "base/strings/string_number_conversions.h"
-+#include "base/strings/string_split.h"
-+#include "base/strings/string_util.h"
-+#include "base/values.h"
-+#include "base/version.h"
-+#include "components/phasmid/profile.h"
-+#include "components/phasmid/switches.h"
-+#include "crypto/hash.h"
-+#include "third_party/skia/include/core/SkFontMgr.h"
-+#include "third_party/skia/include/core/SkFontStyle.h"
-+#include "third_party/skia/include/core/SkRefCnt.h"
-+#include "third_party/skia/include/core/SkStream.h"
-+#include "third_party/skia/include/core/SkString.h"
-+#include "third_party/skia/include/core/SkTypeface.h"
-+#include "third_party/skia/include/ports/SkFontConfigInterface.h"
-+
-+namespace phasmid {
-+
-+namespace {
-+
-+constexpr char kFontconfigFileEnvVar[] = "FONTCONFIG_FILE";
-+// The host's FONTCONFIG_FILE before Phasmid replaced it, empty when it was
-+// unset.
-+constexpr char kHostFontconfigFileEnvVar[] = "PHASMID_HOST_FONTCONFIG_FILE";
-+
-+// Blink's color emoji locale (font_cache.cc kColorEmojiLocale) and a
-+// character every color emoji font has, U+1F600 GRINNING FACE.
-+constexpr char kEmojiLocale[] = "und-Zsye";
-+constexpr FcChar32 kEmojiCharacter = 0x1F600;
-+
-+// The family Windows Chrome draws emoji with when it is installed.
-+constexpr char kWindowsEmoji[] = "Segoe UI Emoji";
-+
-+// Blink's AlternateFamilyName outside Windows: a family that does not match
-+// is retried under its pair, so a listed name resolves when its pair does.
-+constexpr std::pair<std::string_view, std::string_view> kBlinkAlternates[] = {
-+    {"courier", "courier new"}, {"courier new", "courier"},
-+    {"times", "times new roman"}, {"times new roman", "times"},
-+    {"arial", "helvetica"},     {"helvetica", "arial"},
-+};
-+
-+struct FcDeleter {
-+  void operator()(FcConfig* config) const { FcConfigDestroy(config); }
-+  void operator()(FcPattern* pattern) const { FcPatternDestroy(pattern); }
-+  void operator()(FcObjectSet* objects) const { FcObjectSetDestroy(objects); }
-+  void operator()(FcFontSet* fonts) const { FcFontSetDestroy(fonts); }
-+  void operator()(FcStrList* strings) const { FcStrListDone(strings); }
-+};
-+template <typename T>
-+using FcPtr = std::unique_ptr<T, FcDeleter>;
-+
-+std::string Err(const char* field, const std::string& what) {
-+  return std::string("profile field '") + field + "' " + what;
-+}
-+
-+base::span<FcPattern*> Patterns(const FcFontSet* fonts) {
-+  if (!fonts || fonts->nfont <= 0) {
-+    return {};
-+  }
-+  // SAFETY: an FcFontSet holds `nfont` patterns at `fonts`.
-+  return UNSAFE_BUFFERS(
-+      base::span(fonts->fonts, static_cast<size_t>(fonts->nfont)));
-+}
-+
-+std::string PatternString(FcPattern* pattern, const char* object, int index) {
-+  FcChar8* value = nullptr;
-+  if (FcPatternGetString(pattern, object, index, &value) != FcResultMatch ||
-+      !value) {
-+    return std::string();
-+  }
-+  return std::string(reinterpret_cast<const char*>(value));
-+}
-+
-+// The families a font publishes, in fontconfig's order.
-+std::vector<std::string> Families(FcPattern* font) {
-+  std::vector<std::string> families;
-+  for (int i = 0;; ++i) {
-+    std::string family = PatternString(font, FC_FAMILY, i);
-+    if (family.empty()) {
-+      return families;
-+    }
-+    families.push_back(std::move(family));
-+  }
-+}
-+
-+// Every font file `config` reaches, with the families its faces publish,
-+// lowercased.
-+std::map<std::string, std::set<std::string>> FamiliesByFile(
-+    FcConfig* config) {
-+  std::map<std::string, std::set<std::string>> out;
-+  FcPtr<FcPattern> any(FcPatternCreate());
-+  FcPtr<FcObjectSet> objects(FcObjectSetBuild(FC_FILE, FC_FAMILY, nullptr));
-+  FcPtr<FcFontSet> fonts(FcFontList(config, any.get(), objects.get()));
-+  for (FcPattern* font : Patterns(fonts.get())) {
-+    std::string file = PatternString(font, FC_FILE, 0);
-+    if (file.empty()) {
-+      continue;
-+    }
-+    std::set<std::string>& families = out[file];
-+    for (const std::string& family : Families(font)) {
-+      families.insert(base::ToLowerASCII(family));
-+    }
-+  }
-+  return out;
-+}
-+
-+// The families of the font gfx::GetFallbackFontForChar picks for emoji: the
-+// first scalable, readable TrueType or CFF font in fontconfig's order for
-+// Blink's emoji locale whose charset has the character. Empty when none has.
-+std::vector<std::string> EmojiFallbackFamilies(FcConfig* config) {
-+  FcPtr<FcPattern> pattern(FcPatternCreate());
-+  FcPatternAddString(pattern.get(), FC_LANG,
-+                     reinterpret_cast<const FcChar8*>(kEmojiLocale));
-+  FcPatternAddBool(pattern.get(), FC_SCALABLE, FcTrue);
-+  FcConfigSubstitute(config, pattern.get(), FcMatchPattern);
-+  FcDefaultSubstitute(pattern.get());
-+  FcResult result;
-+  FcPtr<FcFontSet> sorted(
-+      FcFontSort(config, pattern.get(), FcFalse, nullptr, &result));
-+  for (FcPattern* font : Patterns(sorted.get())) {
-+    FcBool scalable = FcFalse;
-+    if (FcPatternGetBool(font, FC_SCALABLE, 0, &scalable) != FcResultMatch ||
-+        !scalable) {
-+      continue;
-+    }
-+    std::string format = PatternString(font, FC_FONTFORMAT, 0);
-+    if (format != "TrueType" && format != "CFF") {
-+      continue;
-+    }
-+    std::string file = PatternString(font, FC_FILE, 0);
-+    if (file.empty() || access(file.c_str(), R_OK) != 0) {
-+      continue;
-+    }
-+    FcCharSet* charset = nullptr;
-+    if (FcPatternGetCharSet(font, FC_CHARSET, 0, &charset) != FcResultMatch ||
-+        !FcCharSetHasChar(charset, kEmojiCharacter)) {
-+      continue;
-+    }
-+    return Families(font);
-+  }
-+  return {};
-+}
-+
-+// Writes `contents` to `path` through a temporary file in the same
-+// directory, so a concurrent reader sees the old file or the whole new one.
-+bool WriteAtomically(const base::FilePath& path, std::string_view contents) {
-+  base::FilePath temp;
-+  if (!base::CreateTemporaryFileInDir(path.DirName(), &temp)) {
-+    return false;
-+  }
-+  if (base::WriteFile(temp, contents) &&
-+      base::ReplaceFile(temp, path, nullptr)) {
-+    return true;
-+  }
-+  base::DeleteFile(temp);
-+  return false;
-+}
-+
-+// "A, B and C".
-+std::string JoinNames(const std::vector<std::string>& names) {
-+  std::string out;
-+  for (size_t i = 0; i < names.size(); ++i) {
-+    if (i > 0) {
-+      out += i + 1 == names.size() ? " and " : ", ";
-+    }
-+    out += names[i];
-+  }
-+  return out;
-+}
-+
-+std::string XmlText(std::string_view text) {
-+  std::string out;
-+  for (char c : text) {
-+    switch (c) {
-+      case '&':
-+        out += "&amp;";
-+        break;
-+      case '<':
-+        out += "&lt;";
-+        break;
-+      case '>':
-+        out += "&gt;";
-+        break;
-+      default:
-+        out += c;
-+    }
-+  }
-+  return out;
-+}
-+
-+// Creates the directory for Phasmid's fontconfig files and sets `resolved`
-+// to its resolved path, as fontconfig records the files it loads. Returns an
-+// error, or an empty string.
-+std::string ConfigDirectory(base::Environment* env, base::FilePath* resolved) {
-+  const base::FilePath dir =
-+      base::nix::GetXDGDirectory(env, "XDG_CACHE_HOME", ".cache")
-+          .Append("phasmid")
-+          .Append("fontconfig");
-+  *resolved = base::CreateDirectory(dir) ? base::MakeAbsoluteFilePath(dir)
-+                                         : base::FilePath();
-+  if (resolved->empty()) {
-+    return Err("fonts.families", "cannot be backed: cannot create " +
-+                                     dir.AsUTF8Unsafe());
-+  }
-+  return std::string();
-+}
-+
-+// Writes `config` to `dir`, named by content, so concurrent browsers with
-+// the same profile and host share one file and one with another profile
-+// never rewrites it, and exports it as FONTCONFIG_FILE. Returns an error, or
-+// an empty string with `path` set.
-+std::string WriteAndExportConfig(base::Environment* env,
-+                                 const base::FilePath& dir,
-+                                 const std::string& config,
-+                                 base::FilePath* path) {
-+  *path = dir.Append(base::HexEncodeLower(base::SHA1HashString(config)) +
-+                     ".conf");
-+  std::string existing;
-+  if ((!base::ReadFileToString(*path, &existing) || existing != config) &&
-+      !WriteAtomically(*path, config)) {
-+    return Err("fonts.families", "cannot be backed: cannot write " +
-+                                     path->AsUTF8Unsafe());
-+  }
-+  if (!env->SetVar(kFontconfigFileEnvVar, path->value())) {
-+    return "cannot export FONTCONFIG_FILE to the environment";
-+  }
-+  return std::string();
-+}
-+
-+// Loads the exported file the way every process will. fontconfig answers a
-+// configuration it cannot load with a fallback that reaches every font under
-+// /usr/share/fonts, so that is ruled out here. Returns an error, or an empty
-+// string with `check` set.
-+std::string LoadExportedConfig(const base::FilePath& path,
-+                               FcPtr<FcConfig>* check) {
-+  check->reset(FcInitLoadConfigAndFonts());
-+  bool loaded = false;
-+  if (*check) {
-+    FcPtr<FcStrList> files(FcConfigGetConfigFiles(check->get()));
-+    while (FcChar8* file = files ? FcStrListNext(files.get()) : nullptr) {
-+      loaded = loaded || path.value() == reinterpret_cast<const char*>(file);
-+    }
-+  }
-+  if (!loaded) {
-+    return Err("fonts.families", "cannot be backed: fontconfig does not load " +
-+                                     path.AsUTF8Unsafe());
-+  }
-+  return std::string();
-+}
-+
-+// The Windows font store: font files copied from a Windows installation the
-+// user licenses, with a manifest naming each file's SHA-256 and the files
-+// behind each family as DirectWrite names it.
-+constexpr char kStoreManifest[] = "manifest.json";
-+
-+struct WindowsStore {
-+  base::FilePath dir;
-+  base::DictValue manifest;
-+};
-+
-+// The store manifest in `dir`, when it is readable and has the fields this
-+// file reads.
-+std::optional<base::DictValue> ReadStoreManifest(const base::FilePath& dir) {
-+  std::string contents;
-+  if (!base::ReadFileToString(dir.Append(kStoreManifest), &contents)) {
-+    return std::nullopt;
-+  }
-+  std::optional<base::Value> value =
-+      base::JSONReader::Read(contents, base::JSON_PARSE_RFC);
-+  if (!value || !value->is_dict()) {
-+    return std::nullopt;
-+  }
-+  base::DictValue manifest = std::move(*value).TakeDict();
-+  if (!manifest.FindString("set") ||
-+      !manifest.FindStringByDottedPath("os.build") ||
-+      !manifest.FindList("files") || !manifest.FindDict("families")) {
-+    return std::nullopt;
-+  }
-+  return manifest;
-+}
-+
-+// The files the manifest lists for `family`, matched ignoring ASCII case as
-+// DirectWrite matches family names; null when it lists none.
-+const base::ListValue* ManifestFiles(const base::DictValue& manifest,
-+                                     std::string_view family) {
-+  for (const auto [name, files] : *manifest.FindDict("families")) {
-+    if (files.is_list() && base::EqualsCaseInsensitiveASCII(name, family)) {
-+      return &files.GetList();
-+    }
-+  }
-+  return nullptr;
-+}
-+
-+// The family the manifest says `family` resolves to without a file of its
-+// own (Blink's alternate names on Windows: Courier to Courier New, Helvetica
-+// to Arial), or an empty string.
-+std::string ManifestAlias(const base::DictValue& manifest,
-+                          std::string_view family) {
-+  const base::DictValue* aliases = manifest.FindDict("aliases");
-+  if (!aliases) {
-+    return std::string();
-+  }
-+  for (const auto [name, target] : *aliases) {
-+    if (target.is_string() && base::EqualsCaseInsensitiveASCII(name, family)) {
-+      return target.GetString();
-+    }
-+  }
-+  return std::string();
-+}
-+
-+// The directory given by --phasmid-windows-fonts, else, among
-+// $XDG_DATA_HOME/phasmid/fonts/windows/<build> whose manifest names that
-+// os.build, the one with the most of the listed families, the newest build
-+// on a tie. Null, with `why` set, when there is none.
-+std::optional<WindowsStore> FindWindowsStore(const Profile::Fonts& claimed,
-+                                             base::Environment* env,
-+                                             std::string* why) {
-+  const base::CommandLine& command_line =
-+      *base::CommandLine::ForCurrentProcess();
-+  if (command_line.HasSwitch(switches::kPhasmidWindowsFonts)) {
-+    const base::FilePath given =
-+        command_line.GetSwitchValuePath(switches::kPhasmidWindowsFonts);
-+    const base::FilePath dir = base::MakeAbsoluteFilePath(given);
-+    std::optional<base::DictValue> manifest =
-+        dir.empty() ? std::nullopt : ReadStoreManifest(dir);
-+    if (!manifest) {
-+      *why = given.AsUTF8Unsafe() + " (--phasmid-windows-fonts) has no " +
-+             kStoreManifest;
-+      return std::nullopt;
-+    }
-+    return WindowsStore{dir, std::move(*manifest)};
-+  }
-+  const base::FilePath root =
-+      base::nix::GetXDGDirectory(env, "XDG_DATA_HOME", ".local/share")
-+          .Append("phasmid")
-+          .Append("fonts")
-+          .Append("windows");
-+  std::vector<base::FilePath> dirs;
-+  base::FileEnumerator entries(root, false, base::FileEnumerator::DIRECTORIES);
-+  for (base::FilePath dir = entries.Next(); !dir.empty();
-+       dir = entries.Next()) {
-+    dirs.push_back(dir);
-+  }
-+  std::sort(dirs.begin(), dirs.end());
-+  std::optional<WindowsStore> best;
-+  size_t best_listed = 0;
-+  base::Version best_build;
-+  for (const base::FilePath& dir : dirs) {
-+    std::optional<base::DictValue> manifest = ReadStoreManifest(dir);
-+    if (!manifest ||
-+        *manifest->FindStringByDottedPath("os.build") != dir.BaseName().value()) {
-+      continue;
-+    }
-+    size_t listed = 0;
-+    for (const std::string& family : claimed.families) {
-+      if (ManifestFiles(*manifest, family) ||
-+          !ManifestAlias(*manifest, family).empty()) {
-+        ++listed;
-+      }
-+    }
-+    const base::Version build(dir.BaseName().value());
-+    if (!best || listed > best_listed ||
-+        (listed == best_listed && build.IsValid() &&
-+         (!best_build.IsValid() || build > best_build))) {
-+      best = WindowsStore{dir, std::move(*manifest)};
-+      best_listed = listed;
-+      best_build = build;
-+    }
-+  }
-+  if (best) {
-+    best->dir = base::MakeAbsoluteFilePath(best->dir);
-+  }
-+  if (!best || best->dir.empty()) {
-+    *why = "no " + std::string(kStoreManifest) + " under " +
-+           root.AsUTF8Unsafe() +
-+           "/<build>; import the font files with the committed manifest "
-+           "there or pass --phasmid-windows-fonts=<dir>";
-+    return std::nullopt;
-+  }
-+  return best;
-+}
-+
-+// CSS family names over the Windows font store as Windows Chrome resolves
-+// them. DirectWrite's system collection knows a face by its
-+// weight-stretch-style family: name ID 21; else the typographic family (16)
-+// plus the words of its subfamily that are not style words (Bodoni MT
-+// Poster); else the legacy family (1) with its style words moved into the
-+// face's style (Franklin Gothic Demi Cond is Franklin Gothic at 600,
-+// condensed); a named instance of a variable font by the WWS family the
-+// manifest derives from STAT (Sitka Small). fontconfig knows the file's own
-+// names instead, so the browser matches through the faces below.
-+
-+struct WindowsFace {
-+  std::string file;
-+  // fontconfig's FC_INDEX: the face, and the named instance + 1 in the
-+  // upper 16 bits.
-+  int index = 0;
-+  std::vector<std::string> families;
-+  // DWRITE_FONT_WEIGHT, DWRITE_FONT_STRETCH (1-9) and DWRITE_FONT_STYLE
-+  // (0 normal, 1 oblique, 2 italic).
-+  int weight = 400;
-+  int stretch = 5;
-+  int slope = 0;
-+};
-+
-+struct StyleWord {
-+  std::string_view word;
-+  int weight;
-+  int stretch;
-+  int slope;
-+};
-+constexpr StyleWord kStyleWords[] = {
-+    {"thin", 100, 0, 0},           {"hairline", 100, 0, 0},
-+    {"extralight", 200, 0, 0},     {"ultralight", 200, 0, 0},
-+    {"light", 300, 0, 0},          {"semilight", 350, 0, 0},
-+    {"demilight", 350, 0, 0},      {"regular", 400, 0, 0},
-+    {"normal", 400, 0, 0},         {"medium", 500, 0, 0},
-+    {"demi", 600, 0, 0},           {"demibold", 600, 0, 0},
-+    {"semibold", 600, 0, 0},       {"bold", 700, 0, 0},
-+    {"extrabold", 800, 0, 0},      {"ultrabold", 800, 0, 0},
-+    {"black", 900, 0, 0},          {"heavy", 900, 0, 0},
-+    {"extrablack", 950, 0, 0},     {"ultrablack", 950, 0, 0},
-+    {"ultracondensed", 0, 1, 0},   {"extracondensed", 0, 2, 0},
-+    {"compressed", 0, 2, 0},       {"condensed", 0, 3, 0},
-+    {"cond", 0, 3, 0},             {"cn", 0, 3, 0},
-+    {"narrow", 0, 3, 0},           {"semicondensed", 0, 4, 0},
-+    {"semiexpanded", 0, 6, 0},     {"expanded", 0, 7, 0},
-+    {"extended", 0, 7, 0},         {"extraexpanded", 0, 8, 0},
-+    {"ultraexpanded", 0, 9, 0},    {"italic", 0, 0, 2},
-+    {"kursiv", 0, 0, 2},           {"oblique", 0, 0, 1},
-+    {"slanted", 0, 0, 1},          {"inclined", 0, 0, 1},
-+};
-+// Style words only before another one (Extra Bold, Ext Condensed).
-+constexpr std::string_view kStyleModifiers[] = {"extra", "ultra", "ext",
-+                                                "semi", "demi"};
-+
-+const StyleWord* FindStyleWord(std::string_view lower) {
-+  for (const StyleWord& word : kStyleWords) {
-+    if (word.word == lower) {
-+      return &word;
-+    }
-+  }
-+  return nullptr;
-+}
-+
-+// Whether `lower` is a style word; in a subfamily, Roman is one too
-+// (Lucida Sans Demibold Roman).
-+bool IsStyleWord(std::string_view lower, bool subfamily) {
-+  return FindStyleWord(lower) || (subfamily && lower == "roman");
-+}
-+
-+// `name` without its style words, which are appended to `words`, lowercased.
-+std::string WithoutStyleWords(const std::string& name,
-+                              bool subfamily,
-+                              std::vector<std::string>* words) {
-+  const std::vector<std::string> tokens = base::SplitString(
-+      name, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-+  std::string kept;
-+  for (size_t i = 0; i < tokens.size(); ++i) {
-+    const std::string lower = base::ToLowerASCII(tokens[i]);
-+    const std::string next =
-+        i + 1 < tokens.size() ? base::ToLowerASCII(tokens[i + 1]) : "";
-+    const bool modifier =
-+        std::find(std::begin(kStyleModifiers), std::end(kStyleModifiers),
-+                  lower) != std::end(kStyleModifiers);
-+    if (IsStyleWord(lower, subfamily) ||
-+        (modifier && IsStyleWord(next, subfamily))) {
-+      words->push_back(lower);
-+    } else {
-+      kept += (kept.empty() ? "" : " ") + tokens[i];
-+    }
-+  }
-+  return kept;
-+}
-+
-+// The style the moved words name: the first weight other than regular, the
-+// last stretch and slope; 0 where they name none. Extra and Ultra join the
-+// next word (Extra Bold is 800).
-+StyleWord StyleOfWords(const std::vector<std::string>& words) {
-+  StyleWord style{"", 0, 0, 0};
-+  for (size_t i = 0; i < words.size(); ++i) {
-+    std::string word = words[i];
-+    if ((word == "extra" || word == "ultra") && i + 1 < words.size() &&
-+        (words[i + 1] == "bold" || words[i + 1] == "light" ||
-+         words[i + 1] == "condensed" || words[i + 1] == "expanded" ||
-+         words[i + 1] == "black")) {
-+      word += words[++i];
-+    }
-+    const StyleWord* found = FindStyleWord(word);
-+    if (!found) {
-+      continue;
-+    }
-+    if (found->weight && found->weight != 400 && !style.weight) {
-+      style.weight = found->weight;
-+    }
-+    if (found->stretch) {
-+      style.stretch = found->stretch;
-+    }
-+    if (found->slope) {
-+      style.slope = found->slope;
-+    }
-+  }
-+  return style;
-+}
-+
-+std::string JoinWords(const std::string& a, const std::string& b) {
-+  return a.empty() ? b : b.empty() ? a : a + " " + b;
-+}
-+
-+std::string FaceString(const base::DictValue& face, const char* key) {
-+  const std::string* value = face.FindString(key);
-+  return value ? *value : std::string();
-+}
-+
-+// A face without named instances: its family names, from the manifest's
-+// name table facts, and its OS/2 weight, width and italic bit, which the
-+// moved style words override where those say regular (Franklin Gothic
-+// Demi has usWeightClass 400). `slope` is fontconfig's.
-+void StaticWindowsFace(const base::DictValue& face,
-+                       int slope,
-+                       WindowsFace* out) {
-+  std::vector<std::string> words;
-+  std::string family = FaceString(face, "family_wws");
-+  if (family.empty() && !FaceString(face, "family_typo").empty()) {
-+    family = JoinWords(
-+        FaceString(face, "family_typo"),
-+        WithoutStyleWords(FaceString(face, "subfamily_typo"), true, &words));
-+  } else if (family.empty()) {
-+    const std::string legacy = FaceString(face, "family_legacy");
-+    const std::string base = WithoutStyleWords(legacy, false, &words);
-+    family = JoinWords(
-+        base.empty() ? legacy : base,
-+        WithoutStyleWords(FaceString(face, "subfamily_legacy"), true, &words));
-+  }
-+  if (family.empty()) {
-+    return;
-+  }
-+  out->families.push_back(family);
-+  if (const base::ListValue* localized =
-+          face.FindList("family_names_localized")) {
-+    for (const base::Value& name : *localized) {
-+      std::vector<std::string> unused;
-+      const std::string stripped =
-+          name.is_string() ? WithoutStyleWords(name.GetString(), false, &unused)
-+                           : std::string();
-+      if (!stripped.empty() &&
-+          std::find(out->families.begin(), out->families.end(), stripped) ==
-+              out->families.end()) {
-+        out->families.push_back(stripped);
-+      }
-+    }
-+  }
-+  out->weight = face.FindInt("weight").value_or(400);
-+  out->stretch = face.FindInt("width").value_or(5);
-+  out->slope = face.FindBool("italic").value_or(false) ? 2 : slope;
-+  const StyleWord style = StyleOfWords(words);
-+  if (out->weight == 400 && style.weight && style.weight != 500) {
-+    out->weight = style.weight;
-+  }
-+  if (out->stretch == 5 && style.stretch) {
-+    out->stretch = style.stretch;
-+  }
-+  if (!out->slope && style.slope) {
-+    out->slope = style.slope;
-+  }
-+}
-+
-+// The WWS family of named instance `instance` (fontconfig's FC_INDEX >> 16,
-+// 1-based) of `face`, or for 0 of the instance at the default coordinates,
-+// which fontconfig lists only as the face itself. Null for a face without
-+// named instances.
-+const std::string* InstanceFamily(const base::DictValue& face, int instance) {
-+  const base::ListValue* instances = face.FindList("instances");
-+  if (!instances || instances->empty()) {
-+    return nullptr;
-+  }
-+  if (instance > 0) {
-+    const size_t i = static_cast<size_t>(instance) - 1;
-+    if (i >= instances->size() || !(*instances)[i].is_dict()) {
-+      return nullptr;
-+    }
-+    return (*instances)[i].GetDict().FindString("family_wws");
-+  }
-+  for (const char* key : {"subfamily_typo", "subfamily_legacy"}) {
-+    const std::string subfamily = FaceString(face, key);
-+    for (const base::Value& entry : *instances) {
-+      const std::string* name =
-+          entry.is_dict() ? entry.GetDict().FindString("subfamily") : nullptr;
-+      if (!subfamily.empty() && name && *name == subfamily) {
-+        return entry.GetDict().FindString("family_wws");
-+      }
-+    }
-+  }
-+  return nullptr;
-+}
-+
-+// DWRITE_FONT_STRETCH of fontconfig's width (the usWidthClass percentages).
-+int StretchOfFcWidth(double width) {
-+  constexpr std::array<double, 9> kPercent = {50,  62.5, 75,  87.5, 100,
-+                                              112.5, 125, 150, 200};
-+  int stretch = 0;
-+  double nearest = 0;
-+  for (size_t i = 0; i < kPercent.size(); ++i) {
-+    const double distance = std::abs(width - kPercent[i]);
-+    if (!stretch || distance < nearest) {
-+      stretch = static_cast<int>(i) + 1;
-+      nearest = distance;
-+    }
-+  }
-+  return stretch;
-+}
-+
-+// The faces `config` reaches, as DirectWrite has them. Variable font
-+// patterns are left out: DirectWrite's collection lists the named
-+// instances.
-+std::vector<WindowsFace> WindowsFaces(FcConfig* config,
-+                                      const base::DictValue& manifest) {
-+  std::map<std::string, const base::ListValue*> faces_by_file;
-+  for (const base::Value& entry : *manifest.FindList("files")) {
-+    const std::string* name =
-+        entry.is_dict() ? entry.GetDict().FindString("name") : nullptr;
-+    const base::ListValue* faces =
-+        entry.is_dict() ? entry.GetDict().FindList("faces") : nullptr;
-+    if (name && faces) {
-+      faces_by_file[*name] = faces;
-+    }
-+  }
-+  FcPtr<FcPattern> any(FcPatternCreate());
-+  FcPtr<FcObjectSet> objects(FcObjectSetBuild(FC_FILE, FC_INDEX, FC_WEIGHT,
-+                                              FC_WIDTH, FC_SLANT, FC_VARIABLE,
-+                                              nullptr));
-+  FcPtr<FcFontSet> fonts(FcFontList(config, any.get(), objects.get()));
-+  std::vector<WindowsFace> out;
-+  for (FcPattern* font : Patterns(fonts.get())) {
-+    FcBool variable = FcFalse;
-+    if (FcPatternGetBool(font, FC_VARIABLE, 0, &variable) == FcResultMatch &&
-+        variable) {
-+      continue;
-+    }
-+    WindowsFace face;
-+    face.file = PatternString(font, FC_FILE, 0);
-+    FcPatternGetInteger(font, FC_INDEX, 0, &face.index);
-+    const auto entry =
-+        faces_by_file.find(base::FilePath(face.file).BaseName().value());
-+    if (face.file.empty() || entry == faces_by_file.end()) {
-+      continue;
-+    }
-+    const base::DictValue* facts = nullptr;
-+    for (const base::Value& candidate : *entry->second) {
-+      if (candidate.is_dict() &&
-+          candidate.GetDict().FindInt("index") == (face.index & 0xFFFF)) {
-+        facts = &candidate.GetDict();
-+      }
-+    }
-+    if (!facts) {
-+      continue;
-+    }
-+    double weight = FC_WEIGHT_REGULAR;
-+    double width = FC_WIDTH_NORMAL;
-+    int slant = FC_SLANT_ROMAN;
-+    FcPatternGetDouble(font, FC_WEIGHT, 0, &weight);
-+    FcPatternGetDouble(font, FC_WIDTH, 0, &width);
-+    FcPatternGetInteger(font, FC_SLANT, 0, &slant);
-+    const int slope = slant == FC_SLANT_ITALIC    ? 2
-+                      : slant == FC_SLANT_OBLIQUE ? 1
-+                                                  : 0;
-+    if (const std::string* family =
-+            InstanceFamily(*facts, face.index >> 16)) {
-+      face.families.push_back(*family);
-+      face.weight =
-+          static_cast<int>(std::lround(FcWeightToOpenTypeDouble(weight)));
-+      face.stretch = StretchOfFcWidth(width);
-+      face.slope = slope;
-+    } else {
-+      StaticWindowsFace(*facts, slope, &face);
-+    }
-+    if (!face.families.empty()) {
-+      out.push_back(std::move(face));
-+    }
-+  }
-+  // DirectWrite keeps the first of equally good faces, in this order.
-+  std::sort(out.begin(), out.end(),
-+            [](const WindowsFace& a, const WindowsFace& b) {
-+              return std::tie(a.file, a.index) < std::tie(b.file, b.index);
-+            });
-+  return out;
-+}
-+
-+// IDWriteFontFamily::GetFirstMatchingFont's choice between two faces:
-+// the nearer in (stretch * 11, style * 7, weight / 100 * 5), and on a tie
-+// the one further along the request (Franklin Gothic at 500 is Demi, 600,
-+// not Medium, 400).
-+bool BetterWindowsFace(const WindowsFace& next,
-+                       const WindowsFace& current,
-+                       const SkFontStyle& requested) {
-+  const auto point = [](int weight, int stretch, int slope) {
-+    return std::array<double, 3>{(stretch - 5) * 11.0, slope * 7.0,
-+                                 (weight - 400) / 100.0 * 5.0};
-+  };
-+  const int requested_slope =
-+      requested.slant() == SkFontStyle::kItalic_Slant    ? 2
-+      : requested.slant() == SkFontStyle::kOblique_Slant ? 1
-+                                                         : 0;
-+  const std::array<double, 3> want =
-+      point(requested.weight(), requested.width(), requested_slope);
-+  const auto distance = [&](const std::array<double, 3>& v) {
-+    return (v[0] - want[0]) * (v[0] - want[0]) +
-+           (v[1] - want[1]) * (v[1] - want[1]) +
-+           (v[2] - want[2]) * (v[2] - want[2]);
-+  };
-+  const auto dot = [&](const std::array<double, 3>& v) {
-+    return v[0] * want[0] + v[1] * want[1] + v[2] * want[2];
-+  };
-+  const std::array<double, 3> a = point(next.weight, next.stretch, next.slope);
-+  const std::array<double, 3> b =
-+      point(current.weight, current.stretch, current.slope);
-+  return distance(a) < distance(b) ||
-+         (distance(a) == distance(b) && dot(a) > dot(b));
-+}
-+
-+// The browser's family matcher for a windows profile with a store (the
-+// global SkFontConfigInterface, which the font services and the browser's
-+// font manager use): a family DirectWrite has resolves to its best face; a
-+// name a page may ask for that it does not have fails, so that Blink
-+// retries it; other names (the browser's own UI lookups) and the default
-+// typeface keep fontconfig's answer.
-+class WindowsStoreFontConfigInterface : public SkFontConfigInterface {
-+ public:
-+  explicit WindowsStoreFontConfigInterface(std::vector<WindowsFace> faces)
-+      : direct_(
-+            sk_ref_sp(SkFontConfigInterface::GetSingletonDirectInterface())),
-+        faces_(std::move(faces)) {}
-+
-+  bool matchFamilyName(const char family_name[],
-+                       SkFontStyle requested,
-+                       FontIdentity* identity,
-+                       SkString* out_family,
-+                       SkFontStyle* out_style) override {
-+    const std::string_view family = family_name ? family_name : "";
-+    const WindowsFace* best = nullptr;
-+    const std::string* best_name = nullptr;
-+    for (const WindowsFace& face : faces_) {
-+      for (const std::string& name : face.families) {
-+        if (!family.empty() && base::EqualsCaseInsensitiveASCII(name, family) &&
-+            (!best || BetterWindowsFace(face, *best, requested))) {
-+          best = &face;
-+          best_name = &name;
-+        }
-+      }
-+    }
-+    if (!best) {
-+      return (family.empty() || !FontFamilyResolvable(family)) &&
-+             direct_->matchFamilyName(family_name, requested, identity,
-+                                      out_family, out_style);
-+    }
-+    if (identity) {
-+      identity->fTTCIndex = best->index;
-+      identity->fString.set(best->file.c_str());
-+    }
-+    if (out_family) {
-+      out_family->set(best_name->c_str());
-+    }
-+    if (out_style) {
-+      const SkFontStyle::Slant slant =
-+          best->slope == 2   ? SkFontStyle::kItalic_Slant
-+          : best->slope == 1 ? SkFontStyle::kOblique_Slant
-+                             : SkFontStyle::kUpright_Slant;
-+      *out_style = SkFontStyle(best->weight, best->stretch, slant);
-+    }
-+    return true;
-+  }
-+
-+  SkStreamAsset* openStream(const FontIdentity& identity) override {
-+    return direct_->openStream(identity);
-+  }
-+
-+  sk_sp<SkTypeface> makeTypeface(const FontIdentity& identity,
-+                                 sk_sp<SkFontMgr> manager) override {
-+    return direct_->makeTypeface(identity, std::move(manager));
-+  }
-+
-+ private:
-+  const sk_sp<SkFontConfigInterface> direct_;
-+  const std::vector<WindowsFace> faces_;
-+};
-+
-+// A standalone fontconfig over the store only (no host font, alias or rule),
-+// reaching the files of the listed families that match the manifest's
-+// SHA-256. A missing or mismatched file is left out and its families are
-+// absent, reported once as unbacked. Render settings are Windows' defaults:
-+// antialiased, slight hinting, embedded bitmaps on (DirectWrite uses a
-+// face's bitmap strikes), ClearType RGB subpixel order.
-+std::string ExportWindowsStore(const WindowsStore& store,
-+                               const Profile::Fonts& claimed,
-+                               base::Environment* env,
-+                               std::vector<std::string>* warnings) {
-+  const base::DictValue& manifest = store.manifest;
-+  std::map<std::string, std::string> hashes;
-+  for (const base::Value& entry : *manifest.FindList("files")) {
-+    const std::string* name =
-+        entry.is_dict() ? entry.GetDict().FindString("name") : nullptr;
-+    const std::string* sha256 =
-+        entry.is_dict() ? entry.GetDict().FindString("sha256") : nullptr;
-+    if (name && sha256) {
-+      hashes[*name] = base::ToLowerASCII(*sha256);
-+    }
-+  }
-+
-+  // The files of the listed families, as the manifest names them.
-+  std::set<std::string> wanted;
-+  for (const std::string& family : claimed.families) {
-+    if (const base::ListValue* files = ManifestFiles(manifest, family)) {
-+      for (const base::Value& file : *files) {
-+        if (file.is_string()) {
-+          wanted.insert(file.GetString());
-+        }
-+      }
-+    }
-+  }
-+  std::set<std::string> kept;
-+  std::vector<std::string> missing;
-+  std::vector<std::string> mismatched;
-+  for (const std::string& name : wanted) {
-+    const base::FilePath file = store.dir.Append(name);
-+    base::File contents(file, base::File::FLAG_OPEN | base::File::FLAG_READ);
-+    if (!contents.IsValid()) {
-+      missing.push_back(name);
-+      continue;
-+    }
-+    std::array<uint8_t, crypto::hash::kSha256Size> digest;
-+    const auto hash = hashes.find(name);
-+    if (hash == hashes.end() ||
-+        !crypto::hash::HashFile(crypto::hash::kSha256, &contents, digest) ||
-+        base::HexEncodeLower(digest) != hash->second) {
-+      mismatched.push_back(name);
-+      continue;
-+    }
-+    kept.insert(file.value());
-+  }
-+  std::vector<std::string> rejected;
-+  base::FileEnumerator entries(store.dir, false, base::FileEnumerator::FILES);
-+  for (base::FilePath file = entries.Next(); !file.empty();
-+       file = entries.Next()) {
-+    if (!kept.contains(file.value())) {
-+      rejected.push_back(file.value());
-+    }
-+  }
-+  std::sort(rejected.begin(), rejected.end());
-+
-+  base::FilePath dir;
-+  std::string error = ConfigDirectory(env, &dir);
-+  if (!error.empty()) {
-+    return error;
-+  }
-+  const base::FilePath cache = dir.Append("cache");
-+  if (!base::CreateDirectory(cache)) {
-+    return Err("fonts.families", "cannot be backed: cannot create " +
-+                                     cache.AsUTF8Unsafe());
-+  }
-+  std::string config =
-+      "<?xml version=\"1.0\"?>\n"
-+      "<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n"
-+      "<!-- Phasmid: the Windows font store " +
-+      XmlText(*manifest.FindString("set")) +
-+      ", reaching only the files of the profile's fonts.families that match "
-+      "its manifest. -->\n"
-+      "<fontconfig>\n"
-+      "  <dir>" +
-+      XmlText(store.dir.value()) +
-+      "</dir>\n"
-+      "  <cachedir>" +
-+      XmlText(cache.value()) +
-+      "</cachedir>\n"
-+      "  <match target=\"font\">\n"
-+      "    <edit name=\"antialias\" mode=\"assign\"><bool>true</bool></edit>\n"
-+      "    <edit name=\"hinting\" mode=\"assign\"><bool>true</bool></edit>\n"
-+      "    <edit name=\"hintstyle\" mode=\"assign\"><const>hintslight</const>"
-+      "</edit>\n"
-+      "    <edit name=\"embeddedbitmap\" mode=\"assign\"><bool>true</bool>"
-+      "</edit>\n"
-+      "    <edit name=\"rgba\" mode=\"assign\"><const>rgb</const></edit>\n"
-+      "  </match>\n"
-+      "  <selectfont>\n"
-+      "    <rejectfont>\n";
-+  for (const std::string& file : rejected) {
-+    config += "      <glob>" + XmlText(file) + "</glob>\n";
-+  }
-+  config +=
-+      "    </rejectfont>\n"
-+      "  </selectfont>\n"
-+      "</fontconfig>\n";
-+
-+  base::FilePath path;
-+  error = WriteAndExportConfig(env, dir, config, &path);
-+  if (!error.empty()) {
-+    return error;
-+  }
-+  FcPtr<FcConfig> check;
-+  error = LoadExportedConfig(path, &check);
-+  if (!error.empty()) {
-+    return error;
-+  }
-+  // Exactly the verified files: anything else means the filter failed. A
-+  // verified file fontconfig cannot read is unbacked like a missing one.
-+  std::set<std::string> reached;
-+  for (const auto& entry : FamiliesByFile(check.get())) {
-+    if (!kept.contains(entry.first)) {
-+      return Err("fonts.families",
-+                 "cannot be backed: the Windows font store configuration "
-+                 "reaches " + entry.first + ", which is not a verified file");
-+    }
-+    reached.insert(entry.first);
-+  }
-+  std::vector<std::string> unreadable;
-+  for (const std::string& file : kept) {
-+    if (!reached.contains(file)) {
-+      unreadable.push_back(base::FilePath(file).BaseName().value());
-+    }
-+  }
-+  if (!FcConfigSetCurrent(check.get())) {
-+    return Err("fonts.families",
-+               "cannot be backed: fontconfig cannot use " +
-+                   path.AsUTF8Unsafe());
-+  }
-+  // Family names and faces as DirectWrite has them.
-+  SkFontConfigInterface::SetGlobal(
-+      sk_make_sp<WindowsStoreFontConfigInterface>(
-+          WindowsFaces(check.get(), manifest)));
-+
-+  // A listed family is there when one of its files is; a name without a
-+  // file of its own (Courier, Helvetica) when the family it resolves to is
-+  // listed and there. The rest are absent, as uninstalled fonts.
-+  const auto present = [&](std::string_view family) {
-+    const base::ListValue* files = ManifestFiles(manifest, family);
-+    if (!files) {
-+      return false;
-+    }
-+    for (const base::Value& file : *files) {
-+      if (file.is_string() &&
-+          reached.contains(store.dir.Append(file.GetString()).value())) {
-+        return true;
-+      }
-+    }
-+    return false;
-+  };
-+  const auto listed = [&](std::string_view family) {
-+    for (const std::string& name : claimed.families) {
-+      if (base::EqualsCaseInsensitiveASCII(name, family)) {
-+        return true;
-+      }
-+    }
-+    return false;
-+  };
-+  std::vector<std::string> absent;
-+  for (const std::string& family : claimed.families) {
-+    const std::string alias = ManifestAlias(manifest, family);
-+    if (!present(family) &&
-+        (alias.empty() || !listed(alias) || !present(alias))) {
-+      absent.push_back(family);
-+    }
-+  }
-+  std::vector<std::string> problems;
-+  if (!missing.empty()) {
-+    problems.push_back(base::NumberToString(missing.size()) +
-+                       " files are not in the store (" + JoinNames(missing) +
-+                       ")");
-+  }
-+  if (!mismatched.empty()) {
-+    problems.push_back(base::NumberToString(mismatched.size()) +
-+                       " files do not match the manifest's SHA-256 (" +
-+                       JoinNames(mismatched) + ")");
-+  }
-+  if (!unreadable.empty()) {
-+    problems.push_back(base::NumberToString(unreadable.size()) +
-+                       " files fontconfig cannot read (" +
-+                       JoinNames(unreadable) + ")");
-+  }
-+  if (!absent.empty()) {
-+    problems.push_back(base::NumberToString(absent.size()) + " of " +
-+                       base::NumberToString(claimed.families.size()) +
-+                       " families are absent (" + JoinNames(absent) + ")");
-+  }
-+  if (!problems.empty()) {
-+    std::string detail;
-+    for (const std::string& problem : problems) {
-+      detail += (detail.empty() ? "" : "; ") + problem;
-+    }
-+    warnings->push_back("fonts.families: the Windows font store " +
-+                        store.dir.AsUTF8Unsafe() + " (" +
-+                        *manifest.FindString("set") + "): " + detail);
-+  }
-+
-+  // Windows Chrome draws emoji with the first of Segoe UI Emoji and Segoe UI
-+  // Symbol that is installed, whatever the profile says.
-+  if (!claimed.emoji.empty()) {
-+    if (!base::EqualsCaseInsensitiveASCII(claimed.emoji, kWindowsEmoji)) {
-+      warnings->push_back("fonts.emoji: is " + claimed.emoji +
-+                          " but Windows Chrome draws emoji with " +
-+                          kWindowsEmoji + ", which pages see instead");
-+    } else if (!present(claimed.emoji)) {
-+      warnings->push_back("fonts.emoji: is " + claimed.emoji +
-+                          " but the Windows font store has no verified file "
-+                          "for it; emoji fall back without it");
-+    }
-+  }
-+  return std::string();
-+}
-+
-+}  // namespace
-+
-+std::string ExportFontAllowlist(std::vector<std::string>* warnings) {
-+  const Profile* profile = Profile::Get();
-+  if (!profile) {
-+    return std::string();
-+  }
-+  const Profile::Fonts& claimed = profile->fonts();
-+  std::unique_ptr<base::Environment> env = base::Environment::Create();
-+
-+  // Chromium sets FC_FONTATIONS=1 after this callback. Set it first, so that
-+  // a font cache written here is indexed as the browser reads it afterwards.
-+  if (!env->SetVar("FC_FONTATIONS", "1")) {
-+    return "cannot set FC_FONTATIONS in the environment";
-+  }
-+
-+  // A browser started from a Phasmid process (a relaunch, or anything that
-+  // inherited its environment) finds the generated file in FONTCONFIG_FILE;
-+  // the host's own value is the one that process started with.
-+  if (std::optional<std::string> host_value =
-+          env->GetVar(kHostFontconfigFileEnvVar)) {
-+    if (host_value->empty() ? !env->UnSetVar(kFontconfigFileEnvVar)
-+                            : !env->SetVar(kFontconfigFileEnvVar, *host_value)) {
-+      return "cannot restore the host's FONTCONFIG_FILE";
-+    }
-+  }
-+  if (!env->SetVar(kHostFontconfigFileEnvVar,
-+                   env->GetVar(kFontconfigFileEnvVar).value_or(""))) {
-+    return "cannot export the host's FONTCONFIG_FILE to the environment";
-+  }
-+
-+  // Without a Windows font store, a windows profile runs on the host's files.
-+  std::string no_store;
-+  if (profile->os_family() == "windows") {
-+    if (std::optional<WindowsStore> store =
-+            FindWindowsStore(claimed, env.get(), &no_store)) {
-+      return ExportWindowsStore(*store, claimed, env.get(), warnings);
-+    }
-+  }
-+
-+  // The host's own configuration, found as fontconfig's first initialization
-+  // finds it (FONTCONFIG_FILE, FONTCONFIG_PATH, then /etc/fonts/fonts.conf).
-+  FcPtr<FcConfig> host(FcInitLoadConfig());
-+  FcChar8* host_file_name =
-+      host ? FcConfigGetFilename(host.get(), nullptr) : nullptr;
-+  if (!host_file_name) {
-+    return Err("fonts.families",
-+               "cannot be backed: this host has no fontconfig configuration");
-+  }
-+  const std::string host_file(reinterpret_cast<const char*>(host_file_name));
-+  FcStrFree(host_file_name);
-+  if (!FcConfigBuildFonts(host.get())) {
-+    return Err("fonts.families",
-+               "cannot be backed: fontconfig cannot load this host's fonts");
-+  }
-+
-+  // The browser's own family matcher, which the font data service answers
-+  // renderers with. It reads the current configuration on every call.
-+  sk_sp<SkFontConfigInterface> matcher = SkFontConfigInterface::RefGlobal();
-+  // The file `family` resolves to as a CSS family does on the current
-+  // configuration: host aliases and metric-compatible names, then Blink's
-+  // alternate name. Empty when it resolves nowhere; `resolved_family`, when
-+  // given, is the family of the match.
-+  const auto resolve = [&matcher](std::string_view family,
-+                                  std::string* resolved_family) {
-+    const auto match = [&](std::string_view name) {
-+      SkFontConfigInterface::FontIdentity identity;
-+      SkString matched_family;
-+      if (!matcher ||
-+          !matcher->matchFamilyName(std::string(name).c_str(), SkFontStyle(),
-+                                    &identity, &matched_family, nullptr)) {
-+        return std::string();
-+      }
-+      if (resolved_family) {
-+        *resolved_family = matched_family.c_str();
-+      }
-+      return std::string(identity.fString.c_str());
-+    };
-+    std::string file = match(family);
-+    const std::string key = base::ToLowerASCII(family);
-+    for (const auto& [name, alternate] : kBlinkAlternates) {
-+      if (file.empty() && name == key) {
-+        file = match(alternate);
-+      }
-+    }
-+    return file;
-+  };
-+
-+  // A font file stays reachable when one of its faces publishes a listed
-+  // family: a collection comes whole, as a package installs it.
-+  std::set<std::string> listed;
-+  for (const std::string& family : claimed.families) {
-+    listed.insert(base::ToLowerASCII(family));
-+  }
-+  const std::map<std::string, std::set<std::string>> host_files =
-+      FamiliesByFile(host.get());
-+  std::set<std::string> published;
-+  std::set<std::string> kept;
-+  for (const auto& [file, families] : host_files) {
-+    for (const std::string& family : families) {
-+      published.insert(family);
-+      if (listed.contains(family)) {
-+        kept.insert(file);
-+      }
-+    }
-+  }
-+  // A windows profile without a store: a listed family no host file
-+  // publishes keeps the file a metric-compatible host alias resolves it to
-+  // (Arial to Liberation Sans). The warning below names each one.
-+  if (profile->os_family() == "windows") {
-+    if (!FcConfigSetCurrent(host.get())) {
-+      return Err("fonts.families",
-+                 "cannot be backed: fontconfig cannot use this host's "
-+                 "configuration");
-+    }
-+    for (const std::string& family : claimed.families) {
-+      if (published.contains(base::ToLowerASCII(family))) {
-+        continue;
-+      }
-+      const std::string file = resolve(family, nullptr);
-+      if (host_files.contains(file)) {
-+        kept.insert(file);
-+      }
-+    }
-+  }
-+  std::vector<std::string> rejected;
-+  for (const auto& entry : host_files) {
-+    if (!kept.contains(entry.first)) {
-+      rejected.push_back(entry.first);
-+    }
-+  }
-+
-+  // The host's configuration (its directories, caches, aliases and render
-+  // settings) with every other font file rejected by path. Rejection by
-+  // <glob> happens before a font's pattern is looked at, so a host
-+  // <acceptfont> pattern cannot bring a rejected file back.
-+  std::string config =
-+      "<?xml version=\"1.0\"?>\n"
-+      "<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n"
-+      "<!-- Phasmid: the host configuration, reaching only the font files "
-+      "that publish a family in the profile's fonts.families. -->\n"
-+      "<fontconfig>\n"
-+      "  <include ignore_missing=\"no\">" +
-+      XmlText(host_file) +
-+      "</include>\n"
-+      "  <selectfont>\n"
-+      "    <rejectfont>\n";
-+  for (const std::string& file : rejected) {
-+    config += "      <glob>" + XmlText(file) + "</glob>\n";
-+  }
-+  config +=
-+      "    </rejectfont>\n"
-+      "  </selectfont>\n"
-+      "</fontconfig>\n";
-+
-+  base::FilePath dir;
-+  std::string error = ConfigDirectory(env.get(), &dir);
-+  if (!error.empty()) {
-+    return error;
-+  }
-+  base::FilePath path;
-+  error = WriteAndExportConfig(env.get(), dir, config, &path);
-+  if (!error.empty()) {
-+    return error;
-+  }
-+
-+  // Check that it reaches exactly the kept files.
-+  FcPtr<FcConfig> check;
-+  error = LoadExportedConfig(path, &check);
-+  if (!error.empty()) {
-+    return error;
-+  }
-+  std::set<std::string> reached;
-+  for (const auto& entry : FamiliesByFile(check.get())) {
-+    reached.insert(entry.first);
-+  }
-+  if (reached != kept) {
-+    for (const std::string& file : reached) {
-+      if (!kept.contains(file)) {
-+        return Err("fonts.families",
-+                   "cannot be backed: the host fontconfig keeps " + file +
-+                       " reachable although it publishes no listed family");
-+      }
-+    }
-+    for (const std::string& file : kept) {
-+      if (!reached.contains(file)) {
-+        return Err("fonts.families", "cannot be backed: rejecting other "
-+                                     "files also drops " + file);
-+      }
-+    }
-+  }
-+
-+  // The browser's font matching from now on runs on it.
-+  if (!FcConfigSetCurrent(check.get())) {
-+    return Err("fonts.families",
-+               "cannot be backed: fontconfig cannot use " +
-+                   path.AsUTF8Unsafe());
-+  }
-+
-+  // A listed family that resolves nowhere on the kept files stays absent, as
-+  // an uninstalled font, and is reported.
-+  std::vector<std::string> unbacked;
-+  std::vector<std::string> aliased;
-+  for (const std::string& family : claimed.families) {
-+    std::string resolved_family;
-+    if (resolve(family, &resolved_family).empty()) {
-+      unbacked.push_back(family);
-+    } else if (!published.contains(base::ToLowerASCII(family))) {
-+      aliased.push_back(family + " -> " + resolved_family);
-+    }
-+  }
-+  const std::string listed_count =
-+      base::NumberToString(claimed.families.size());
-+  if (profile->os_family() == "windows") {
-+    // A name that resolves only through an alias carries the alias's
-+    // metrics, so it is named too.
-+    {
-+      std::string detail =
-+          "a windows profile without a Windows font store (" + no_store +
-+          "), on the host's font files: " +
-+          base::NumberToString(unbacked.size()) + " of " + listed_count +
-+          " families have no font here and are absent";
-+      if (!unbacked.empty()) {
-+        detail += " (" + JoinNames(unbacked) + ")";
-+      }
-+      detail += "; " + base::NumberToString(aliased.size()) +
-+                " resolve only through host aliases and measure as the alias";
-+      if (!aliased.empty()) {
-+        detail += " (" + JoinNames(aliased) + ")";
-+      }
-+      warnings->push_back("fonts.families: " + detail);
-+    }
-+  } else if (!unbacked.empty()) {
-+    warnings->push_back(
-+        "fonts.families: " + base::NumberToString(unbacked.size()) + " of " +
-+        listed_count + " families have no font on this host and are absent (" +
-+        JoinNames(unbacked) + ")");
-+  }
-+
-+  // Emoji fall back through fontconfig's order for the emoji locale, which
-+  // only the host's rules decide; a claim they do not pick runs with what
-+  // they pick.
-+  if (!claimed.emoji.empty()) {
-+    std::vector<std::string> emoji = EmojiFallbackFamilies(check.get());
-+    bool matches = false;
-+    for (const std::string& family : emoji) {
-+      matches = matches || base::EqualsCaseInsensitiveASCII(family,
-+                                                            claimed.emoji);
-+    }
-+    if (!matches) {
-+      warnings->push_back(
-+          "fonts.emoji: is " + claimed.emoji +
-+          " but emoji on this host fall back to " +
-+          (emoji.empty() ? std::string("no font") : emoji.front()) +
-+          ", which pages see instead");
-+    }
-+  }
-+  return std::string();
-+}
-+
-+}  // namespace phasmid
---- a/components/phasmid/font_allowlist_linux.h
-+++ b/components/phasmid/font_allowlist_linux.h
-@@ -0,0 +1,31 @@
-+// Copyright 2026 The Phasmid Authors
-+// Use of this source code is governed by a BSD-style license that can be
-+// found in the LICENSE file.
-+
-+#ifndef COMPONENTS_PHASMID_FONT_ALLOWLIST_LINUX_H_
-+#define COMPONENTS_PHASMID_FONT_ALLOWLIST_LINUX_H_
-+
-+#include <string>
-+#include <vector>
-+
-+namespace phasmid {
-+
-+// Makes only the font files that publish a family in fonts.families
-+// reachable, in every process: on Linux every font lookup ends in
-+// fontconfig.
-+//
-+// Browser process, before any child process exists. Writes a fontconfig
-+// configuration that includes the host's own and rejects every other font
-+// file, exports it as FONTCONFIG_FILE and makes it this process's current
-+// configuration. A windows profile with a Windows font store instead gets a
-+// standalone configuration over the store, and the browser's global
-+// SkFontConfigInterface matches the store's families as DirectWrite names
-+// them. Returns an error naming the profile field when the filter cannot be
-+// put in place, or an empty string. Claims the fonts cannot back are
-+// appended to `warnings` as "<field>: <detail>". Does nothing when Phasmid
-+// is not active.
-+std::string ExportFontAllowlist(std::vector<std::string>* warnings);
-+
-+}  // namespace phasmid
-+
-+#endif  // COMPONENTS_PHASMID_FONT_ALLOWLIST_LINUX_H_
+--- a/services/network/BUILD.gn
++++ b/services/network/BUILD.gn
+@@ -368,6 +5080,7 @@
+     "//components/network_session_configurator/browser",
+     "//components/network_session_configurator/common",
+     "//components/os_crypt/common",
++    "//components/phasmid",
+     "//components/prefs",
+     "//components/unexportable_keys/mojom:mojo_service",
+     "//components/url_matcher",
