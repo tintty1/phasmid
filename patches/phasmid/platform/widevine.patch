@@ -19,7 +19,7 @@ Guard:    tests/guards/platform/widevine.py
 
 --- a/chrome/common/BUILD.gn
 +++ b/chrome/common/BUILD.gn
-@@ -416,6 +416,7 @@
+@@ -410,6 +410,7 @@ static_library("common_lib") {
            "media/component_widevine_cdm_hint_file_linux.cc",
            "media/component_widevine_cdm_hint_file_linux.h",
          ]
@@ -37,7 +37,7 @@ Guard:    tests/guards/platform/widevine.py
  
  namespace {
  
-@@ -101,6 +102,11 @@
+@@ -101,6 +102,11 @@ bool UpdateWidevineCdmHintFile(const bas
  }
  
  base::FilePath GetHintedWidevineCdmDirectory() {
@@ -49,7 +49,7 @@ Guard:    tests/guards/platform/widevine.py
    base::DictValue dict = GetHintFileContents();
  
    auto* path_str = dict.FindString(kPath);
-@@ -117,6 +123,10 @@
+@@ -117,6 +123,10 @@ base::FilePath GetHintedWidevineCdmDirec
  }
  
  std::optional<base::Version> GetBundledVersionDuringLastComponentUpdate() {

@@ -19,7 +19,7 @@ Guard:    tests/guards/graphics/webgl-fallback.py
 
 --- a/chrome/browser/headless/BUILD.gn
 +++ b/chrome/browser/headless/BUILD.gn
-@@ -39,6 +39,7 @@
+@@ -37,6 +37,7 @@ source_set("initializer") {
      "//base",
      "//chrome/common:constants",
      "//chrome/common:non_code_constants",
@@ -29,7 +29,7 @@ Guard:    tests/guards/graphics/webgl-fallback.py
    ]
 --- a/chrome/browser/headless/DEPS
 +++ b/chrome/browser/headless/DEPS
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,7 @@ include_rules = [
    "-chrome/browser",
    "+chrome/browser/headless",
    "+components/headless",
@@ -47,7 +47,7 @@ Guard:    tests/guards/graphics/webgl-fallback.py
  #include "content/public/common/content_switches.h"
  
  #if BUILDFLAG(IS_LINUX)
-@@ -105,9 +106,12 @@
+@@ -105,9 +106,12 @@ class HeadlessModeHandleImpl : public He
  
      // If Ozone/Headless is enabled, Vulkan initialization crashes unless
      // Angle implementation is specified explicitly.

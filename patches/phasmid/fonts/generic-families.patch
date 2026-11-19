@@ -26,7 +26,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  #include "base/functional/bind.h"
  #include "base/strings/string_number_conversions.h"
  #include "base/strings/string_util.h"
-@@ -333,6 +334,182 @@
+@@ -333,6 +334,182 @@ void RegisterLocalizedFontPref(user_pref
  }
  #endif
  
@@ -209,7 +209,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  }  // namespace
  
  PrefsTabHelper::PrefsTabHelper(WebContents* contents)
-@@ -439,7 +616,14 @@
+@@ -439,7 +616,14 @@ void PrefsTabHelper::RegisterProfilePref
    // Register font prefs that have defaults.
    std::set<std::string> fonts_with_defaults;
    UScriptCode browser_script = GetScriptOfBrowserLocale(locale);
@@ -225,7 +225,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  #if BUILDFLAG(IS_WIN)
      if (pref.pref_name == prefs::kWebKitFixedFontFamily) {
        if (ShouldUseAlternateDefaultFixedFont(
-@@ -489,8 +673,13 @@
+@@ -489,8 +673,13 @@ void PrefsTabHelper::RegisterProfilePref
    registry->RegisterIntegerPref(prefs::kWebKitDefaultFontSize, 16);
    registry->RegisterIntegerPref(prefs::kWebKitDefaultFixedFontSize, 13);
    registry->RegisterIntegerPref(prefs::kWebKitMinimumFontSize, 0);

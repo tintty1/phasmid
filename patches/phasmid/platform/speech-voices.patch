@@ -25,7 +25,7 @@ Guard:    tests/guards/platform/speech-voices.py
  #include "content/browser/speech/tts_utterance_impl.h"
  #include "content/public/browser/content_browser_client.h"
  #include "content/public/browser/tts_utterance.h"
-@@ -135,6 +136,35 @@
+@@ -135,6 +136,35 @@ LocaleMatchLevel GetLocaleMatchLevel(con
    return LocaleMatchLevel::kExact;
  }
  
@@ -61,7 +61,7 @@ Guard:    tests/guards/platform/speech-voices.py
  }  // namespace
  
  //
-@@ -475,6 +505,7 @@
+@@ -475,6 +505,7 @@ void TtsControllerImpl::GetVoices(Browse
    }
  
    tts_platform->FinalizeVoiceOrdering(*out_voices);
@@ -79,7 +79,7 @@ Guard:    tests/guards/platform/speech-voices.py
  #include "content/browser/speech/tts_platform_impl.h"
  #include "content/public/browser/browser_task_traits.h"
  #include "content/public/browser/browser_thread.h"
-@@ -406,8 +407,11 @@
+@@ -421,8 +422,11 @@ TtsPlatformImplLinux::TtsPlatformImplLin
          base::NotFatalUntil::M159);
    const base::CommandLine& command_line =
        *base::CommandLine::ForCurrentProcess();

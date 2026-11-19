@@ -56,7 +56,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  // https://tc39.es/ecma262/#sec-string.prototype.touppercase
  BUILTIN(StringPrototypeToUpperCaseIntl) {
    HandleScope scope(isolate);
-@@ -141,8 +169,12 @@
+@@ -141,8 +169,12 @@ BUILTIN(DateTimeFormatPrototypeResolvedO
        isolate, date_time_format,
        JSDateTimeFormat::UnwrapDateTimeFormat(isolate, format_holder));
  
@@ -71,7 +71,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  }
  
  // https://tc39.es/ecma402/#sec-intl.datetimeformat.supportedlocalesof
-@@ -507,7 +539,10 @@
+@@ -507,7 +539,10 @@ BUILTIN(NumberFormatPrototypeResolvedOpt
        isolate, number_format,
        JSNumberFormat::UnwrapNumberFormat(isolate, number_format_holder));
  
@@ -83,7 +83,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  }
  
  // https://tc39.es/ecma402/#sec-intl.numberformat.prototype.format
-@@ -707,7 +742,11 @@
+@@ -707,7 +742,11 @@ BUILTIN(ListFormatPrototypeResolvedOptio
    HandleScope scope(isolate);
    CHECK_RECEIVER(JSListFormat, format_holder,
                   "Intl.ListFormat.prototype.resolvedOptions");
@@ -96,7 +96,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  }
  
  // https://tc39.es/ecma402/#sec-intl.ListFormat.supportedlocalesof
-@@ -1016,7 +1055,11 @@
+@@ -1016,7 +1055,11 @@ BUILTIN(RelativeTimeFormatPrototypeResol
    HandleScope scope(isolate);
    CHECK_RECEIVER(JSRelativeTimeFormat, format_holder,
                   "Intl.RelativeTimeFormat.prototype.resolvedOptions");
@@ -109,7 +109,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  }
  
  bool IsFastLocale(Tagged<Object> maybe_locale) {
-@@ -1069,7 +1112,11 @@
+@@ -1074,7 +1117,11 @@ BUILTIN(PluralRulesPrototypeResolvedOpti
    HandleScope scope(isolate);
    CHECK_RECEIVER(JSPluralRules, plural_rules_holder,
                   "Intl.PluralRules.prototype.resolvedOptions");
@@ -122,7 +122,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  }
  
  // https://tc39.es/ecma402/#sec-intl.pluralrules.prototype.select
-@@ -1169,7 +1216,11 @@
+@@ -1174,7 +1221,11 @@ BUILTIN(CollatorPrototypeResolvedOptions
    HandleScope scope(isolate);
    CHECK_RECEIVER(JSCollator, collator_holder,
                   "Intl.Collator.prototype.resolvedOptions");

@@ -25,7 +25,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
 
 --- a/third_party/blink/renderer/bindings/BUILD.gn
 +++ b/third_party/blink/renderer/bindings/BUILD.gn
-@@ -150,6 +150,7 @@
+@@ -150,6 +150,7 @@ template("generate_bindings") {
  
      inputs = [
        web_idl_database,
@@ -43,7 +43,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  #include "third_party/blink/renderer/platform/bindings/source_location.h"
  #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
  #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
-@@ -182,6 +183,13 @@
+@@ -182,6 +183,13 @@ void ScriptPromiseResolverBase::ResolveO
  
    V8DoNotRunMicrotasksScope microtasks_scope(script_state_);
    auto resolver = resolver_.Get(script_state_->GetIsolate());
@@ -161,8 +161,8 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
 +StorageManager.*
 --- a/third_party/blink/renderer/bindings/scripts/bind_gen/interface.py
 +++ b/third_party/blink/renderer/bindings/scripts/bind_gen/interface.py
-@@ -843,6 +843,103 @@
-         _make_bindings_logging_id(cg_context)))
+@@ -1005,6 +1005,103 @@ def make_bindings_trace_event(cg_context
+     )
  
  
 +# Phasmid fingerprint inspector: members listed in this file get a
@@ -265,39 +265,39 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  def make_check_argument_length(cg_context):
      assert isinstance(cg_context, CodeGenContext)
  
-@@ -1890,6 +1987,7 @@
-         EmptyNode(),
-         make_runtime_call_timer_scope(cg_context),
-         make_bindings_trace_event(cg_context),
-+        make_phasmid_fingerprint_trace(cg_context),
-         make_report_coop_access(cg_context),
-         make_report_deprecate_as(cg_context),
-         make_report_measure_as(cg_context),
-@@ -2024,6 +2122,7 @@
-         EmptyNode(),
-         make_runtime_call_timer_scope(cg_context),
-         make_bindings_trace_event(cg_context),
-+        make_phasmid_fingerprint_trace(cg_context),
-         make_report_deprecate_as(cg_context),
-         make_report_measure_as(cg_context),
-         make_log_activity(cg_context),
-@@ -2185,6 +2284,7 @@
-     return SequenceNode([
-         make_runtime_call_timer_scope(cg_context),
-         make_bindings_trace_event(cg_context),
-+        make_phasmid_fingerprint_trace(cg_context),
-         EmptyNode(),
-         make_check_constructor_call(cg_context),
-     ])
-@@ -2587,6 +2687,7 @@
-     return SequenceNode([
-         make_runtime_call_timer_scope(cg_context),
-         make_bindings_trace_event(cg_context),
-+        make_phasmid_fingerprint_trace(cg_context),
-     ])
+@@ -2259,6 +2356,7 @@ def make_attribute_get_callback_def(cg_c
+             EmptyNode(),
+             make_runtime_call_timer_scope(cg_context),
+             make_bindings_trace_event(cg_context),
++            make_phasmid_fingerprint_trace(cg_context),
+             make_report_coop_access(cg_context),
+             make_report_deprecate_as(cg_context),
+             make_report_measure_as(cg_context),
+@@ -2430,6 +2528,7 @@ def make_attribute_set_callback_def(cg_c
+             EmptyNode(),
+             make_runtime_call_timer_scope(cg_context),
+             make_bindings_trace_event(cg_context),
++            make_phasmid_fingerprint_trace(cg_context),
+             make_report_deprecate_as(cg_context),
+             make_report_measure_as(cg_context),
+             make_log_activity(cg_context),
+@@ -2629,6 +2728,7 @@ def make_constructor_entry(cg_context):
+         [
+             make_runtime_call_timer_scope(cg_context),
+             make_bindings_trace_event(cg_context),
++            make_phasmid_fingerprint_trace(cg_context),
+             EmptyNode(),
+             make_check_constructor_call(cg_context),
+         ]
+@@ -3115,6 +3215,7 @@ def make_operation_entry(cg_context):
+         [
+             make_runtime_call_timer_scope(cg_context),
+             make_bindings_trace_event(cg_context),
++            make_phasmid_fingerprint_trace(cg_context),
+         ]
+     )
  
- 
-@@ -7681,6 +7782,7 @@
+@@ -9622,6 +9723,7 @@ def generate_interfaces(task_queue):
      assert isinstance(task_queue, TaskQueue)
  
      web_idl_database = package_initializer().web_idl_database()
@@ -315,7 +315,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  #include "third_party/blink/renderer/platform/fonts/font_cache.h"
  #include "third_party/blink/renderer/platform/fonts/font_selector_client.h"
  #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
-@@ -240,6 +241,10 @@
+@@ -240,6 +241,10 @@ const FontData* CSSFontSelector::GetFont
    if (!font_family.FamilyIsGeneric()) {
      if (CSSSegmentedFontFace* face =
              font_face_cache_->Get(request_description, family_name)) {
@@ -326,7 +326,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
        return face->GetFontData(request_description);
      }
    }
-@@ -249,6 +254,10 @@
+@@ -249,6 +254,10 @@ const FontData* CSSFontSelector::GetFont
    AtomicString settings_family_name =
        FamilyNameFromSettings(request_description, font_family);
    if (settings_family_name.empty()) {
@@ -337,7 +337,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
      return nullptr;
    }
  
-@@ -266,6 +275,11 @@
+@@ -266,6 +275,11 @@ const FontData* CSSFontSelector::GetFont
      }
    }
  
@@ -359,7 +359,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  #include "third_party/blink/renderer/platform/graphics/color_space_gamut.h"
  #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
  #include "third_party/blink/renderer/platform/wtf/hash_map.h"
-@@ -1687,6 +1688,9 @@
+@@ -1687,6 +1688,9 @@ KleeneValue MediaQueryEvaluator::EvalFea
    EvalFunc func = g_function_map->at(feature.Name().Impl());
  
    if (!func) {
@@ -369,7 +369,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
      return KleeneValue::kFalse;
    }
  
-@@ -1713,6 +1717,10 @@
+@@ -1713,6 +1717,10 @@ KleeneValue MediaQueryEvaluator::EvalFea
      result_flags->unit_flags |= feature.GetUnitFlags();
    }
  
@@ -390,7 +390,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  #include "third_party/blink/renderer/platform/fonts/font_cache.h"
  #include "third_party/blink/renderer/platform/fonts/font_selector_client.h"
  
-@@ -41,6 +42,10 @@
+@@ -41,6 +42,10 @@ const FontData* OffscreenFontSelector::G
    const auto& family_name = font_family.FamilyName();
    if (CSSSegmentedFontFace* face =
            font_face_cache_->Get(font_description, family_name)) {
@@ -401,7 +401,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
      return face->GetFontData(font_description);
    }
  
-@@ -49,10 +54,21 @@
+@@ -49,10 +54,21 @@ const FontData* OffscreenFontSelector::G
    AtomicString settings_family_name =
        FamilyNameFromSettings(font_description, font_family);
    if (settings_family_name.empty()) {
@@ -426,7 +426,7 @@ Guard:    tests/guards/devtools/fingerprint-trace.py
  void OffscreenFontSelector::Trace(Visitor* visitor) const {
 --- a/third_party/blink/renderer/platform/BUILD.gn
 +++ b/third_party/blink/renderer/platform/BUILD.gn
-@@ -517,6 +517,8 @@
+@@ -578,6 +578,8 @@ component("platform") {
      "bindings/parkable_string.h",
      "bindings/parkable_string_manager.cc",
      "bindings/parkable_string_manager.h",

@@ -22,7 +22,7 @@ Guard:    tests/guards/graphics/gpu-info.py
 
 --- a/content/browser/BUILD.gn
 +++ b/content/browser/BUILD.gn
-@@ -1094,6 +1094,8 @@
+@@ -1095,6 +1095,8 @@ source_set("browser") {
      "gpu/gpu_process_host_receiver_bindings.cc",
      "gpu/peak_gpu_memory_tracker_impl.cc",
      "gpu/peak_gpu_memory_tracker_impl.h",
@@ -41,7 +41,7 @@ Guard:    tests/guards/graphics/gpu-info.py
  #include "content/public/browser/browser_child_process_host.h"
  #include "content/public/browser/browser_child_process_host_iterator.h"
  #include "content/public/browser/browser_thread.h"
-@@ -174,7 +175,9 @@
+@@ -174,7 +175,9 @@ VideoEncodeAcceleratorSupportedProfileTo
  }
  
  void SendGetInfoResponse(std::unique_ptr<GetInfoCallback> callback) {
@@ -62,7 +62,7 @@ Guard:    tests/guards/graphics/gpu-info.py
  #include "content/grit/gpu_resources.h"
  #include "content/grit/gpu_resources_map.h"
  #include "content/public/browser/browser_thread.h"
-@@ -280,7 +281,9 @@
+@@ -279,7 +280,9 @@ base::ListValue GetBasicGpuInfo(const gp
  base::DictValue GetGpuInfo() {
    base::DictValue info;
  
@@ -73,7 +73,7 @@ Guard:    tests/guards/graphics/gpu-info.py
    const gpu::GpuFeatureInfo gpu_feature_info =
        GpuDataManagerImpl::GetInstance()->GetGpuFeatureInfo();
    const gfx::GpuExtraInfo gpu_extra_info =
-@@ -806,8 +809,8 @@
+@@ -809,8 +812,8 @@ base::DictValue GpuMessageHandler::GetGp
        const gpu::GpuFeatureInfo gpu_feature_info_for_hardware_gpu =
            GpuDataManagerImpl::GetInstance()->GetGpuFeatureInfoForHardwareGpu();
        base::ListValue gpu_info_for_hardware_gpu_val = GetBasicGpuInfo(
@@ -139,7 +139,7 @@ Guard:    tests/guards/graphics/gpu-info.py
 +#endif  // CONTENT_BROWSER_GPU_PHASMID_GPU_INFO_H_
 --- a/content/renderer/renderer_blink_platform_impl.cc
 +++ b/content/renderer/renderer_blink_platform_impl.cc
-@@ -37,6 +37,7 @@
+@@ -39,6 +39,7 @@
  #include "components/content_settings/core/common/content_settings_pattern.h"
  #include "components/input/features.h"
  #include "components/input/input_constants.h"
@@ -147,7 +147,7 @@ Guard:    tests/guards/graphics/gpu-info.py
  #include "components/url_formatter/url_formatter.h"
  #include "components/viz/common/features.h"
  #include "content/child/child_process.h"
-@@ -728,6 +729,16 @@
+@@ -742,6 +743,16 @@ void RendererBlinkPlatformImpl::CollectW
    gl_info->using_gpu_compositing = !IsGpuCompositingDisabled();
    gl_info->using_passthrough_command_decoder = gpu_info.passthrough_cmd_decoder;
    gl_info->angle_implementation = gpu_info.gl_implementation_parts.angle;

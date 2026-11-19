@@ -13,7 +13,7 @@ Guard:    tests/guards/hardware/js-heap-limit.py
 
 --- a/gin/BUILD.gn
 +++ b/gin/BUILD.gn
-@@ -107,6 +107,7 @@
+@@ -107,6 +107,7 @@ component("gin") {
      "//v8",
    ]
    deps = [
@@ -31,7 +31,7 @@ Guard:    tests/guards/hardware/js-heap-limit.py
  #include "gin/debug_impl.h"
  #include "gin/function_template.h"
  #include "gin/per_isolate_data.h"
-@@ -189,9 +190,16 @@
+@@ -189,9 +190,16 @@ IsolateHolder::getDefaultIsolateParams()
    std::unique_ptr<v8::Isolate::CreateParams> params =
        std::make_unique<v8::Isolate::CreateParams>();
    params->code_event_handler = DebugImpl::GetJitCodeEventHandler();

@@ -26,9 +26,9 @@
  // This needs to be after the ESBUILD_BINARY_PATH is set
 --- a/third_party/devtools-frontend/src/scripts/build/ninja/bundle.gni
 +++ b/third_party/devtools-frontend/src/scripts/build/ninja/bundle.gni
-@@ -35,7 +35,7 @@ template("bundle") {
-       devtools_location_prepend + "scripts/devtools_paths.js",
-     ]
+@@ -58,7 +58,7 @@ template("bundle") {
+       inputs += [ _entrypoints_file ]
+     }
  
 -    _esbuild = devtools_location_prepend + "third_party/esbuild/esbuild"
 +    _esbuild = "/usr/bin/esbuild"

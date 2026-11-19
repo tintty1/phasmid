@@ -23,7 +23,7 @@ Guard:    tests/guards/platform/webauthn-hybrid.py
  #include "components/webauthn/core/browser/common_utils.h"
  #include "components/webauthn/core/browser/remote_validation.h"
  #include "components/webauthn/core/browser/webauthn_security_utils.h"
-@@ -2229,6 +2230,10 @@
+@@ -2246,6 +2247,10 @@ void AuthenticatorCommonImpl::GetClientC
  
  void AuthenticatorCommonImpl::IsHybridTransportSupported(
      base::OnceCallback<void(bool)> callback) {

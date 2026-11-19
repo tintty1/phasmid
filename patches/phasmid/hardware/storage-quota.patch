@@ -15,7 +15,7 @@ Guard:    tests/guards/hardware/storage-quota.py
 
 --- a/storage/browser/BUILD.gn
 +++ b/storage/browser/BUILD.gn
-@@ -227,6 +227,7 @@
+@@ -229,6 +229,7 @@ component("browser") {
      "//build:chromeos_buildflags",
      "//components/crash/core/common:crash_key",
      "//components/file_access",
@@ -33,7 +33,7 @@ Guard:    tests/guards/hardware/storage-quota.py
  
  namespace storage {
  
-@@ -13,12 +14,18 @@
+@@ -13,12 +14,18 @@ QuotaDeviceInfoHelper::~QuotaDeviceInfoH
  
  int64_t QuotaDeviceInfoHelper::AmountOfTotalDiskSpace(
      const base::FilePath& path) const {
@@ -54,7 +54,7 @@ Guard:    tests/guards/hardware/storage-quota.py
  
 --- a/storage/browser/quota/quota_manager_impl.cc
 +++ b/storage/browser/quota/quota_manager_impl.cc
-@@ -50,6 +50,7 @@
+@@ -49,6 +49,7 @@
  #include "base/trace_event/trace_event.h"
  #include "base/types/pass_key.h"
  #include "build/build_config.h"
@@ -62,7 +62,7 @@ Guard:    tests/guards/hardware/storage-quota.py
  #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
  #include "components/services/storage/public/cpp/buckets/constants.h"
  #include "components/services/storage/public/mojom/quota_client.mojom.h"
-@@ -2986,6 +2987,16 @@
+@@ -2979,6 +2980,16 @@ base::SysInfo::DiskSpaceInfo QuotaManage
      return {};
    }
  

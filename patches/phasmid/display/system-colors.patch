@@ -18,7 +18,7 @@ Guard:    tests/guards/display/system-colors.py
 
 --- a/chrome/browser/renderer_preferences_util.cc
 +++ b/chrome/browser/renderer_preferences_util.cc
-@@ -130,7 +130,17 @@
+@@ -130,7 +130,17 @@ void UpdateFromSystemSettings(blink::Ren
  #endif
  
  #if BUILDFLAG(IS_LINUX)
@@ -47,7 +47,7 @@ Guard:    tests/guards/display/system-colors.py
  #include "content/browser/renderer_host/render_process_host_impl.h"
  #include "content/common/renderer.mojom.h"
  
-@@ -28,7 +29,11 @@
+@@ -28,7 +29,11 @@ mojom::UpdateSystemColorInfoParamsPtr Ma
    mojom::UpdateSystemColorInfoParamsPtr params =
        mojom::UpdateSystemColorInfoParams::New();
  #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
@@ -70,7 +70,7 @@ Guard:    tests/guards/display/system-colors.py
  #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
  #include "third_party/blink/public/resources/grit/blink_resources.h"
  #include "third_party/blink/public/strings/grit/blink_strings.h"
-@@ -161,6 +162,19 @@
+@@ -173,6 +174,19 @@ bool SystemAccentColorAllowed() {
           RuntimeEnabledFeatures::CSSAccentColorKeywordEnabled();
  }
  
@@ -90,7 +90,7 @@ Guard:    tests/guards/display/system-colors.py
  }  // namespace
  
  LayoutTheme& LayoutTheme::GetTheme() {
-@@ -789,6 +803,12 @@
+@@ -794,6 +808,12 @@ Color LayoutTheme::SystemColorFromColorP
      mojom::blink::ColorScheme color_scheme,
      const ui::ColorProvider* color_provider,
      bool can_expose_accent_color) const {

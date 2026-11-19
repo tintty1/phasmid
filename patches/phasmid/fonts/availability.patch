@@ -29,7 +29,7 @@ Guard:    tests/guards/fonts/availability.py
 
 --- a/chrome/BUILD.gn
 +++ b/chrome/BUILD.gn
-@@ -313,6 +313,7 @@
+@@ -314,6 +314,7 @@ if (!is_android && !is_mac) {
          "//chrome/browser/lifetime",
          "//chrome/common:version_header",
          "//components/phasmid",
@@ -39,7 +39,7 @@ Guard:    tests/guards/fonts/availability.py
          "//chrome/common/profiler",
 --- a/chrome/app/BUILD.gn
 +++ b/chrome/app/BUILD.gn
-@@ -240,6 +241,10 @@
+@@ -244,6 +244,10 @@ static_library("test_support") {
      deps += [ ":chrome_crash_reporter_client" ]
    }
  
@@ -52,7 +52,7 @@ Guard:    tests/guards/fonts/availability.py
    }
 --- a/chrome/app/chrome_main_delegate.cc
 +++ b/chrome/app/chrome_main_delegate.cc
-@@ -176,6 +181,7 @@
+@@ -175,6 +175,7 @@
  
  #if BUILDFLAG(IS_LINUX)
  #include "base/nix/scoped_xdg_activation_token_injector.h"
@@ -60,7 +60,7 @@ Guard:    tests/guards/fonts/availability.py
  #endif
  
  #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) || \
-@@ -1247,6 +1253,19 @@
+@@ -1264,6 +1265,19 @@ std::optional<int> ChromeMainDelegate::B
        LOG(ERROR) << "Phasmid: " << phasmid_error;
        return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
      }
@@ -82,7 +82,7 @@ Guard:    tests/guards/fonts/availability.py
      // scale and ScreenInfo carries it to the renderers. Set before the
 --- a/chrome/browser/ui/prefs/BUILD.gn
 +++ b/chrome/browser/ui/prefs/BUILD.gn
-@@ -46,6 +65,7 @@
+@@ -46,6 +46,7 @@ source_set("impl") {
      "//chrome/browser/ui/zoom",
      "//components/language/core/browser",
      "//components/live_caption:constants",
@@ -92,7 +92,7 @@ Guard:    tests/guards/fonts/availability.py
      "//components/universal_optout",
 --- a/chrome/browser/ui/prefs/prefs_tab_helper.cc
 +++ b/chrome/browser/ui/prefs/prefs_tab_helper.cc
-@@ -32,6 +52,7 @@
+@@ -32,6 +32,7 @@
  #include "chrome/common/pref_names_util.h"
  #include "chrome/grit/platform_locale_settings.h"
  #include "components/language/core/browser/pref_names.h"
@@ -100,7 +100,7 @@ Guard:    tests/guards/fonts/availability.py
  #include "components/pref_registry/pref_registry_syncable.h"
  #include "components/prefs/overlay_user_pref_store.h"
  #include "components/prefs/pref_service.h"
-@@ -135,6 +156,26 @@
+@@ -135,6 +136,26 @@ bool ShouldUseAlternateDefaultFixedFont(
  }
  #endif
  
@@ -127,7 +127,7 @@ Guard:    tests/guards/fonts/availability.py
  struct FontDefault {
    const char* pref_name;
    int resource_id;
-@@ -453,6 +494,9 @@
+@@ -453,6 +474,9 @@ void PrefsTabHelper::RegisterProfilePref
            << "This platform doesn't support default font lists. "
            << pref.pref_name << "=" << value;
  #endif  // PREFS_FONT_LIST
@@ -139,7 +139,7 @@ Guard:    tests/guards/fonts/availability.py
      }
 --- a/components/services/font/BUILD.gn
 +++ b/components/services/font/BUILD.gn
-@@ -15,6 +59,7 @@
+@@ -15,6 +15,7 @@ source_set("lib") {
  
    deps = [
      "//base",
@@ -149,7 +149,7 @@ Guard:    tests/guards/fonts/availability.py
      "//mojo/public/cpp/system",
 --- a/components/services/font/font_service_app.cc
 +++ b/components/services/font/font_service_app.cc
-@@ -19,6 +64,7 @@
+@@ -19,6 +19,7 @@
  #include "base/logging.h"
  #include "base/trace_event/trace_event.h"
  #include "build/build_config.h"
@@ -157,7 +157,7 @@ Guard:    tests/guards/fonts/availability.py
  #include "components/services/font/fontconfig_matching.h"
  #include "mojo/public/cpp/system/platform_handle.h"
  #include "pdf/buildflags.h"
-@@ -124,7 +170,9 @@
+@@ -124,7 +125,9 @@ void FontServiceApp::MatchFamilyName(con
      return;
    }
  
@@ -169,7 +169,7 @@ Guard:    tests/guards/fonts/availability.py
  
 --- a/components/services/font_data/BUILD.gn
 +++ b/components/services/font_data/BUILD.gn
-@@ -22,6 +70,7 @@
+@@ -22,6 +22,7 @@ source_set("lib") {
    deps = [
      "//base",
      "//base:i18n",
@@ -179,7 +179,7 @@ Guard:    tests/guards/fonts/availability.py
      "//mojo/public/cpp/system",
 --- a/components/services/font_data/font_data_service_impl.cc
 +++ b/components/services/font_data/font_data_service_impl.cc
-@@ -23,6 +72,7 @@
+@@ -23,6 +23,7 @@
  #include "base/strings/utf_string_conversions.h"
  #include "base/task/thread_pool.h"
  #include "base/trace_event/trace_event.h"
@@ -187,7 +187,7 @@ Guard:    tests/guards/fonts/availability.py
  #include "skia/ext/font_utils.h"
  #include "third_party/skia/include/core/SkFontStyle.h"
  #include "third_party/skia/include/core/SkStream.h"
-@@ -308,7 +358,11 @@
+@@ -308,7 +309,11 @@ FontDataServiceImpl::MatchResult FontDat
    }
  
    MatchResult result;
@@ -200,7 +200,7 @@ Guard:    tests/guards/fonts/availability.py
    // SkFontMgr::matchFamilyStyle() returns the closest style of the family, so
    // a null result means the family itself is unknown, whatever the style.
    if (!result.typeface && cache_unmatched) {
-@@ -381,8 +435,11 @@
+@@ -381,8 +386,11 @@ void FontDataServiceImpl::LegacyMakeType
    SkFontStyle sk_font_style(style->weight, style->width,
                              ConvertToFontStyle(style->slant));
  

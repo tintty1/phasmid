@@ -26,7 +26,7 @@ Guard:    tests/guards/core/profile-loading.py
 
 --- a/chrome/BUILD.gn
 +++ b/chrome/BUILD.gn
-@@ -312,6 +312,7 @@
+@@ -313,6 +313,7 @@ if (!is_android && !is_mac) {
          "//chrome/browser:startup_data",
          "//chrome/browser/lifetime",
          "//chrome/common:version_header",
@@ -34,7 +34,7 @@ Guard:    tests/guards/core/profile-loading.py
  
          # For the sampling profiler.
          "//chrome/common/profiler",
-@@ -456,6 +457,7 @@
+@@ -456,6 +457,7 @@ if (is_win) {
        "//chrome/install_static:install_static_util",
        "//chrome/install_static:secondary_module",
        "//components/crash/core/app",
@@ -44,7 +44,7 @@ Guard:    tests/guards/core/profile-loading.py
        "//components/webapps/isolated_web_apps:scheme",
 --- a/chrome/app/BUILD.gn
 +++ b/chrome/app/BUILD.gn
-@@ -171,6 +173,7 @@
+@@ -175,6 +175,7 @@ static_library("test_support") {
      "//components/crash/core/app",
      "//components/crash/core/app:test_support",
      "//components/devtools/devtools_pipe",
@@ -54,7 +54,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/variations/service",
 --- a/chrome/app/chrome_main_delegate.cc
 +++ b/chrome/app/chrome_main_delegate.cc
-@@ -60,6 +63,7 @@
+@@ -61,6 +61,7 @@
  #include "chrome/grit/generated_resources.h"
  #include "chrome/renderer/chrome_content_renderer_client.h"
  #include "components/component_updater/component_updater_paths.h"
@@ -62,7 +62,7 @@ Guard:    tests/guards/core/profile-loading.py
  #include "components/content_settings/core/common/content_settings_pattern.h"
  #include "components/crash/core/app/crash_reporter_client.h"
  #include "components/crash/core/common/crash_key.h"
-@@ -1226,6 +1230,22 @@
+@@ -1243,6 +1244,22 @@ std::optional<int> ChromeMainDelegate::B
      LOG(ERROR) << "Remote debugging pipe file descriptors are not open.";
      return CHROME_RESULT_CODE_UNSUPPORTED_PARAM;
    }
@@ -87,7 +87,7 @@ Guard:    tests/guards/core/profile-loading.py
  #endif  // !defined(BUILDING_CHROME_RENDERER)
 --- a/chrome/browser/BUILD.gn
 +++ b/chrome/browser/BUILD.gn
-@@ -1193,6 +1213,7 @@
+@@ -1363,6 +1363,7 @@ source_set("core") {
      "//components/pdf/common:constants",
      "//components/pdf/common:util",
      "//components/performance_manager",
@@ -97,7 +97,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/privacy_sandbox:features",
 --- a/chrome/browser/net/BUILD.gn
 +++ b/chrome/browser/net/BUILD.gn
-@@ -204,6 +225,7 @@
+@@ -215,6 +215,7 @@ source_set("impl") {
      "//components/offline_pages/core",
      "//components/page_load_metrics/browser",
      "//components/permissions",
@@ -107,7 +107,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/proxy_config",
 --- a/chrome/browser/preloading/prefetch/prefetch_service/BUILD.gn
 +++ b/chrome/browser/preloading/prefetch/prefetch_service/BUILD.gn
-@@ -32,6 +54,7 @@
+@@ -32,6 +32,7 @@ source_set("impl") {
      "//chrome/browser/search_engines",
      "//components/language/core/browser",
      "//components/page_load_metrics/browser",
@@ -117,7 +117,7 @@ Guard:    tests/guards/core/profile-loading.py
  
 --- a/chrome/browser/ui/startup/BUILD.gn
 +++ b/chrome/browser/ui/startup/BUILD.gn
-@@ -164,6 +187,7 @@
+@@ -166,6 +166,7 @@ source_set("impl") {
      "//components/infobars/core",
      "//components/media_router/common/providers/cast/certificate",
      "//components/network_session_configurator/common",
@@ -127,7 +127,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/signin/public/identity_manager",
 --- a/chrome/browser/ui/window_sizer/BUILD.gn
 +++ b/chrome/browser/ui/window_sizer/BUILD.gn
-@@ -39,6 +63,7 @@
+@@ -36,6 +36,7 @@ source_set("impl") {
      "//chrome/browser/ui/browser_window",
      "//chrome/browser/ui/web_applications",
      "//chrome/common:non_code_constants",
@@ -137,7 +137,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//ui/display",
 --- a/components/BUILD.gn
 +++ b/components/BUILD.gn
-@@ -306,6 +331,7 @@
+@@ -308,6 +308,7 @@ test("components_unittests") {
      "//components/payments/core:unit_tests",
      "//components/persistent_cache:unit_tests",
      "//components/personal_context/core:unit_tests",
@@ -147,22 +147,23 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/policy/test_support:unittests",
 --- a/components/embedder_support/BUILD.gn
 +++ b/components/embedder_support/BUILD.gn
-@@ -57,6 +83,7 @@
+@@ -57,6 +57,7 @@ static_library("user_agent") {
  
    deps = [
      ":embedder_support",
 +    "//components/phasmid",
      "//build:branding_buildflags",
-     "//components/policy/core/common",
-     "//components/prefs",
+     "//components/version_info",
+     "//net",
 --- /dev/null
 +++ b/components/phasmid/BUILD.gn
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,50 @@
 +# Copyright 2026 The Phasmid Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
 +
-+# Depends only on //base so that blink, content, gpu and chrome can all use it.
++# Depends only on //base and its language tag parser so that blink, content,
++# gpu and chrome can all use it.
 +component("phasmid") {
 +  sources = [
 +    "noise.cc",
@@ -175,10 +176,14 @@ Guard:    tests/guards/core/profile-loading.py
 +
 +  defines = [ "IS_PHASMID_IMPL" ]
 +
-+  deps = [ "//base" ]
++  deps = [
++    "//base",
++    "//base/i18n:language_tag",
++  ]
 +}
 +
-+# Browser process only. Kept out of :phasmid, which depends only on //base.
++# Browser process only. Kept out of :phasmid, which depends only on //base
++# and its language tag parser.
 +if (is_linux || is_chromeos) {
 +  source_set("font_allowlist") {
 +    sources = [
@@ -1802,7 +1807,7 @@ Guard:    tests/guards/core/profile-loading.py
 +}  // namespace phasmid
 --- /dev/null
 +++ b/components/phasmid/profile.cc
-@@ -0,0 +1,2545 @@
+@@ -0,0 +1,2556 @@
 +// Copyright 2026 The Phasmid Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -1820,6 +1825,7 @@ Guard:    tests/guards/core/profile-loading.py
 +#include "base/environment.h"
 +#include "base/files/file_path.h"
 +#include "base/files/file_util.h"
++#include "base/i18n/tag_converters.h"
 +#include "base/json/json_reader.h"
 +#include "base/json/json_writer.h"
 +#include "base/logging.h"
@@ -3874,9 +3880,19 @@ Guard:    tests/guards/core/profile-loading.py
 +    }
 +    language_values.push_back(entry.GetString());
 +  }
++  // Every renderer sets its ICU default locale from this tag (RendererMain)
++  // and stops on one the parser refuses.
 +  const std::string* intl_locale = locale->FindString("intl_locale");
-+  if (intl_locale && intl_locale->empty()) {
-+    return Err("locale.intl_locale", "must not be empty when present");
++  if (intl_locale &&
++      !base::i18n::GetLanguageTagFromString(*intl_locale).has_value()) {
++    return Err("locale.intl_locale", "must be a language tag such as en-US");
++  }
++  if (!intl_locale &&
++      !base::i18n::GetLanguageTagFromString(language_values.front())
++           .has_value()) {
++    return Err("locale.languages",
++               "the first entry, the Intl locale, must be a language tag "
++               "such as en-US");
 +  }
 +  const std::string* timezone = locale->FindString("timezone");
 +  if (!timezone || timezone->empty() || timezone->find('/') == std::string::npos) {
@@ -4868,7 +4884,7 @@ Guard:    tests/guards/core/profile-loading.py
 +#endif  // COMPONENTS_PHASMID_SWITCHES_H_
 --- a/content/browser/BUILD.gn
 +++ b/content/browser/BUILD.gn
-@@ -132,6 +4840,7 @@
+@@ -133,6 +133,7 @@ source_set("browser") {
  
    deps = [
      ":child_process_security_policy_impl",
@@ -4878,7 +4894,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//base:clang_profiling_buildflags",
 --- a/content/child/BUILD.gn
 +++ b/content/child/BUILD.gn
-@@ -71,6 +4780,7 @@
+@@ -71,6 +71,7 @@ target(link_target_type, "child") {
  
    deps = [
      "//base",
@@ -4888,7 +4904,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/attribution_reporting:features",
 --- a/content/renderer/BUILD.gn
 +++ b/content/renderer/BUILD.gn
-@@ -241,6 +4951,7 @@
+@@ -241,6 +241,7 @@ target(link_target_type, "renderer") {
      "//components/metrics",
      "//components/metrics:single_sample_metrics",
      "//components/performance_manager/scenario_api",
@@ -4898,7 +4914,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//components/variations:variations_mojom",
 --- a/gpu/command_buffer/service/BUILD.gn
 +++ b/gpu/command_buffer/service/BUILD.gn
-@@ -387,6 +5098,7 @@
+@@ -387,6 +387,7 @@ target(link_target_type, "gles2_sources"
      "//build:chromecast_buildflags",
      "//components/crash/core/common",
      "//components/persistent_cache",
@@ -4908,7 +4924,7 @@ Guard:    tests/guards/core/profile-loading.py
      "//gpu/command_buffer/client",
 --- a/services/network/BUILD.gn
 +++ b/services/network/BUILD.gn
-@@ -368,6 +5080,7 @@
+@@ -370,6 +370,7 @@ component("network_service") {
      "//components/network_session_configurator/browser",
      "//components/network_session_configurator/common",
      "//components/os_crypt/common",

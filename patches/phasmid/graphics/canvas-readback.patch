@@ -27,7 +27,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
 
 --- a/third_party/blink/renderer/core/BUILD.gn
 +++ b/third_party/blink/renderer/core/BUILD.gn
-@@ -1594,6 +1594,7 @@
+@@ -1642,6 +1642,7 @@ source_set("unit_tests") {
      "//components/autofill/core/common:features",
      "//components/page_load_metrics/browser",
      "//components/paint_preview/common",
@@ -37,7 +37,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
      "//components/subresource_filter/content/renderer",
 --- a/third_party/blink/renderer/core/html/build.gni
 +++ b/third_party/blink/renderer/core/html/build.gni
-@@ -43,6 +43,8 @@
+@@ -43,6 +43,8 @@ blink_core_sources_html = [
    "canvas/image_data.h",
    "canvas/image_element_base.cc",
    "canvas/image_element_base.h",
@@ -46,7 +46,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
    "canvas/canvas_paint_event.cc",
    "canvas/canvas_paint_event.h",
    "canvas/predefined_color_space.cc",
-@@ -713,6 +715,7 @@
+@@ -713,6 +715,7 @@ blink_core_tests_html = [
    "canvas/canvas_resource_tracker_test.cc",
    "canvas/html_canvas_element_test.cc",
    "canvas/image_data_test.cc",
@@ -64,7 +64,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
  #include "third_party/blink/renderer/core/html/canvas/predefined_color_space.h"
  #include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
  #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
-@@ -1458,6 +1459,9 @@
+@@ -1434,6 +1435,9 @@ String HTMLCanvasElement::ToDataURLInter
        ImageEncoderUtils::ToEncodingMimeType(mime_type);
  
    scoped_refptr<StaticBitmapImage> image_bitmap = Snapshot(source_buffer);
@@ -74,7 +74,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
    if (image_bitmap) {
      std::unique_ptr<ImageDataBuffer> data_buffer =
          ImageDataBuffer::Create(image_bitmap);
-@@ -1562,6 +1566,9 @@
+@@ -1538,6 +1542,9 @@ void HTMLCanvasElement::toBlob(V8BlobCal
  
    CanvasAsyncBlobCreator* async_creator = nullptr;
    scoped_refptr<StaticBitmapImage> image_bitmap = Snapshot(kBackBuffer);
@@ -857,7 +857,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
 +}  // namespace blink
 --- a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
 +++ b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
-@@ -40,6 +40,7 @@
+@@ -41,6 +41,7 @@
  #include "third_party/blink/renderer/core/html/canvas/element_geometry_update_event.h"
  #include "third_party/blink/renderer/core/html/canvas/element_image.h"
  #include "third_party/blink/renderer/core/html/canvas/image_data.h"
@@ -865,7 +865,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
  #include "third_party/blink/renderer/core/html/canvas/ukm_parameters.h"
  #include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
  #include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
-@@ -585,6 +586,9 @@
+@@ -587,6 +588,9 @@ ScriptPromise<Blob> OffscreenCanvas::con
  
    base::TimeTicks start_time = base::TimeTicks::Now();
    scoped_refptr<StaticBitmapImage> image_bitmap = context_->GetImage();
@@ -877,7 +877,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
          script_state, exception_state.GetContext());
 --- a/third_party/blink/renderer/modules/canvas/BUILD.gn
 +++ b/third_party/blink/renderer/modules/canvas/BUILD.gn
-@@ -38,6 +38,8 @@
+@@ -38,6 +38,8 @@ blink_modules_sources("canvas") {
      "canvas2d/mesh_2d_vertex_buffer.h",
      "canvas2d/path_2d.cc",
      "canvas2d/path_2d.h",
@@ -888,7 +888,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
      "htmlcanvas/canvas_context_creation_attributes_helpers.cc",
 --- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
 +++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
-@@ -57,6 +57,7 @@
+@@ -70,6 +70,7 @@
  #include "third_party/blink/renderer/core/html/canvas/element_image.h"
  #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
  #include "third_party/blink/renderer/core/html/canvas/image_data.h"
@@ -896,7 +896,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
  #include "third_party/blink/renderer/core/html/canvas/text_cluster.h"
  #include "third_party/blink/renderer/core/html/canvas/text_metrics.h"
  #include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
-@@ -567,6 +568,12 @@
+@@ -879,6 +880,12 @@ ImageData* BaseRenderingContext2D::getIm
      if (read_pixels_successful && RuntimeEnabledFeatures::FingerprintingCanvasImageDataNoiseEnabled()) {
        StaticBitmapImage::ShuffleSubchannelColorData(image_data_pixmap.addr(), image_data_pixmap.info());
      }
@@ -909,7 +909,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
    }
  
    return image_data;
-@@ -640,6 +647,10 @@
+@@ -952,6 +959,10 @@ void BaseRenderingContext2D::putImageDat
    gfx::Rect source_rect = dest_rect;
    source_rect.Offset(-dest_offset);
  
@@ -922,7 +922,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
    // WritePixels (called by PutByteArray) requires that the source and
 --- a/third_party/blink/renderer/modules/canvas/canvas2d/canvas_2d_recorder_context.cc
 +++ b/third_party/blink/renderer/modules/canvas/canvas2d/canvas_2d_recorder_context.cc
-@@ -847,6 +847,8 @@
+@@ -847,6 +847,8 @@ void Canvas2DRecorderContext::ResetInter
               CanvasPerformanceMonitor::DrawType::kOther);
      c->drawRect(SkRect::MakeXYWH(0.0f, 0.0f, width, height), GetClearFlags());
    }
@@ -931,7 +931,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
  
    ValidateStateStack();
    origin_tainted_by_content_ = false;
-@@ -1750,6 +1752,9 @@
+@@ -1751,6 +1753,9 @@ void Canvas2DRecorderContext::fillRect(d
    CanvasRenderingContext::AdjustRectForCanvas(x, y, width, height);
    gfx::RectF rect(ClampTo<float>(x), ClampTo<float>(y), ClampTo<float>(width),
                    ClampTo<float>(height));
@@ -941,7 +941,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
    Draw<OverdrawOp::kNone>(
        /*draw_func=*/
        [rect](MemoryManagedPaintCanvas* c, const cc::PaintFlags* flags) {
-@@ -1968,6 +1973,9 @@
+@@ -1969,6 +1974,9 @@ void Canvas2DRecorderContext::clearRect(
    float fheight = ClampTo<float>(height);
  
    gfx::RectF rect(fx, fy, fwidth, fheight);
@@ -951,7 +951,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
    if (CanvasRenderingContextHost* host = GetCanvasRenderingContextHost();
        host && host->ShouldCaptureRenderedText()) {
      // Map the cleared rect from context coordinates to canvas element
-@@ -2324,6 +2332,11 @@
+@@ -2325,6 +2333,11 @@ void Canvas2DRecorderContext::drawImage(
      SetOriginTaintedByContent();
    }
  
@@ -973,7 +973,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
  #include "third_party/blink/renderer/modules/modules_export.h"
  #include "third_party/blink/renderer/platform/graphics/color.h"
  #include "third_party/blink/renderer/platform/graphics/flush_reason.h"
-@@ -177,6 +178,12 @@
+@@ -177,6 +178,12 @@ class MODULES_EXPORT Canvas2DRecorderCon
    // draw the bitmap.
    void endLayer(ExceptionState& exception_state);
    int LayerCount() const { return layer_count_; }
@@ -986,7 +986,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
    virtual void reset();          // Called by the javascript interface
    virtual void ResetInternal();  // Called from within blink
  
-@@ -439,6 +446,8 @@
+@@ -439,6 +446,8 @@ class MODULES_EXPORT Canvas2DRecorderCon
    unsigned max_state_stack_depth_ = 1;
    // Counts how many states have been pushed with BeginLayer.
    int layer_count_ = 0;
@@ -997,10 +997,10 @@ Guard:    tests/guards/graphics/canvas-readback.py
    // the HTML canvas which operates on physical pixels. In other words, the
 --- a/third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d.cc
 +++ b/third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d.cc
-@@ -513,6 +513,8 @@
+@@ -489,6 +489,8 @@ void CanvasRenderingContext2D::WillDraw(
      const gfx::Rect& dirty_rect,
      CanvasPerformanceMonitor::DrawType draw_type) {
-   CHECK(shared_image_provider_ || bitmap_provider_);
+   CHECK(HasBacking());
 +  // Phasmid: readback provenance.
 +  phasmid_provenance_.Rasterized(dirty_rect);
    if (ShouldAntialias()) {
@@ -1328,10 +1328,10 @@ Guard:    tests/guards/graphics/canvas-readback.py
 +#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_CANVAS2D_PHASMID_READBACK_PROVENANCE_H_
 --- a/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.cc
 +++ b/third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.cc
-@@ -454,6 +454,8 @@
+@@ -376,6 +376,8 @@ void OffscreenCanvasRenderingContext2D::
      const gfx::Rect& dirty_rect,
      CanvasPerformanceMonitor::DrawType draw_type) {
-   CHECK(shared_image_provider_ || bitmap_provider_);
+   CHECK(HasBacking());
 +  // Phasmid: readback provenance.
 +  phasmid_provenance_.Rasterized(dirty_rect);
    gfx::Rect adjusted_dirty_rect = dirty_rect;
@@ -1355,7 +1355,7 @@ Guard:    tests/guards/graphics/canvas-readback.py
  #include "third_party/blink/renderer/modules/canvas/imagebitmap/image_bitmap_rendering_context.h"
  #include "third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.h"
  #include "third_party/blink/renderer/modules/content_extraction/ai_page_content_agent.h"
-@@ -193,6 +195,8 @@
+@@ -194,6 +196,8 @@ void ModulesInitializer::Initialize() {
    // Canvas context types must be registered with the HTMLCanvasElement.
    HTMLCanvasElement::RegisterRenderingContextFactory(
        std::make_unique<CanvasRenderingContext2D::Factory>());

@@ -22,7 +22,7 @@ Guard:    tests/guards/automation/signals.py
  #include "components/prefs/pref_service.h"
  #include "components/tabs/public/tab_interface.h"
  #include "content/public/common/content_switches.h"
-@@ -195,7 +196,8 @@
+@@ -195,7 +196,8 @@ void AddInfoBarsIfNecessary(BrowserWindo
      }
  #endif
  
@@ -42,7 +42,7 @@ Guard:    tests/guards/automation/signals.py
  #include "content/common/content_navigation_policy.h"
  #include "content/common/content_switches_internal.h"
  #include "content/common/features.h"
-@@ -404,6 +405,12 @@
+@@ -409,6 +410,12 @@ void SetRuntimeFeaturesFromCommandLine(c
        WebRuntimeFeatures::EnableAutomationControlled(true);
      }
    }

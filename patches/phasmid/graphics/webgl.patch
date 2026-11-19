@@ -26,7 +26,7 @@ Guard:    tests/guards/graphics/webgl.py
 
 --- a/gpu/command_buffer/service/BUILD.gn
 +++ b/gpu/command_buffer/service/BUILD.gn
-@@ -209,6 +209,8 @@
+@@ -209,6 +209,8 @@ target(link_target_type, "gles2_sources"
      "multi_draw_manager.h",
      "passthrough_program_cache.cc",
      "passthrough_program_cache.h",
@@ -37,15 +37,15 @@ Guard:    tests/guards/graphics/webgl.py
      "program_manager.cc",
 --- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
 +++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough.cc
-@@ -33,6 +33,7 @@
- #include "gpu/command_buffer/service/gpu_switches.h"
+@@ -35,6 +35,7 @@
+ #include "gpu/command_buffer/service/gpu_tracer.h"
  #include "gpu/command_buffer/service/multi_draw_manager.h"
  #include "gpu/command_buffer/service/passthrough_program_cache.h"
 +#include "gpu/command_buffer/service/phasmid_webgl.h"
  #include "gpu/command_buffer/service/program_cache.h"
  #include "gpu/command_buffer/service/service_utils.h"
  #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
-@@ -1514,6 +1515,8 @@
+@@ -1570,6 +1571,8 @@ gpu::Capabilities GLES2DecoderPassthroug
    PopulateDRMCapabilities(&caps, feature_info_.get());
  #endif
  
@@ -54,7 +54,7 @@ Guard:    tests/guards/graphics/webgl.py
    return caps;
  }
  
-@@ -1533,6 +1536,9 @@
+@@ -1589,6 +1592,9 @@ gpu::GLCapabilities GLES2DecoderPassthro
    }
    caps.sync_query = feature_info_->feature_flags().chromium_sync_query;
  
@@ -64,7 +64,7 @@ Guard:    tests/guards/graphics/webgl.py
    return caps;
  }
  
-@@ -1997,6 +2003,8 @@
+@@ -2055,6 +2061,8 @@ error::Error GLES2DecoderPassthroughImpl
        break;
  
      default:
@@ -83,7 +83,7 @@ Guard:    tests/guards/graphics/webgl.py
  #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
  #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
  #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
-@@ -1767,6 +1768,11 @@
+@@ -1780,6 +1781,11 @@ error::Error GLES2DecoderPassthroughImpl
    api()->glGetShaderPrecisionFormatFn(shadertype, precisiontype, range,
                                        precision);
    *success = CheckErrorCallbackState() ? 0 : 1;
@@ -95,7 +95,7 @@ Guard:    tests/guards/graphics/webgl.py
    return error::kNoError;
  }
  
-@@ -1812,6 +1818,10 @@
+@@ -1825,6 +1831,10 @@ error::Error GLES2DecoderPassthroughImpl
      }
      default:
        str = reinterpret_cast<const char*>(api()->glGetStringFn(name));
@@ -548,7 +548,7 @@ Guard:    tests/guards/graphics/webgl.py
 +#endif  // GPU_COMMAND_BUFFER_SERVICE_PHASMID_WEBGL_H_
 --- a/third_party/blink/renderer/modules/webgl/BUILD.gn
 +++ b/third_party/blink/renderer/modules/webgl/BUILD.gn
-@@ -195,6 +195,7 @@
+@@ -195,6 +195,7 @@ blink_modules_sources("webgl") {
  
    public_deps = [ "//device/vr/public/mojom:vr_service_blink" ]
    deps = [
@@ -566,7 +566,7 @@ Guard:    tests/guards/graphics/webgl.py
  #include "components/viz/common/gpu/raster_context_provider.h"
  #include "components/viz/common/resources/shared_image_format_utils.h"
  #include "device/vr/buildflags/buildflags.h"
-@@ -3850,6 +3851,24 @@
+@@ -3853,6 +3854,24 @@ bool WebGLRenderingContextBase::Extensio
    if (tracker->Developer() &&
        !RuntimeEnabledFeatures::WebGLDeveloperExtensionsEnabled())
      return false;

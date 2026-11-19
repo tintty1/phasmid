@@ -33,7 +33,7 @@ Guard:    tests/guards/graphics/hardware-decode.py
  #include "content/public/common/content_client.h"
  #include "content/public/renderer/content_renderer_client.h"
  #include "content/renderer/render_thread_impl.h"
-@@ -345,10 +346,14 @@
+@@ -345,10 +346,14 @@ media::ExternalMemoryAllocator* RenderMe
  void RenderMediaClient::SetGpuFeatureInfoInternal(
      const gpu::GpuFeatureInfo& gpu_feature_info) {
    DCHECK(main_task_runner_->BelongsToCurrentThread());
@@ -51,7 +51,7 @@ Guard:    tests/guards/graphics/hardware-decode.py
        media::UpdateDefaultDecoderSupportedVideoProfiles({});
      }
      if (gpu_feature_info
-@@ -358,7 +363,9 @@
+@@ -358,7 +363,9 @@ void RenderMediaClient::SetGpuFeatureInf
      }
    } else {
      // Purge everything since we no longer have a GPU.
@@ -64,7 +64,7 @@ Guard:    tests/guards/graphics/hardware-decode.py
    }
 --- a/media/mojo/services/BUILD.gn
 +++ b/media/mojo/services/BUILD.gn
-@@ -95,6 +95,7 @@
+@@ -96,6 +96,7 @@ component("services") {
    ]
  
    deps = [
@@ -82,7 +82,7 @@ Guard:    tests/guards/graphics/hardware-decode.py
  #include "gpu/ipc/service/gpu_channel.h"
  #include "media/base/audio_decoder.h"
  #include "media/base/audio_encoder.h"
-@@ -57,6 +58,15 @@
+@@ -57,6 +58,15 @@ gpu::CommandBufferStub* GetCommandBuffer
  bool IsAcceleratedDecodingDisabled(
      const gpu::GpuPreferences& gpu_preferences,
      const gpu::GpuFeatureInfo& gpu_feature_info) {
@@ -98,7 +98,7 @@ Guard:    tests/guards/graphics/hardware-decode.py
    return gpu_preferences.disable_accelerated_video_decode ||
           gpu_feature_info.status_values
                   [gpu::GPU_FEATURE_TYPE_ACCELERATED_VIDEO_DECODE] !=
-@@ -66,6 +76,37 @@
+@@ -66,6 +76,37 @@ bool IsAcceleratedDecodingDisabled(
           gl::GetGLImplementation() == gl::kGLImplementationDisabled;
  }
  
@@ -136,7 +136,7 @@ Guard:    tests/guards/graphics/hardware-decode.py
  }  // namespace
  
  // Forward declaration of the platform specific GpuMojoMediaClient factory
-@@ -156,7 +197,12 @@
+@@ -156,7 +197,12 @@ GpuMojoMediaClient::GetSupportedVideoDec
    if (!supported_config_cache_) {
      // Only bother to query if accelerated video decoding is enabled.
      // (RenderMediaClient does not know about GPU features before it asks.)
@@ -152,7 +152,7 @@ Guard:    tests/guards/graphics/hardware-decode.py
        supported_config_cache_ = GetPlatformSupportedVideoDecoderConfigs();
 --- a/third_party/blink/renderer/modules/media_capabilities/BUILD.gn
 +++ b/third_party/blink/renderer/modules/media_capabilities/BUILD.gn
-@@ -12,6 +12,7 @@
+@@ -12,6 +12,7 @@ blink_modules_sources("media_capabilitie
      "media_capabilities.h",
    ]
    deps = [
@@ -170,7 +170,7 @@ Guard:    tests/guards/graphics/hardware-decode.py
  #include "media/base/media_switches.h"
  #include "media/base/media_util.h"
  #include "media/base/mime_util.h"
-@@ -1448,6 +1449,35 @@
+@@ -1444,6 +1445,35 @@ void MediaCapabilities::GetGpuFactoriesS
    DCHECK(UseGpuFactoriesForPowerEfficient(execution_context,
                                            pending_cb->key_system_access));
  

@@ -51,6 +51,9 @@ Asserts the browser-side contract of the core patch:
      no gpu warning and reports in CDP SystemInfo the driver its gl_renderer
      names (NVIDIA 615.71.09); a driver other than that one stops the
      browser naming the field.
+ 13. the Intl locale (locale.intl_locale, else languages[0]) is a tag the
+     renderer's ICU locale parser accepts: one it refuses stops the browser
+     naming the field it came from.
 """
 
 from __future__ import annotations
@@ -249,6 +252,28 @@ def check_geolocation(binary: str, profile: dict, work: Path) -> None:
         if zone:
             bad = with_value(bad, ("locale", "timezone"), zone)
         expect_refused(binary, bad, work, f"geolocation-refuse-{i}", field)
+
+
+# Passes the languages entry check (no comma, semicolon, space or quote) but
+# is no language tag: an empty subtag.
+MALFORMED_TAG = "en--US"
+
+
+def check_intl_locale(binary: str, profile: dict, work: Path) -> None:
+    """Check 13."""
+    bad = with_value(profile, ("locale", "intl_locale"), MALFORMED_TAG)
+    expect_refused(binary, bad, work, "intl-locale-refuse", "locale.intl_locale")
+    bad = copy.deepcopy(profile)
+    bad["locale"].pop("intl_locale", None)
+    bad["locale"]["languages"] = [MALFORMED_TAG] + bad["locale"]["languages"]
+    expect_refused(binary, bad, work, "intl-locale-refuse-languages", "locale.languages")
+    good = copy.deepcopy(profile)
+    good["locale"]["intl_locale"] = good["locale"]["languages"][0]
+    good["locale"]["languages"] = good["locale"]["languages"] + [MALFORMED_TAG]
+    r = start_and_exit(binary, good, work, "intl-locale-later-entry")
+    if r.returncode != 0:
+        raise GuardFailure(f"a malformed languages entry after the Intl locale: exit {r.returncode}, stderr {r.stderr[-300:]!r}")
+    print("PASS: only the Intl locale must parse; a later languages entry is not checked here")
 
 
 def check_macos_refused(binary: str, profile: dict, work: Path) -> None:
@@ -470,6 +495,7 @@ def main() -> None:
         raise GuardFailure(f"vacuous: the profile claims os.family {family!r}, neither linux nor windows")
     check_macos_refused(args.binary, profile, work)
     check_geolocation(args.binary, profile, work)
+    check_intl_locale(args.binary, profile, work)
     check_windows(args.binary, profile, work, headless=not args.headful)
     check_windows_capabilities(args.binary, profile, work, headless=not args.headful)
     check_gpu_identity(args.binary, work)

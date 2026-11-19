@@ -37,7 +37,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  #include "components/viz/common/features.h"
  #include "content/browser/bad_message.h"
  #include "content/browser/dom_storage/session_storage_namespace_handle_impl.h"
-@@ -144,6 +146,35 @@
+@@ -144,6 +146,35 @@ void GetFontInfo(gfx::win::SystemFont sy
  }
  #endif  // BUILDFLAG(IS_WIN)
  
@@ -73,7 +73,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  // Set of RenderViewHostImpl* that can be attached as UserData to a
  // RenderProcessHost. Used to keep track of whether any RenderViewHostImpl
  // instances are in the bfcache.
-@@ -269,7 +300,11 @@
+@@ -269,7 +300,11 @@ void RenderViewHostImpl::GetPlatformSpec
  
  #elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
    base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
@@ -124,7 +124,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
    return DefaultGUIFont();
  }
  
-@@ -43,6 +62,15 @@
+@@ -43,6 +62,15 @@ const AtomicString& LayoutThemeFontProvi
  float LayoutThemeFontProvider::SystemFontSize(CSSValueID system_font_id,
                                                const Document* document) {
    switch (system_font_id) {

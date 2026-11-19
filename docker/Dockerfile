@@ -19,7 +19,7 @@
 # than seccomp=unconfined or --cap-add=SYS_ADMIN, which also work, and keeps
 # the sandbox on, unlike --no-sandbox.
 
-ARG PHASMID_VERSION=156.0.8078.79-p1
+ARG PHASMID_VERSION=157.0.8103.78-p1
 
 FROM scratch AS dist
 ARG PHASMID_VERSION

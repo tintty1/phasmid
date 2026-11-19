@@ -11,7 +11,7 @@ Guard:    tests/guards/hardware/hardware-concurrency.py
 
 --- a/third_party/blink/renderer/core/BUILD.gn
 +++ b/third_party/blink/renderer/core/BUILD.gn
-@@ -408,6 +408,7 @@
+@@ -411,6 +411,7 @@ component("core") {
      ":make_deprecation_info",
      ":xml_ffi",
      "//base",

@@ -27,7 +27,7 @@ Guard:    tests/guards/network/connection.py
  #include "content/browser/devtools/devtools_instrumentation.h"
  #include "content/browser/preloading/prerender/prerender_host.h"
  #include "content/browser/renderer_host/frame_tree.h"
-@@ -88,6 +89,11 @@
+@@ -88,6 +89,11 @@ double GetRandomMultiplier(const std::st
    // cross-origin fingerprinting. The random number should also be a function
    // of randomized salt which is known only to the device. This prevents
    // origin from removing noise from the estimates.
@@ -41,7 +41,7 @@ Guard:    tests/guards/network/connection.py
        0.9 + static_cast<double>((hash % kMaxRandomNumbers)) * 0.01;
 --- a/services/network/public/cpp/BUILD.gn
 +++ b/services/network/public/cpp/BUILD.gn
-@@ -217,6 +217,7 @@
+@@ -217,6 +217,7 @@ component("cpp") {
      "//components/link_header_util",
      "//components/os_crypt/browser",
      "//components/os_crypt/common",
@@ -85,7 +85,7 @@ Guard:    tests/guards/network/connection.py
  NetworkQualityTracker::NetworkQualityTracker(
      base::RepeatingCallback<network::mojom::NetworkService*()> callback)
      : get_network_service_callback_(callback),
-@@ -23,6 +44,16 @@
+@@ -23,6 +44,16 @@ NetworkQualityTracker::NetworkQualityTra
        network_quality_overridden_for_testing_(false) {
    InitializeMojoChannel();
    DCHECK(receiver_.is_bound());
@@ -102,7 +102,7 @@ Guard:    tests/guards/network/connection.py
  }
  
  NetworkQualityTracker::~NetworkQualityTracker() {}
-@@ -119,6 +150,11 @@
+@@ -119,6 +150,11 @@ void NetworkQualityTracker::OnNetworkQua
    if (network_quality_overridden_for_testing_)
      return;
  
@@ -116,7 +116,7 @@ Guard:    tests/guards/network/connection.py
      http_rtt = base::TimeDelta();
 --- a/third_party/blink/renderer/platform/network/BUILD.gn
 +++ b/third_party/blink/renderer/platform/network/BUILD.gn
-@@ -67,6 +67,7 @@
+@@ -67,6 +67,7 @@ blink_platform_sources("network") {
    sources += get_target_outputs(":http_names")
  
    deps = [
@@ -134,7 +134,7 @@ Guard:    tests/guards/network/connection.py
  #include "net/nqe/effective_connection_type.h"
  #include "net/nqe/network_quality_estimator_params.h"
  #include "services/network/public/cpp/client_hints.h"
-@@ -375,6 +376,11 @@
+@@ -386,6 +387,11 @@ double NetworkStateNotifier::GetRandomMu
    if (!host)
      return 1.0;
  

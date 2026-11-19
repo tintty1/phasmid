@@ -27,7 +27,7 @@ Guard:    tests/guards/display/media-queries.py
 
 --- a/chrome/browser/chrome_content_browser_client.cc
 +++ b/chrome/browser/chrome_content_browser_client.cc
-@@ -4039,11 +4039,24 @@
+@@ -4052,6 +4052,15 @@ blink::mojom::PreferredContrast GetPrefe
                                        {NC::kMore, BC::kMore},
                                        {NC::kLess, BC::kLess},
                                        {NC::kCustom, BC::kCustom}});
@@ -40,8 +40,10 @@ Guard:    tests/guards/display/media-queries.py
 +           : contrast == "less" ? BC::kLess
 +                                : BC::kNoPreference;
 +  }
-   return kContrastMap.at(
-       ui::NativeTheme::GetInstanceForWeb()->preferred_contrast());
+   const NC preferred_contrast =
+       PageColorsController::GetEffectivePageColors(web_contents)
+           .preferred_contrast;
+@@ -4059,6 +4068,10 @@ blink::mojom::PreferredContrast GetPrefe
  }
  
  std::tuple<bool, bool> GetForcedColorsForWebContent(WebContents* web_contents) {
@@ -49,10 +51,10 @@ Guard:    tests/guards/display/media-queries.py
 +  if (const phasmid::Profile* phasmid_profile = phasmid::Profile::Get()) {
 +    return {phasmid_profile->media_features().forced_colors, false};
 +  }
+   const auto forced_colors =
+       PageColorsController::GetEffectivePageColors(web_contents).forced_colors;
    const bool in_forced_colors =
-       ui::NativeTheme::GetInstanceForWeb()->forced_colors() !=
-       ui::ColorProviderKey::ForcedColors::kNone;
-@@ -4140,6 +4153,11 @@
+@@ -4166,6 +4179,11 @@ GetPreferredColorScheme(const WebPrefere
        }
      }
    }
@@ -79,7 +81,7 @@ Guard:    tests/guards/display/media-queries.py
  #include "ui/gfx/geometry/rect.h"
  #include "ui/gfx/geometry/size_conversions.h"
  #include "ui/gfx/geometry/vector2d_conversions.h"
-@@ -1160,6 +1162,28 @@
+@@ -1127,6 +1129,28 @@ blink::VisualProperties RenderWidgetHost
      }
    }
  
@@ -118,7 +120,7 @@ Guard:    tests/guards/display/media-queries.py
  #include "content/public/common/content_switches.h"
  #include "third_party/blink/public/common/web_preferences/web_preferences.h"
  #include "ui/base/pointer/pointer_device.h"
-@@ -175,6 +176,29 @@
+@@ -175,6 +176,29 @@ bool SlowWebPreferenceCache::Update() {
  
    pointer_events_max_touch_points_ = ui::MaxTouchPoints();
  
@@ -158,7 +160,7 @@ Guard:    tests/guards/display/media-queries.py
  #include "components/url_formatter/url_formatter.h"
  #include "components/viz/common/features.h"
  #include "components/viz/host/host_frame_sink_manager.h"
-@@ -4051,7 +4052,12 @@
+@@ -4088,7 +4089,12 @@ const blink::web_pref::WebPreferences We
        (!command_line.HasSwitch(switches::kDisableSmoothScrolling) &&
         gfx::Animation::ScrollAnimationsEnabledBySystem());
  

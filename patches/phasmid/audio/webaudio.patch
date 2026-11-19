@@ -26,7 +26,7 @@ Guard:    tests/guards/audio/webaudio.py
  #include "media/audio/audio_features.h"
  #include "media/audio/null_audio_sink.h"
  #include "media/base/audio_bus.h"
-@@ -188,6 +189,21 @@
+@@ -188,6 +189,21 @@ int RendererWebAudioDeviceImpl::GetOutpu
    scaled_default_buffer_size =
        std::clamp(scaled_default_buffer_size, min_buffer_size, max_buffer_size);
  
@@ -48,7 +48,7 @@ Guard:    tests/guards/audio/webaudio.py
    int output_buffer_size = -1;
    switch (latency_hint.Category()) {
      case WebAudioLatencyHint::kCategoryInteractive:
-@@ -195,17 +211,30 @@
+@@ -195,17 +211,30 @@ int RendererWebAudioDeviceImpl::GetOutpu
            scaled_default_buffer_size);
        break;
      case WebAudioLatencyHint::kCategoryBalanced:
@@ -84,7 +84,7 @@ Guard:    tests/guards/audio/webaudio.py
            kMaxWebAudioBufferSize);
        break;
      case WebAudioLatencyHint::kLastValue:
-@@ -275,6 +304,19 @@
+@@ -275,6 +304,19 @@ void RendererWebAudioDeviceImpl::HandleD
    media::OutputDeviceStatus status = device_info.device_status();
    original_sink_params_ = device_info.output_params();
  
@@ -104,7 +104,7 @@ Guard:    tests/guards/audio/webaudio.py
    // On systems without audio hardware the returned parameters may be invalid.
    // In which case just choose whatever we want for the fake device.
    if (!original_sink_params_.IsValid()) {
-@@ -473,6 +515,14 @@
+@@ -473,6 +515,14 @@ int RendererWebAudioDeviceImpl::Render(
      is_rendering_ = true;
    }
  
@@ -121,7 +121,7 @@ Guard:    tests/guards/audio/webaudio.py
    if (speech_recognition_client_) {
 --- a/third_party/blink/renderer/platform/BUILD.gn
 +++ b/third_party/blink/renderer/platform/BUILD.gn
-@@ -1844,6 +1844,7 @@
+@@ -1898,6 +1898,7 @@ component("platform") {
      "//components/language_detection/content/common:common_blink",
      "//components/language_detection/content/renderer",
      "//components/paint_preview/common",
@@ -149,7 +149,7 @@ Guard:    tests/guards/audio/webaudio.py
  #include "third_party/blink/renderer/platform/audio/audio_bus.h"
  #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
  #include "third_party/blink/renderer/platform/audio/denormal_disabler.h"
-@@ -87,6 +92,45 @@
+@@ -87,6 +92,45 @@ float EnsureFinite(float x, float defaul
    return std::isfinite(x) ? x : default_value;
  }
  
@@ -195,7 +195,7 @@ Guard:    tests/guards/audio/webaudio.py
  }  // namespace
  
  DynamicsCompressor::DynamicsCompressor(float sample_rate,
-@@ -105,6 +149,8 @@
+@@ -105,6 +149,8 @@ DynamicsCompressor::DynamicsCompressor(f
    SetNumberOfChannels(number_of_channels);
    // Initializes most member variables
    Reset();
@@ -204,7 +204,7 @@ Guard:    tests/guards/audio/webaudio.py
    metering_release_k_ =
        static_cast<float>(audio_utilities::DiscreteTimeConstantForSampleRate(
            kMeteringReleaseTimeConstant, sample_rate));
-@@ -143,6 +189,9 @@
+@@ -143,6 +189,9 @@ void DynamicsCompressor::Process(const A
  
    // Makeup gain with empirical/perceptual tuning.
    const float linear_post_gain = fdlibm::powf(1 / Saturate(1, k), 0.6f);
@@ -214,7 +214,7 @@ Guard:    tests/guards/audio/webaudio.py
  
    // Attack parameters.
    const float attack_frames = std::max(0.001f, attack_time) * sample_rate;
-@@ -331,7 +380,9 @@
+@@ -331,7 +380,9 @@ void DynamicsCompressor::Process(const A
            sin(static_cast<double>(kPiOverTwoFloat * compressor_gain)));
  
        // Calculate total gain using the linear post-gain.

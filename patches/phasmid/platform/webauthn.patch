@@ -32,7 +32,7 @@ Guard:    tests/guards/core/profile-loading.py
  #include "third_party/blink/public/common/features.h"
  
  #if BUILDFLAG(IS_ANDROID)
-@@ -127,6 +129,11 @@
+@@ -127,6 +129,11 @@ void ChromeBrowserFieldTrials::RegisterF
      base::FeatureList* feature_list) {
    variations::FeatureOverrides feature_overrides(*feature_list);
  
@@ -46,7 +46,7 @@ Guard:    tests/guards/core/profile-loading.py
    // Nota bene: Anything here is expected to be short-lived, unless deemed too
 --- a/chrome/browser/webauthn/BUILD.gn
 +++ b/chrome/browser/webauthn/BUILD.gn
-@@ -263,6 +263,7 @@
+@@ -265,6 +265,7 @@ source_set("chrome_web_authentication_de
      ":webauthn",
      "//chrome/browser/profiles:profile",
      "//chrome/common:constants",
@@ -64,7 +64,7 @@ Guard:    tests/guards/core/profile-loading.py
  #include "components/prefs/pref_service.h"
  #include "components/signin/public/base/consent_level.h"
  #include "components/signin/public/identity_manager/identity_manager.h"
-@@ -289,6 +290,18 @@
+@@ -289,6 +290,18 @@ void ChromeWebAuthenticationDelegate::
                    return;
                  }
  

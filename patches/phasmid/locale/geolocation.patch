@@ -21,7 +21,7 @@ Guard:    tests/guards/locale/geolocation.py
 
 --- a/services/device/geolocation/BUILD.gn
 +++ b/services/device/geolocation/BUILD.gn
-@@ -31,6 +31,8 @@
+@@ -31,6 +31,8 @@ source_set("geolocation") {
      "position_cache.h",
      "position_cache_impl.cc",
      "position_cache_impl.h",
@@ -30,7 +30,7 @@ Guard:    tests/guards/locale/geolocation.py
      "public_ip_address_geolocation_provider.cc",
      "public_ip_address_geolocation_provider.h",
      "public_ip_address_geolocator.cc",
-@@ -54,6 +56,7 @@
+@@ -54,6 +56,7 @@ source_set("geolocation") {
      "//build/config/linux/dbus:buildflags",
      "//components/content_settings/core/common:features",
      "//components/device_event_log",
@@ -48,7 +48,7 @@ Guard:    tests/guards/locale/geolocation.py
  #include "services/device/geolocation/wifi_polling_policy.h"
  #include "services/device/public/cpp/device_features.h"
  #include "services/device/public/cpp/geolocation/geoposition.h"
-@@ -212,6 +213,12 @@
+@@ -212,6 +213,12 @@ bool LocationProviderManager::Initialize
        provider_manager_mode_ = kCustomOnly;
      }
    }

@@ -24,7 +24,7 @@ Guard:    tests/guards/network/webrtc.py
  #include "components/prefs/pref_service.h"
  #include "components/universal_optout/features.h"
  #include "components/universal_optout/prefs.h"
-@@ -167,8 +168,11 @@
+@@ -167,8 +168,11 @@ void UpdateFromSystemSettings(blink::Ren
    prefs->enable_encrypted_media =
        pref_service->GetBoolean(prefs::kEnableEncryptedMedia);
  
@@ -58,7 +58,7 @@ Guard:    tests/guards/network/webrtc.py
  #include "net/base/net_errors.h"
  #include "net/base/port_util.h"
  #include "net/log/net_log_source.h"
-@@ -166,6 +169,130 @@
+@@ -166,6 +169,130 @@ SetTosArguments GetSetTosEnumForLogging(
    return SetTosArguments::OTHER;
  }
  
@@ -189,7 +189,7 @@ Guard:    tests/guards/network/webrtc.py
  }  // namespace
  
  namespace network {
-@@ -360,6 +487,10 @@
+@@ -360,6 +487,10 @@ bool P2PSocketUdp::HandleReadResult(int
    if (result > 0) {
      auto data = recv_buffer_->first(static_cast<size_t>(result));
  

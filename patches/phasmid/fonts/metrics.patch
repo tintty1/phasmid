@@ -24,9 +24,9 @@ Guard:    tests/guards/fonts/windows_metrics.py
 
 --- a/third_party/blink/renderer/platform/BUILD.gn
 +++ b/third_party/blink/renderer/platform/BUILD.gn
-@@ -841,6 +841,8 @@
+@@ -897,6 +897,8 @@ component("platform") {
+     "fonts/web_font_decoder.h",
      "fonts/web_font_render_style.cc",
-     "fonts/web_font_typeface_factory.cc",
      "fonts/web_font_typeface_factory.h",
 +    "fonts/windows_text_metrics.cc",
 +    "fonts/windows_text_metrics.h",
@@ -43,7 +43,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  #include "third_party/blink/renderer/platform/wtf/math_extras.h"
  #include "third_party/skia/include/core/SkFont.h"
  #include "third_party/skia/include/core/SkFontMetrics.h"
-@@ -66,6 +67,29 @@
+@@ -66,6 +67,29 @@ void FontMetrics::AscentDescentWithHacks
    if (descent_override)
      metrics.fDescent = platform_data.size() * descent_override.value();
  
@@ -83,7 +83,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
  #include "third_party/blink/renderer/platform/text/character.h"
  #include "third_party/blink/renderer/platform/web_test_support.h"
-@@ -274,6 +275,13 @@
+@@ -274,6 +275,13 @@ SkFont FontPlatformData::CreateSkFont(co
      font.setEdging(SkFont::Edging::kAlias);
    }
  
@@ -106,8 +106,8 @@ Guard:    tests/guards/fonts/windows_metrics.py
 +#include "base/compiler_specific.h"
  #include "base/containers/span.h"
  #include "base/memory/ptr_util.h"
- #include "build/build_config.h"
-@@ -53,6 +54,7 @@
+ #include "base/memory/raw_ptr.h"
+@@ -54,6 +55,7 @@
  #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
  #include "third_party/blink/renderer/platform/fonts/skia/skia_text_metrics.h"
  #include "third_party/blink/renderer/platform/fonts/unicode_range_set.h"
@@ -115,7 +115,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  #include "third_party/blink/renderer/platform/resolution_units.h"
  #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
  #include "third_party/blink/renderer/platform/text/character.h"
-@@ -302,6 +304,23 @@
+@@ -303,6 +305,23 @@ static unsigned int HarfBuzzGetNominalGl
    return done;
  }
  
@@ -139,7 +139,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  static hb_position_t HarfBuzzGetGlyphHorizontalAdvance(hb_font_t* hb_font,
                                                         void* font_data,
                                                         hb_codepoint_t glyph,
-@@ -309,6 +328,16 @@
+@@ -310,6 +329,16 @@ static hb_position_t HarfBuzzGetGlyphHor
    HarfBuzzFontData* hb_font_data =
        reinterpret_cast<HarfBuzzFontData*>(font_data);
    hb_position_t advance = 0;
@@ -156,7 +156,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
    SkFontGetGlyphWidthForHarfBuzz(hb_font_data->EnsureStrikeRef(),
                                   hb_font_data->font_.isSubpixel(), glyph,
                                   &advance);
-@@ -328,6 +357,26 @@
+@@ -329,6 +358,26 @@ static void HarfBuzzGetGlyphHorizontalAd
        reinterpret_cast<HarfBuzzFontData*>(font_data);
    CHECK_EQ(glyph_stride % 4, 0u);
    CHECK_EQ(advance_stride % 4, 0u);
@@ -193,7 +193,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  #include "third_party/skia/include/core/SkFont.h"
  #include "third_party/skia/include/core/SkStrikeRef.h"
  
-@@ -53,10 +54,14 @@
+@@ -54,10 +55,14 @@ struct HarfBuzzFontData final : public G
  
      // Strikes are based on font data, so if the font changes, we need to reset
      // the strike data.
@@ -209,7 +209,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  
      if (vertical_layout == HarfBuzzFace::kPrepareForVerticalLayout)
          [[unlikely]] {
-@@ -88,6 +93,18 @@
+@@ -89,6 +94,18 @@ struct HarfBuzzFontData final : public G
      return strike_ref_;
    }
  
@@ -228,7 +228,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
    OpenTypeVerticalData* VerticalData() {
      if (!vertical_data_) {
        DCHECK_NE(ascent_fallback_, kInvalidFallbackMetricsValue);
-@@ -115,6 +132,14 @@
+@@ -116,6 +133,14 @@ struct HarfBuzzFontData final : public G
    // when `font_` changes. See `UpdateFallbackMetricsAndScale`.
    SkStrikeRef strike_ref_;
  
@@ -261,7 +261,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
  #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
  #include "third_party/blink/renderer/platform/wtf/math_extras.h"
-@@ -167,9 +169,19 @@
+@@ -167,9 +169,19 @@ void SimpleFontData::PlatformInit(bool s
      font_metrics_.SetHasXHeight(false);
    }
  
@@ -281,7 +281,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
    } else {
      line_gap = metrics.fLeading;
    }
-@@ -202,7 +214,7 @@
+@@ -202,7 +214,7 @@ void SimpleFontData::PlatformInit(bool s
  #endif
  
  #if !BUILDFLAG(IS_APPLE)
@@ -290,7 +290,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
      avg_char_width_ = metrics.fAvgCharWidth;
    } else {
  #endif
-@@ -555,6 +567,10 @@
+@@ -555,6 +567,10 @@ float SimpleFontData::WidthForGlyph(Glyp
  
    static_assert(sizeof(glyph) == 2, "Glyph id should not be truncated.");
  
@@ -311,7 +311,7 @@ Guard:    tests/guards/fonts/windows_metrics.py
  #include "third_party/blink/renderer/platform/language.h"
  #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
  #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
-@@ -351,6 +352,15 @@
+@@ -351,6 +352,15 @@ const FontPlatformData* FontCache::Creat
         font_description.IsSyntheticBold()) &&
        font_description.GetFontSynthesisWeight() ==
            FontDescription::kAutoFontSynthesisWeight;

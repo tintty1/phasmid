@@ -28,7 +28,7 @@ Guard:    tests/guards/graphics/webgpu.py
 
 --- a/gpu/command_buffer/service/BUILD.gn
 +++ b/gpu/command_buffer/service/BUILD.gn
-@@ -345,6 +345,8 @@
+@@ -345,6 +345,8 @@ target(link_target_type, "gles2_sources"
        "dawn_service_serializer.h",
        "dawn_wire_server.cc",
        "dawn_wire_server.h",
@@ -496,7 +496,7 @@ Guard:    tests/guards/graphics/webgpu.py
  #include "gpu/command_buffer/service/shared_context_state.h"
  #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
  #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
-@@ -1169,6 +1170,9 @@
+@@ -1169,6 +1170,9 @@ WebGPUDecoderImpl::WebGPUDecoderImpl(
      // immediately.
      delete[] supported_features.features;
    };
@@ -506,7 +506,7 @@ Guard:    tests/guards/graphics/webgpu.py
    wire_procs.adapterRequestDevice = [](auto... args) {
      DCHECK(parent_decoder);
      return parent_decoder->RequestDeviceImpl(
-@@ -1259,6 +1263,11 @@
+@@ -1259,6 +1263,11 @@ ContextResult WebGPUDecoderImpl::Initial
  }
  
  bool WebGPUDecoderImpl::IsFeatureExposed(wgpu::FeatureName feature) const {
@@ -518,7 +518,7 @@ Guard:    tests/guards/graphics/webgpu.py
    switch (feature) {
      case wgpu::FeatureName::ChromiumExperimentalTimestampQueryInsidePasses:
      case wgpu::FeatureName::ChromiumExperimentalSamplingResourceTable:
-@@ -1346,6 +1355,15 @@
+@@ -1346,6 +1355,15 @@ WGPUFuture WebGPUDecoderImpl::RequestAda
        static_cast<wgpu::PowerPreference>(options->powerPreference),
        options->forceFallbackAdapter || force_fallback_adapter, feature_level,
        webgpu_on_vk_gl_interop_);
@@ -534,7 +534,7 @@ Guard:    tests/guards/graphics/webgpu.py
  
    if (adapter == nullptr) {
      // There are no adapters to return since webgpu is not supported here
-@@ -1412,6 +1430,7 @@
+@@ -1412,6 +1430,7 @@ void WebGPUDecoderImpl::AdapterGetFeatur
        exposed_features.push_back(feature);
      };
    }
@@ -542,7 +542,7 @@ Guard:    tests/guards/graphics/webgpu.py
    const size_t count = exposed_features.size();
    WGPUFeatureName* features = new WGPUFeatureName[count];
    uint32_t index = 0;
-@@ -1462,7 +1481,9 @@
+@@ -1462,7 +1481,9 @@ WGPUFuture WebGPUDecoderImpl::RequestDev
      // Check that no disallowed features were requested. They should be hidden
      // by AdapterGetFeaturesImpl.
      for (const wgpu::FeatureName& feature : required_features) {
@@ -553,7 +553,7 @@ Guard:    tests/guards/graphics/webgpu.py
          callback_info.callback(WGPURequestDeviceStatus_Error, nullptr,
                                 MakeStringView("Disallowed feature requested."),
                                 callback_info.userdata1,
-@@ -1472,6 +1493,19 @@
+@@ -1472,6 +1493,19 @@ WGPUFuture WebGPUDecoderImpl::RequestDev
      }
    }
  
@@ -573,7 +573,7 @@ Guard:    tests/guards/graphics/webgpu.py
    // We need to request internal usage to be able to do operations with internal
    // SharedImage / interop methods that would need specific usages.
    required_features.push_back(wgpu::FeatureName::DawnInternalUsages);
-@@ -1629,8 +1663,10 @@
+@@ -1636,8 +1670,10 @@ wgpu::Adapter WebGPUDecoderImpl::CreateP
      bool webgpu_on_vk_gl_interop) const {
    // The fallback adapter is SwiftShader, which is only allowed with
    // --enable-unsafe-webgpu. Don't make Dawn load it otherwise.
@@ -585,7 +585,7 @@ Guard:    tests/guards/graphics/webgpu.py
    if (force_fallback && !allow_fallback_adapter) {
      return nullptr;
    }
-@@ -1778,7 +1814,12 @@
+@@ -1785,7 +1821,12 @@ wgpu::Adapter WebGPUDecoderImpl::CreateP
      wgpu::AdapterInfo adapter_info = {};
      adapter.GetInfo(&adapter_info);
  
@@ -601,7 +601,7 @@ Guard:    tests/guards/graphics/webgpu.py
  
 --- a/third_party/blink/renderer/modules/webgpu/BUILD.gn
 +++ b/third_party/blink/renderer/modules/webgpu/BUILD.gn
-@@ -111,6 +111,7 @@
+@@ -111,6 +111,7 @@ blink_modules_sources("webgpu") {
      "wgsl_language_features.h",
    ]
    deps = [
@@ -619,7 +619,7 @@ Guard:    tests/guards/graphics/webgpu.py
  #include "gpu/command_buffer/client/webgpu_interface.h"
  #include "gpu/config/gpu_finch_features.h"
  #include "mojo/public/cpp/bindings/remote.h"
-@@ -397,6 +398,14 @@
+@@ -397,6 +398,14 @@ ScriptPromise<IDLNullable<GPUAdapter>> G
  }
  
  V8GPUTextureFormat GPU::getPreferredCanvasFormat() {
@@ -644,7 +644,7 @@ Guard:    tests/guards/graphics/webgpu.py
  #include "services/metrics/public/cpp/ukm_builders.h"
  #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
  #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
-@@ -124,7 +125,10 @@
+@@ -124,7 +125,10 @@ GPUAdapter::GPUAdapter(
  }
  
  GPUAdapterInfo* GPUAdapter::CreateAdapterInfoForAdapter() {

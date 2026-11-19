@@ -39,7 +39,7 @@ Guard:    tests/guards/platform/media-devices.py
  #include "content/browser/browser_main_loop.h"
  #include "content/browser/renderer_host/frame_tree.h"
  #include "content/browser/renderer_host/frame_tree_node.h"
-@@ -41,14 +44,20 @@
+@@ -41,14 +44,20 @@ using ::blink::mojom::MediaStreamType;
  namespace {
  
  void GotSalt(const std::string& frame_salt,
@@ -61,7 +61,7 @@ Guard:    tests/guards/platform/media-devices.py
    std::string device_id_salt = salt;
    if (!are_persistent_device_ids_allowed) {
      device_id_salt += frame_salt;
-@@ -152,12 +161,23 @@
+@@ -152,12 +161,23 @@ void GetMediaDeviceSaltAndOrigin(GlobalR
    WebContents* web_contents = WebContents::FromRenderFrameHost(frame_host);
    bool is_background = web_contents && web_contents->IsNeverComposited();
    std::string frame_salt = frame_host->GetMediaDeviceIDSaltBase();
@@ -98,7 +98,7 @@ Guard:    tests/guards/platform/media-devices.py
  #include "content/browser/media/media_devices_permission_checker.h"
  #include "content/browser/renderer_host/media/media_stream_manager.h"
  #include "content/browser/renderer_host/media/video_capture_manager.h"
-@@ -152,6 +153,104 @@
+@@ -152,6 +153,104 @@ blink::WebMediaDeviceInfoArray GetFakeAu
    return result;
  }
  
@@ -203,7 +203,7 @@ Guard:    tests/guards/platform/media-devices.py
  std::string VideoLabelWithoutModelID(const std::string& label) {
    if (label.rfind(")") != label.size() - 1)
      return label;
-@@ -1525,7 +1624,13 @@
+@@ -1525,7 +1624,13 @@ void MediaDevicesManager::DevicesEnumera
      const blink::WebMediaDeviceInfoArray& snapshot) {
    CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M155);
    CHECK(blink::IsValidMediaDeviceType(type), base::NotFatalUntil::M155);

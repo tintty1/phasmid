@@ -14,7 +14,7 @@ Guard:    tests/guards/platform/battery.py
 
 --- a/services/device/battery/BUILD.gn
 +++ b/services/device/battery/BUILD.gn
-@@ -27,6 +27,7 @@
+@@ -27,6 +27,7 @@ if (!is_android) {
  
      deps = [
        "//base",
@@ -65,7 +65,7 @@ Guard:    tests/guards/platform/battery.py
  BatteryStatusService::BatteryStatusService()
      : main_thread_task_runner_(
            base::SingleThreadTaskRunner::GetCurrentDefault()),
-@@ -38,7 +60,7 @@
+@@ -38,7 +60,7 @@ base::CallbackListSubscription BatterySt
    DCHECK(!is_shutdown_);
  
    // Always pass the default values.
